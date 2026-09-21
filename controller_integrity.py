@@ -62,6 +62,7 @@ class XInputGamepad:
 
     def __init__(self, user_index: int = 0) -> None:
         self.user_index = user_index
+        self.connected_user_index: Optional[int] = None
         self.dll = None
         self.get_state = None
         for dll_name in ("xinput1_4.dll", "xinput9_1_0.dll", "xinput1_3.dll"):
@@ -83,8 +84,17 @@ class XInputGamepad:
         if self.get_state is None:
             return None
         state = _XInputState()
-        if self.get_state(self.user_index, ctypes.byref(state)) != 0:
+        connected_index = self.connected_user_index
+        indexes = [connected_index] if connected_index is not None else list(range(4))
+        for index in indexes:
+            state = _XInputState()
+            if self.get_state(index, ctypes.byref(state)) == 0:
+                connected_index = index
+                break
+        else:
+            self.connected_user_index = None
             return None
+        self.connected_user_index = connected_index
         pad = state.gamepad
         return {
             "lx": self._normalize(pad.thumb_lx, 32768.0),
@@ -94,6 +104,13 @@ class XInputGamepad:
             "lt": pad.left_trigger / 255.0,
             "rt": pad.right_trigger / 255.0,
         }
+
+    def status(self) -> str:
+        if self.get_state is None:
+            return "XInput is unavailable on this Windows installation"
+        if self.connected_user_index is None:
+            return "No XInput controller detected — try USB, Xbox mode, or another backend"
+        return f"XInput controller connected (slot {self.connected_user_index})"
 
 
 @dataclass
@@ -234,6 +251,9 @@ class App(tk.Tk):
             self.current_values.update(sample)
             for axis, label in self.value_labels.items():
                 label.configure(text=f"{self.current_values[axis]:+.4f}")
+        status = getattr(self.backend, "status", None)
+        if callable(status) and not (self.test_thread and self.test_thread.is_alive()):
+            self.status_var.set(status())
         self.after(100, self._refresh_live_values)
 
     def start_test(self) -> None:

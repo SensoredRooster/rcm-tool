@@ -10,7 +10,9 @@ Windows with Python 3.10+:
 python .\controller_integrity.py
 ```
 
-The first version reads controller 0 through Windows XInput. Keep both sticks untouched during the 10-second test, then export the report.
+The first version reads Windows XInput and scans all four XInput controller slots. Keep both sticks untouched during the 10-second test, then export the report. The app displays whether XInput is unavailable, no XInput controller is detected, or a controller is connected.
+
+If the app says no XInput controller is detected, put the controller into Xbox/XInput mode, reconnect it over USB, or use the next planned Raw HID/SDL backend for controllers that expose DirectInput or a vendor-specific protocol.
 
 ## Scope and interpretation
 
