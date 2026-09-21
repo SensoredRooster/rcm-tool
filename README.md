@@ -23,6 +23,8 @@ python -m pip install -r .\requirements.txt
 python .\rcm_tool.py
 ```
 
+For a double-click workflow, use **RCM Tool - Update and Start.bat**. After testing, use **RCM Tool - Submit Reports.bat**. The submit file shows the pending report files and asks for confirmation before committing and pushing them to GitHub.
+
 The SDL and Raw HID dependencies are required for broad controller coverage. The built-in XInput and DirectInput readers remain available if they are not installed. The packages are `pygame-ce` and `hidapi`; the application imports them through the `pygame` and `hid` module names.
 
 ## Connect and select the controller
