@@ -16,6 +16,7 @@ import json
 import math
 import os
 import platform
+import re
 import statistics
 import threading
 import time
@@ -404,6 +405,17 @@ def sha256_payload(payload: dict) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def reports_directory() -> Path:
+    directory = Path(__file__).resolve().parent / "reports"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def safe_filename(value: str, fallback: str = "controller") -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._-")
+    return (cleaned[:80] or fallback)
+
+
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -419,6 +431,7 @@ class App(tk.Tk):
         self.current_values = {axis: 0.0 for axis in ("lx", "ly", "rx", "ry")}
         self.value_labels: dict[str, ttk.Label] = {}
         self.metric_labels: dict[str, ttk.Label] = {}
+        reports_directory()
         self._build_ui()
         self.after(100, self._refresh_live_values)
 
@@ -451,9 +464,11 @@ class App(tk.Tk):
         ttk.Label(controls, text=f"Duration: {TEST_DURATION_SECONDS:g} seconds").grid(row=0, column=0, sticky="w", **padding)
         self.start_button = ttk.Button(controls, text="Start neutral test", command=self.start_test)
         self.start_button.grid(row=0, column=1, **padding)
-        self.export_button = ttk.Button(controls, text="Export report", command=self.export_report, state="disabled")
+        self.export_button = ttk.Button(controls, text="Export to reports", command=self.export_report, state="disabled")
         self.export_button.grid(row=0, column=2, **padding)
-        ttk.Label(controls, textvariable=self.status_var).grid(row=1, column=0, columnspan=3, sticky="w", **padding)
+        self.open_reports_button = ttk.Button(controls, text="Open reports folder", command=self.open_reports_folder)
+        self.open_reports_button.grid(row=0, column=3, **padding)
+        ttk.Label(controls, textvariable=self.status_var).grid(row=1, column=0, columnspan=4, sticky="w", **padding)
 
         live = ttk.LabelFrame(self, text="Live normalized input")
         live.pack(fill="x", **padding)
@@ -613,25 +628,51 @@ class App(tk.Tk):
     def export_report(self) -> None:
         if not self.latest_result:
             return
-        destination = filedialog.asksaveasfilename(
-            title="Export RCM Tool report",
-            defaultextension=".json",
-            filetypes=[("JSON report", "*.json")],
-            initialfile="rcm-tool-report.json",
-        )
-        if not destination:
-            return
         result_data = asdict(self.latest_result)
+        controller_status = self.backend.status()
         report = {
             "reportVersion": REPORT_VERSION,
             "tool": "RCM Tool",
             "createdAtUtc": datetime.now(timezone.utc).isoformat(),
             "environment": {"os": platform.platform(), "python": platform.python_version()},
+            "controller": {
+                "backend": self.latest_result.backend,
+                "sourceStatus": controller_status,
+            },
             "result": result_data,
         }
         report["sha256"] = sha256_payload(report)
-        Path(destination).write_text(json.dumps(report, indent=2), encoding="utf-8")
-        messagebox.showinfo("Report exported", f"Saved report to:\n{destination}\n\nSHA-256:\n{report['sha256']}")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        controller_slug = safe_filename(controller_status)
+        destination = reports_directory() / f"{timestamp}_{controller_slug}.json"
+        suffix = 2
+        while destination.exists():
+            destination = reports_directory() / f"{timestamp}_{controller_slug}_{suffix}.json"
+            suffix += 1
+        destination.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+        index_entry = {
+            "createdAtUtc": report["createdAtUtc"],
+            "file": destination.name,
+            "sha256": report["sha256"],
+            "classification": self.latest_result.classification,
+            "backend": self.latest_result.backend,
+            "sourceStatus": controller_status,
+        }
+        with (reports_directory() / "index.jsonl").open("a", encoding="utf-8") as index_file:
+            index_file.write(json.dumps(index_entry, separators=(",", ":")) + "\n")
+        self.status_var.set(f"Report saved: reports\\{destination.name}")
+        messagebox.showinfo(
+            "Report exported",
+            f"Saved to:\n{destination}\n\nSHA-256:\n{report['sha256']}",
+        )
+
+    def open_reports_folder(self) -> None:
+        directory = reports_directory()
+        try:
+            os.startfile(str(directory))
+        except AttributeError:
+            messagebox.showinfo("Reports folder", str(directory))
 
 
 def main() -> None:
