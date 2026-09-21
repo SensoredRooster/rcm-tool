@@ -20,7 +20,7 @@ In RCM Tool, use **Run Before + After pair**. It runs both captures with the sam
 
 RCM Tool does not generate noise or alter the controller signal in either phase. It measures the controller as found in the Before state and then as found in the After state.
 
-RCM Tool records normalized samples and, when the Raw HID source is selected, timestamped HID reports in the exported JSON. The HID report stream is useful for checking report cadence, report IDs, raw byte changes, and the relationship between analog movement and USB output.
+RCM Tool records normalized samples and, when the Raw HID source is selected, timestamped HID reports in the exported JSON. The HID report stream is useful for checking report cadence, report IDs, raw byte changes, and the relationship between analog movement and USB output. Guided movement additionally estimates high-frequency jitter as the residual from a slow trend; the comparison report records the Before-to-After jitter delta.
 
 ## Oscilloscope capture
 

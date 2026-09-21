@@ -40,6 +40,7 @@ except ImportError:  # Optional until the Raw HID backend is installed.
 
 REPORT_VERSION = "0.1"
 TEST_DURATION_SECONDS = 10.0
+MOTION_TEST_DURATION_SECONDS = 20.0
 POLL_INTERVAL_SECONDS = 0.004
 
 
@@ -472,6 +473,10 @@ class AxisMetrics:
     maximum: float
     deadzone_crossings: int
     nonzero_stationary_percent: float
+    jitter_rms: float = 0.0
+    jitter_peak_to_peak: float = 0.0
+    velocity_rms: float = 0.0
+    direction_reversals: int = 0
 
 
 @dataclass
@@ -488,6 +493,7 @@ class TestResult:
     samples: list[dict[str, float]] = field(default_factory=list)
     hid_reports: list[dict[str, object]] = field(default_factory=list)
     phase: str = "unspecified"
+    protocol: str = "neutral-stick"
 
 
 def axis_metrics(values: list[float], threshold: float = 0.02) -> AxisMetrics:
@@ -502,6 +508,29 @@ def axis_metrics(values: list[float], threshold: float = 0.02) -> AxisMetrics:
         or abs(before) > threshold >= abs(after)
     )
     nonzero = sum(abs(x) > threshold for x in values) / len(values) * 100.0
+    if len(values) < 2:
+        jitter_rms = 0.0
+        jitter_peak_to_peak = 0.0
+        velocity_rms = 0.0
+        reversals = 0
+    else:
+        # Estimate high-frequency jitter as the residual from a slow EMA.
+        # This is a measurement heuristic, not a claim about the controller's firmware filter.
+        smooth = values[0]
+        residuals: list[float] = []
+        velocities: list[float] = []
+        for previous, current in zip(values, values[1:]):
+            smooth = 0.12 * current + 0.88 * smooth
+            residuals.append(current - smooth)
+            velocities.append(current - previous)
+        jitter_rms = math.sqrt(statistics.fmean([x * x for x in residuals])) if residuals else 0.0
+        jitter_peak_to_peak = max(residuals) - min(residuals) if residuals else 0.0
+        velocity_rms = math.sqrt(statistics.fmean([x * x for x in velocities])) if velocities else 0.0
+        reversals = sum(
+            1
+            for before, after in zip(velocities, velocities[1:])
+            if abs(before) >= 0.002 and abs(after) >= 0.002 and before * after < 0
+        )
     return AxisMetrics(
         samples=len(values),
         mean=mean,
@@ -511,6 +540,10 @@ def axis_metrics(values: list[float], threshold: float = 0.02) -> AxisMetrics:
         maximum=max(values),
         deadzone_crossings=crossings,
         nonzero_stationary_percent=nonzero,
+        jitter_rms=jitter_rms,
+        jitter_peak_to_peak=jitter_peak_to_peak,
+        velocity_rms=velocity_rms,
+        direction_reversals=reversals,
     )
 
 
@@ -521,6 +554,14 @@ def classify(result: TestResult) -> tuple[str, list[str]]:
         return "unsupported", ["No complete controller sample was captured"]
     if result.sample_rate_hz < 20.0:
         return "unsupported", [f"Capture rate is too low ({result.sample_rate_hz:.1f} samples/sec)"]
+    if result.protocol == "guided-movement":
+        for axis_name in ("lx", "ly", "rx", "ry"):
+            metrics = result.axes[axis_name]
+            if metrics.jitter_rms >= 0.015:
+                reasons.append(f"{axis_name} has elevated movement jitter RMS")
+            if metrics.jitter_peak_to_peak >= 0.06:
+                reasons.append(f"{axis_name} has a large high-frequency jitter range")
+        return ("review", reasons) if reasons else ("pass", [])
     for axis_name in ("lx", "ly", "rx", "ry"):
         metrics = result.axes[axis_name]
         if metrics.nonzero_stationary_percent >= 5.0:
@@ -562,6 +603,8 @@ class App(tk.Tk):
         self.pair_results: dict[str, TestResult] = {}
         self.pair_report_paths: dict[str, Path] = {}
         self.current_test_phase = "Before - default"
+        self.current_protocol = "neutral-stick"
+        self.current_duration = TEST_DURATION_SECONDS
         self.source_choices: list[str] = []
         self.source_backends: dict[str, ControllerBackend] = {}
         self.current_values = {axis: 0.0 for axis in ("lx", "ly", "rx", "ry")}
@@ -604,7 +647,8 @@ class App(tk.Tk):
         controls = ttk.LabelFrame(self, text="2. Run the certification test")
         controls.pack(fill="x", **padding)
         self.status_var = tk.StringVar(value="Ready")
-        ttk.Label(controls, text=f"Duration: {TEST_DURATION_SECONDS:g} seconds").grid(row=0, column=0, sticky="w", **padding)
+        self.duration_var = tk.StringVar(value=f"Duration: {TEST_DURATION_SECONDS:g} seconds")
+        ttk.Label(controls, textvariable=self.duration_var).grid(row=0, column=0, sticky="w", **padding)
         ttk.Label(controls, text="Phase:").grid(row=0, column=1, sticky="e", **padding)
         self.phase_var = tk.StringVar(value="Before - default")
         self.phase_combo = ttk.Combobox(
@@ -615,14 +659,25 @@ class App(tk.Tk):
             width=18,
         )
         self.phase_combo.grid(row=0, column=2, **padding)
-        self.start_button = ttk.Button(controls, text="Start neutral test", command=self.start_test)
-        self.start_button.grid(row=0, column=3, **padding)
-        self.export_button = ttk.Button(controls, text="Export to reports", command=self.export_report, state="disabled")
-        self.export_button.grid(row=0, column=4, **padding)
-        self.open_reports_button = ttk.Button(controls, text="Open reports folder", command=self.open_reports_folder)
-        self.open_reports_button.grid(row=0, column=5, **padding)
+        ttk.Label(controls, text="Protocol:").grid(row=0, column=3, sticky="e", **padding)
+        self.protocol_var = tk.StringVar(value="Neutral hold")
+        self.protocol_combo = ttk.Combobox(
+            controls,
+            textvariable=self.protocol_var,
+            values=("Neutral hold", "Guided movement"),
+            state="readonly",
+            width=18,
+        )
+        self.protocol_combo.grid(row=0, column=4, **padding)
+        self.protocol_combo.bind("<<ComboboxSelected>>", self._protocol_changed)
+        self.start_button = ttk.Button(controls, text="Start single test", command=self.start_test)
+        self.start_button.grid(row=1, column=0, **padding)
         self.pair_button = ttk.Button(controls, text="Run Before + After pair", command=self.start_pair_test)
-        self.pair_button.grid(row=1, column=0, columnspan=3, sticky="w", **padding)
+        self.pair_button.grid(row=1, column=1, columnspan=2, sticky="w", **padding)
+        self.export_button = ttk.Button(controls, text="Export to reports", command=self.export_report, state="disabled")
+        self.export_button.grid(row=1, column=3, **padding)
+        self.open_reports_button = ttk.Button(controls, text="Open reports folder", command=self.open_reports_folder)
+        self.open_reports_button.grid(row=1, column=4, **padding)
         ttk.Label(controls, textvariable=self.status_var).grid(row=2, column=0, columnspan=6, sticky="w", **padding)
 
         live = ttk.LabelFrame(self, text="3. Verify live input before testing")
@@ -647,10 +702,10 @@ class App(tk.Tk):
 
         results = ttk.LabelFrame(self, text="4. Read the result")
         results.pack(fill="both", expand=True, **padding)
-        columns = ("axis", "rms", "peak", "crossings", "active")
+        columns = ("axis", "rms", "jitter", "peak", "crossings", "active")
         self.tree = ttk.Treeview(results, columns=columns, show="headings", height=8)
-        headings = {"axis": "Axis", "rms": "RMS", "peak": "Peak-to-peak", "crossings": "Threshold crossings", "active": "Active while stationary"}
-        widths = {"axis": 80, "rms": 120, "peak": 140, "crossings": 170, "active": 180}
+        headings = {"axis": "Axis", "rms": "Signal RMS", "jitter": "Jitter RMS", "peak": "Peak-to-peak", "crossings": "Threshold crossings", "active": "Active while stationary"}
+        widths = {"axis": 70, "rms": 105, "jitter": 105, "peak": 125, "crossings": 160, "active": 175}
         for column in columns:
             self.tree.heading(column, text=headings[column])
             self.tree.column(column, width=widths[column], anchor="center")
@@ -661,7 +716,7 @@ class App(tk.Tk):
         ttk.Label(results, textvariable=self.result_help_var, wraplength=780).pack(anchor="w", padx=8, pady=(0, 6))
         ttk.Label(
             results,
-            text="RMS = average noise. Peak-to-peak = total movement range. Threshold crossings = times input crossed the review boundary. Active while stationary = time the stick looked moved while untouched.",
+            text="Signal RMS = total signal energy. Jitter RMS = estimated high-frequency movement left after a slow trend is removed. Peak-to-peak = total range. Threshold crossings = review-boundary crossings. Active while stationary = time input looked moved while untouched.",
             wraplength=780,
             foreground="#555555",
         ).pack(anchor="w", padx=8, pady=(0, 8))
@@ -724,6 +779,20 @@ class App(tk.Tk):
             self.source_var.set(choices[0])
         self._source_changed()
 
+    def _protocol_changed(self, _event=None) -> None:
+        if self.protocol_var.get() == "Guided movement":
+            self.duration_var.set(f"Duration: {MOTION_TEST_DURATION_SECONDS:g} seconds")
+        else:
+            self.duration_var.set(f"Duration: {TEST_DURATION_SECONDS:g} seconds")
+
+    def _select_protocol(self) -> None:
+        if self.protocol_var.get() == "Guided movement":
+            self.current_protocol = "guided-movement"
+            self.current_duration = MOTION_TEST_DURATION_SECONDS
+        else:
+            self.current_protocol = "neutral-stick"
+            self.current_duration = TEST_DURATION_SECONDS
+
     def _source_changed(self, _event=None) -> None:
         selected = self.source_var.get()
         backend = self.source_backends.get(selected)
@@ -765,7 +834,10 @@ class App(tk.Tk):
         self.pair_mode = False
         self.pair_results = {}
         self.pair_report_paths = {}
+        self._select_protocol()
         self.current_test_phase = self.phase_var.get()
+        if not self._confirm_protocol_start():
+            return
         if not self._prepare_test("single test"):
             return
         self._launch_test_thread()
@@ -776,8 +848,12 @@ class App(tk.Tk):
         self.pair_mode = True
         self.pair_results = {}
         self.pair_report_paths = {}
+        self._select_protocol()
         self.phase_var.set("Before - default")
         self.current_test_phase = "Before - default"
+        if not self._confirm_protocol_start():
+            self.pair_mode = False
+            return
         if not self._prepare_test("before phase"):
             self.pair_mode = False
             return
@@ -800,7 +876,10 @@ class App(tk.Tk):
         self.latest_result = None
         self.export_button.configure(state="disabled")
         self.result_var.set(f"{self.current_test_phase} test running...")
-        self.result_help_var.set("Keep both sticks untouched until the test completes.")
+        if self.current_protocol == "guided-movement":
+            self.result_help_var.set("Follow the guided movement instructions until the test completes.")
+        else:
+            self.result_help_var.set("Keep both sticks untouched until the test completes.")
         for item in self.tree.get_children():
             self.tree.delete(item)
         self.stop_event.clear()
@@ -809,8 +888,24 @@ class App(tk.Tk):
         self.phase_combo.configure(state="disabled")
         self.source_combo.configure(state="disabled")
         self.refresh_button.configure(state="disabled")
-        self.status_var.set(f"{self.current_test_phase} running... keep both sticks untouched")
+        if self.current_protocol == "guided-movement":
+            self.status_var.set(f"{self.current_test_phase} running... follow the guided movement instructions")
+        else:
+            self.status_var.set(f"{self.current_test_phase} running... keep both sticks untouched")
         return True
+
+    def _confirm_protocol_start(self) -> bool:
+        if self.current_protocol != "guided-movement":
+            return True
+        return messagebox.askokcancel(
+            "Guided movement protocol",
+            "During this 20-second capture, make smooth, deliberate stick movements:\n\n"
+            "1. Move the left stick slowly left and right.\n"
+            "2. Move the left stick slowly up and down.\n"
+            "3. Repeat with the right stick.\n"
+            "4. Avoid rapid shaking; the test is measuring high-frequency jitter riding on intended movement.\n\n"
+            "Click OK to begin.",
+        )
 
     def _launch_test_thread(self) -> None:
         self.test_thread = threading.Thread(target=self._run_test, daemon=True)
@@ -824,7 +919,7 @@ class App(tk.Tk):
         started_at = datetime.now(timezone.utc).isoformat()
         source_status = self.backend.status()
         samples = 0
-        while time.monotonic() - started < TEST_DURATION_SECONDS and not self.stop_event.is_set():
+        while time.monotonic() - started < self.current_duration and not self.stop_event.is_set():
             sample = self.backend.read()
             if sample:
                 for axis in axes:
@@ -846,7 +941,7 @@ class App(tk.Tk):
             time.sleep(POLL_INTERVAL_SECONDS)
         elapsed = max(time.monotonic() - started, 0.001)
         result = TestResult(
-            test_name="neutral-stick-10s",
+            test_name=self.current_protocol,
             started_at_utc=started_at,
             duration_seconds=elapsed,
             sample_rate_hz=samples / elapsed,
@@ -858,6 +953,7 @@ class App(tk.Tk):
             samples=captured_samples,
             hid_reports=captured_hid_reports,
             phase=self.current_test_phase,
+            protocol=self.current_protocol,
         )
         result.classification, result.review_reasons = classify(result)
         self.after(0, lambda: self._finish_test(result))
@@ -870,6 +966,7 @@ class App(tk.Tk):
             self.tree.insert("", "end", values=(
                 axis.upper(),
                 f"{metrics.rms:.5f}",
+                f"{metrics.jitter_rms:.5f}",
                 f"{metrics.peak_to_peak:.5f}",
                 metrics.deadzone_crossings,
                 f"{metrics.nonzero_stationary_percent:.2f}%",
@@ -877,6 +974,7 @@ class App(tk.Tk):
         reason_text = "; ".join(result.review_reasons) if result.review_reasons else "No neutral-input anomalies exceeded the initial review thresholds."
         self.result_var.set(
             f"Result: {result.classification.upper()} - {reason_text} "
+            f"[{result.protocol}] "
             f"({len(result.samples)} samples at {result.sample_rate_hz:.1f}/sec; "
             f"{len(result.hid_reports)} raw HID reports)"
         )
@@ -979,6 +1077,7 @@ class App(tk.Tk):
                 "durationSeconds": result.duration_seconds,
                 "inputInjected": False,
                 "noiseInjected": False,
+                "jitterEstimator": "high-frequency residual from slow EMA (alpha=0.12)",
             },
             "result": result_data,
         }
@@ -1026,6 +1125,8 @@ class App(tk.Tk):
             after_metrics = after.axes[axis]
             deltas[axis] = {
                 "rmsDelta": after_metrics.rms - before_metrics.rms,
+                "jitterRmsDelta": after_metrics.jitter_rms - before_metrics.jitter_rms,
+                "jitterPeakToPeakDelta": after_metrics.jitter_peak_to_peak - before_metrics.jitter_peak_to_peak,
                 "peakToPeakDelta": after_metrics.peak_to_peak - before_metrics.peak_to_peak,
                 "activeStationaryPercentDelta": after_metrics.nonzero_stationary_percent - before_metrics.nonzero_stationary_percent,
                 "thresholdCrossingDelta": after_metrics.deadzone_crossings - before_metrics.deadzone_crossings,
@@ -1040,6 +1141,7 @@ class App(tk.Tk):
                 "inputInjected": False,
                 "noiseInjected": False,
                 "operatorChangeRequiredBetweenPhases": True,
+                "jitterEstimator": "high-frequency residual from slow EMA (alpha=0.12)",
             },
             "beforeReport": before_path.name if before_path else None,
             "afterReport": after_path.name,

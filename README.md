@@ -64,12 +64,14 @@ Use **Run Before + After pair** when comparing a default controller state with a
 1. Select the controller input source and verify the live axes.
 2. Leave the phase set to **Before - default**.
 3. Click **Run Before + After pair**.
-4. RCM Tool runs the same neutral-stick protocol and automatically saves the Before report.
+4. RCM Tool runs the selected protocol and automatically saves the Before report.
 5. Apply the controller setting or hardware change being evaluated.
 6. Click **OK** in the prompt. RCM Tool automatically runs the After phase.
 7. RCM Tool saves the After report and creates a `before_after_comparison.json` report only when both phases return usable data.
 
-The Before and After phases use the same duration, sampling loop, thresholds, and input source. RCM Tool does **not** add noise, inject input, smooth the signal, or modify the controller between phases. The only intended difference is the operator-applied controller configuration or hardware state.
+The Before and After phases use the same duration, sampling loop, thresholds, protocol, and input source. RCM Tool does **not** add noise, inject input, smooth the captured signal, or modify the controller between phases. The only intended difference is the operator-applied controller configuration or hardware state.
+
+For **Guided movement**, `Jitter RMS` estimates high-frequency movement left after a slow trend is removed. It is a measurement of the output stream, not proof of where the jitter originated. Comparing the Before and After jitter deltas tells us whether the modified state produced more or less high-frequency variation during intended movement.
 
 ## If the app says no controller is detected
 
