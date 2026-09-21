@@ -552,6 +552,7 @@ class App(tk.Tk):
         self.source_choices: list[str] = []
         self.source_backends: dict[str, ControllerBackend] = {}
         self.current_values = {axis: 0.0 for axis in ("lx", "ly", "rx", "ry")}
+        self.axes_seen: set[str] = set()
         self.value_labels: dict[str, ttk.Label] = {}
         self.axis_bars: dict[str, ttk.Progressbar] = {}
         self.metric_labels: dict[str, ttk.Label] = {}
@@ -613,6 +614,10 @@ class App(tk.Tk):
         self.live_help_var = tk.StringVar(value="Move each stick. The number and bar must change before you start a test.")
         ttk.Label(live, textvariable=self.live_help_var, foreground="#555555").grid(
             row=3, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 8)
+        )
+        self.axes_seen_var = tk.StringVar(value="Axes seen: none")
+        ttk.Label(live, textvariable=self.axes_seen_var, foreground="#555555").grid(
+            row=4, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 8)
         )
 
         results = ttk.LabelFrame(self, text="4. Read the result")
@@ -700,6 +705,8 @@ class App(tk.Tk):
         if backend is None:
             return
         self.backend = backend
+        self.axes_seen.clear()
+        self.axes_seen_var.set("Axes seen: none")
         self.backend_var.set(f"Reading through: {backend.name}")
         self.input_status_var.set(backend.status())
 
@@ -710,6 +717,8 @@ class App(tk.Tk):
             for axis, label in self.value_labels.items():
                 label.configure(text=f"{self.current_values[axis]:+.4f}")
                 self.axis_bars[axis]["value"] = (self.current_values[axis] + 1.0) * 50.0
+                if abs(self.current_values[axis]) >= 0.05:
+                    self.axes_seen.add(axis.upper())
         status = getattr(self.backend, "status", None)
         if callable(status):
             self.input_status_var.set(status())
@@ -717,7 +726,12 @@ class App(tk.Tk):
                 isinstance(self.backend, AutomaticControllerBackend) and self.backend.active is not None
             )
             if has_input:
-                self.live_help_var.set("Input detected. Move each stick once, then leave both sticks centered for the neutral test.")
+                if self.axes_seen:
+                    seen = ", ".join(sorted(self.axes_seen))
+                    self.axes_seen_var.set(f"Axes seen: {seen}")
+                    self.live_help_var.set("Input detected. Move every stick direction once. If an axis never appears, select SDL or Raw HID instead of DirectInput.")
+                else:
+                    self.live_help_var.set("Input connection found. Move each stick to verify its axes.")
         self.after(100, self._refresh_live_values)
 
     def start_test(self) -> None:
