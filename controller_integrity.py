@@ -558,6 +558,10 @@ class App(tk.Tk):
         self.test_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
         self.latest_result: Optional[TestResult] = None
+        self.pair_mode = False
+        self.pair_results: dict[str, TestResult] = {}
+        self.pair_report_paths: dict[str, Path] = {}
+        self.current_test_phase = "Before - default"
         self.source_choices: list[str] = []
         self.source_backends: dict[str, ControllerBackend] = {}
         self.current_values = {axis: 0.0 for axis in ("lx", "ly", "rx", "ry")}
@@ -617,7 +621,9 @@ class App(tk.Tk):
         self.export_button.grid(row=0, column=4, **padding)
         self.open_reports_button = ttk.Button(controls, text="Open reports folder", command=self.open_reports_folder)
         self.open_reports_button.grid(row=0, column=5, **padding)
-        ttk.Label(controls, textvariable=self.status_var).grid(row=1, column=0, columnspan=6, sticky="w", **padding)
+        self.pair_button = ttk.Button(controls, text="Run Before + After pair", command=self.start_pair_test)
+        self.pair_button.grid(row=1, column=0, columnspan=3, sticky="w", **padding)
+        ttk.Label(controls, textvariable=self.status_var).grid(row=2, column=0, columnspan=6, sticky="w", **padding)
 
         live = ttk.LabelFrame(self, text="3. Verify live input before testing")
         live.pack(fill="x", **padding)
@@ -756,30 +762,57 @@ class App(tk.Tk):
     def start_test(self) -> None:
         if self.test_thread and self.test_thread.is_alive():
             return
+        self.pair_mode = False
+        self.pair_results = {}
+        self.pair_report_paths = {}
+        self.current_test_phase = self.phase_var.get()
+        if not self._prepare_test("single test"):
+            return
+        self._launch_test_thread()
+
+    def start_pair_test(self) -> None:
+        if self.test_thread and self.test_thread.is_alive():
+            return
+        self.pair_mode = True
+        self.pair_results = {}
+        self.pair_report_paths = {}
+        self.phase_var.set("Before - default")
+        self.current_test_phase = "Before - default"
+        if not self._prepare_test("before phase"):
+            self.pair_mode = False
+            return
+        self._launch_test_thread()
+
+    def _prepare_test(self, label: str) -> bool:
         if self.backend.read() is None:
-            self.status_var.set("Cannot start: the selected input source is not connected")
+            self.status_var.set(f"Cannot start {label}: the selected input source is not connected")
             self.input_status_var.set(self.backend.status())
             messagebox.showwarning(
                 "No controller input",
                 "RCM Tool cannot start because the selected input source is not returning controller data.\n\n"
                 "Choose a connected source above, then click Detect devices.",
             )
-            return
+            return False
         source = self.backend.active if isinstance(self.backend, AutomaticControllerBackend) else self.backend
         drain_raw = getattr(source, "drain_raw_reports", None)
         if callable(drain_raw):
             drain_raw()
         self.latest_result = None
         self.export_button.configure(state="disabled")
-        self.result_var.set("Test running...")
+        self.result_var.set(f"{self.current_test_phase} test running...")
         self.result_help_var.set("Keep both sticks untouched until the test completes.")
         for item in self.tree.get_children():
             self.tree.delete(item)
         self.stop_event.clear()
         self.start_button.configure(state="disabled")
+        self.pair_button.configure(state="disabled")
+        self.phase_combo.configure(state="disabled")
         self.source_combo.configure(state="disabled")
         self.refresh_button.configure(state="disabled")
-        self.status_var.set("Testing... keep both sticks untouched")
+        self.status_var.set(f"{self.current_test_phase} running... keep both sticks untouched")
+        return True
+
+    def _launch_test_thread(self) -> None:
         self.test_thread = threading.Thread(target=self._run_test, daemon=True)
         self.test_thread.start()
 
@@ -824,17 +857,15 @@ class App(tk.Tk):
             source_status=source_status,
             samples=captured_samples,
             hid_reports=captured_hid_reports,
-            phase=self.phase_var.get(),
+            phase=self.current_test_phase,
         )
         result.classification, result.review_reasons = classify(result)
         self.after(0, lambda: self._finish_test(result))
 
     def _finish_test(self, result: TestResult) -> None:
         self.latest_result = result
-        self.start_button.configure(state="normal")
-        self.export_button.configure(state="normal")
-        self.source_combo.configure(state="readonly")
-        self.refresh_button.configure(state="normal")
+        if self.pair_mode:
+            self.pair_results[result.phase] = result
         for axis, metrics in result.axes.items():
             self.tree.insert("", "end", values=(
                 axis.upper(),
@@ -855,29 +886,106 @@ class App(tk.Tk):
             self.result_help_var.set("REVIEW means the measurements crossed an initial threshold. Save the report and compare it with a controller-specific baseline before making a decision.")
         else:
             self.result_help_var.set("UNSUPPORTED means RCM Tool did not receive a complete sample. Choose a connected input source and verify the live bars first.")
+        if self.pair_mode and result.phase == "Before - default":
+            before_path = self.write_report(result, show_message=False)
+            self.pair_report_paths[result.phase] = before_path
+            if result.classification == "unsupported":
+                self.pair_mode = False
+                self._enable_controls()
+                self.status_var.set("Before phase did not produce usable data; After phase was not started")
+                messagebox.showwarning(
+                    "Before phase incomplete",
+                    "The Before phase did not return a usable sample stream, so RCM Tool did not start the After phase.\n\n"
+                    f"Saved report:\n{before_path}\n\nFix the input source and run the pair again.",
+                )
+                return
+            self.status_var.set(f"Before complete and saved: {before_path.name}")
+            self.after(100, self._continue_pair_after_phase)
+            return
+
+        if self.pair_mode and result.phase == "After - modified":
+            after_path = self.write_report(result, show_message=False)
+            self.pair_report_paths[result.phase] = after_path
+            before = self.pair_results.get("Before - default")
+            before_path = self.pair_report_paths.get("Before - default")
+            if result.classification == "unsupported":
+                self.pair_mode = False
+                self._enable_controls()
+                self.status_var.set("After phase did not produce usable data; pair is incomplete")
+                messagebox.showwarning(
+                    "After phase incomplete",
+                    "The After phase did not return a usable sample stream. The Before and After reports were saved, but no comparison was finalized.",
+                )
+                return
+            comparison_path = self.write_comparison_report(before, result, before_path, after_path) if before else None
+            self.pair_mode = False
+            self._enable_controls()
+            self.status_var.set("Before + After pair complete")
+            comparison_text = f"\nComparison saved to:\n{comparison_path}" if comparison_path else ""
+            messagebox.showinfo(
+                "Paired test complete",
+                f"Both phases returned successfully.\n\nBefore report:\n{before_path}\n\nAfter report:\n{after_path}{comparison_text}\n\nUse RCM Tool - Submit Reports.bat to push the reports to GitHub.",
+            )
+            return
+
+        self._enable_controls()
         self.status_var.set("Test complete")
 
-    def export_report(self) -> None:
-        if not self.latest_result:
+    def _enable_controls(self) -> None:
+        self.start_button.configure(state="normal")
+        self.pair_button.configure(state="normal")
+        self.phase_combo.configure(state="readonly")
+        self.source_combo.configure(state="readonly")
+        self.refresh_button.configure(state="normal")
+
+    def _continue_pair_after_phase(self) -> None:
+        if not self.pair_mode:
             return
-        result_data = asdict(self.latest_result)
-        controller_status = self.latest_result.source_status or self.backend.status()
+        proceed = messagebox.askokcancel(
+            "Before phase complete",
+            "The Before phase was saved.\n\n"
+            "Now apply the controller setting or hardware change you want to evaluate. "
+            "RCM Tool will not add noise or modify the controller signal.\n\n"
+            "Click OK when the After state is ready.",
+        )
+        if not proceed:
+            self.pair_mode = False
+            self._enable_controls()
+            self.status_var.set("Paired test cancelled after Before phase")
+            return
+        self.phase_var.set("After - modified")
+        self.current_test_phase = "After - modified"
+        if not self._prepare_test("after phase"):
+            self.pair_mode = False
+            self._enable_controls()
+            return
+        self._launch_test_thread()
+
+    def write_report(self, result: TestResult, show_message: bool = True) -> Path:
+        result_data = asdict(result)
+        controller_status = result.source_status or self.backend.status()
         report = {
             "reportVersion": REPORT_VERSION,
             "tool": "RCM Tool",
             "createdAtUtc": datetime.now(timezone.utc).isoformat(),
             "environment": {"os": platform.platform(), "python": platform.python_version()},
             "controller": {
-                "backend": self.latest_result.backend,
+                "backend": result.backend,
                 "sourceStatus": controller_status,
             },
-            "phase": self.latest_result.phase,
+            "phase": result.phase,
+            "protocol": {
+                "testName": result.test_name,
+                "durationSeconds": result.duration_seconds,
+                "inputInjected": False,
+                "noiseInjected": False,
+            },
             "result": result_data,
         }
         report["sha256"] = sha256_payload(report)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         controller_slug = safe_filename(controller_status)
-        phase_slug = safe_filename(self.latest_result.phase, fallback="phase")
+        phase_slug = safe_filename(result.phase, fallback="phase")
         destination = reports_directory() / f"{timestamp}_{phase_slug}_{controller_slug}.json"
         suffix = 2
         while destination.exists():
@@ -889,18 +997,74 @@ class App(tk.Tk):
             "createdAtUtc": report["createdAtUtc"],
             "file": destination.name,
             "sha256": report["sha256"],
-            "classification": self.latest_result.classification,
-            "phase": self.latest_result.phase,
-            "backend": self.latest_result.backend,
+            "classification": result.classification,
+            "phase": result.phase,
+            "backend": result.backend,
             "sourceStatus": controller_status,
         }
         with (reports_directory() / "index.jsonl").open("a", encoding="utf-8") as index_file:
             index_file.write(json.dumps(index_entry, separators=(",", ":")) + "\n")
         self.status_var.set(f"Report saved: reports\\{destination.name}")
-        messagebox.showinfo(
-            "Report exported",
-            f"Saved to:\n{destination}\n\nSHA-256:\n{report['sha256']}",
-        )
+        if show_message:
+            messagebox.showinfo("Report exported", f"Saved to:\n{destination}\n\nSHA-256:\n{report['sha256']}")
+        return destination
+
+    def export_report(self) -> None:
+        if self.latest_result:
+            self.write_report(self.latest_result, show_message=True)
+
+    def write_comparison_report(
+        self,
+        before: TestResult,
+        after: TestResult,
+        before_path: Optional[Path],
+        after_path: Path,
+    ) -> Path:
+        deltas = {}
+        for axis in ("lx", "ly", "rx", "ry"):
+            before_metrics = before.axes[axis]
+            after_metrics = after.axes[axis]
+            deltas[axis] = {
+                "rmsDelta": after_metrics.rms - before_metrics.rms,
+                "peakToPeakDelta": after_metrics.peak_to_peak - before_metrics.peak_to_peak,
+                "activeStationaryPercentDelta": after_metrics.nonzero_stationary_percent - before_metrics.nonzero_stationary_percent,
+                "thresholdCrossingDelta": after_metrics.deadzone_crossings - before_metrics.deadzone_crossings,
+            }
+        comparison = {
+            "reportVersion": REPORT_VERSION,
+            "tool": "RCM Tool",
+            "reportType": "before-after-comparison",
+            "createdAtUtc": datetime.now(timezone.utc).isoformat(),
+            "protocol": {
+                "sameTestDuration": before.duration_seconds,
+                "inputInjected": False,
+                "noiseInjected": False,
+                "operatorChangeRequiredBetweenPhases": True,
+            },
+            "beforeReport": before_path.name if before_path else None,
+            "afterReport": after_path.name,
+            "metrics": deltas,
+        }
+        comparison["sha256"] = sha256_payload(comparison)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        destination = reports_directory() / f"{timestamp}_before_after_comparison.json"
+        suffix = 2
+        while destination.exists():
+            destination = reports_directory() / f"{timestamp}_before_after_comparison_{suffix}.json"
+            suffix += 1
+        destination.write_text(json.dumps(comparison, indent=2), encoding="utf-8")
+        index_entry = {
+            "createdAtUtc": comparison["createdAtUtc"],
+            "file": destination.name,
+            "sha256": comparison["sha256"],
+            "classification": "comparison",
+            "phase": "Before + After",
+            "backend": before.backend,
+            "sourceStatus": before.source_status,
+        }
+        with (reports_directory() / "index.jsonl").open("a", encoding="utf-8") as index_file:
+            index_file.write(json.dumps(index_entry, separators=(",", ":")) + "\n")
+        return destination
 
     def open_reports_folder(self) -> None:
         directory = reports_directory()

@@ -27,6 +27,8 @@ For a double-click workflow, use **RCM Tool - Update and Start.bat**. After test
 
 The SDL and Raw HID dependencies are required for broad controller coverage. The built-in XInput and DirectInput readers remain available if they are not installed. The packages are `pygame-ce` and `hidapi`; the application imports them through the `pygame` and `hid` module names.
 
+See [HARDWARE_MEASUREMENTS.md](HARDWARE_MEASUREMENTS.md) for the before/after raw sensor and USB HID measurement plan.
+
 ## Connect and select the controller
 
 1. Connect the controller by USB or pair it over Bluetooth.
@@ -44,7 +46,7 @@ The SDL and Raw HID dependencies are required for broad controller coverage. The
 
 The status line tells you exactly what RCM Tool is reading, for example `XInput slot 1 is connected` or `DirectInput device 0 is connected`.
 
-## Run a test
+## Run a single test
 
 1. Select the connected input source.
 2. Leave both sticks untouched.
@@ -54,6 +56,20 @@ The status line tells you exactly what RCM Tool is reading, for example `XInput 
 6. Click **Export to reports** to save the JSON report and captured timestamped samples in the repository's `reports` folder.
 
 `PASS` means the initial screening thresholds were not exceeded. `REVIEW` means one or more measurements exceeded those thresholds. `UNSUPPORTED` means the test did not capture a complete or fast-enough sample stream. These are screening results, not automatic proof of misconduct.
+
+## Run the paired Before + After test
+
+Use **Run Before + After pair** when comparing a default controller state with a modified state:
+
+1. Select the controller input source and verify the live axes.
+2. Leave the phase set to **Before - default**.
+3. Click **Run Before + After pair**.
+4. RCM Tool runs the same neutral-stick protocol and automatically saves the Before report.
+5. Apply the controller setting or hardware change being evaluated.
+6. Click **OK** in the prompt. RCM Tool automatically runs the After phase.
+7. RCM Tool saves the After report and creates a `before_after_comparison.json` report only when both phases return usable data.
+
+The Before and After phases use the same duration, sampling loop, thresholds, and input source. RCM Tool does **not** add noise, inject input, smooth the signal, or modify the controller between phases. The only intended difference is the operator-applied controller configuration or hardware state.
 
 ## If the app says no controller is detected
 
