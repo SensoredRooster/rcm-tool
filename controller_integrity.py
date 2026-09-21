@@ -317,6 +317,7 @@ class HIDGamepad:
         self.info = info or {}
         self.device = None
         self.last_sample: Optional[dict[str, float]] = None
+        self.raw_reports: list[list[int]] = []
 
     @staticmethod
     def available() -> bool:
@@ -399,10 +400,16 @@ class HIDGamepad:
             self.device = None
             return None
         if report:
+            self.raw_reports.append(list(report))
             parsed = self._parse_report(report)
             if parsed is not None:
                 return parsed
         return self.last_sample
+
+    def drain_raw_reports(self) -> list[list[int]]:
+        reports = self.raw_reports
+        self.raw_reports = []
+        return reports
 
     def status(self) -> str:
         if hid is None:
@@ -479,6 +486,8 @@ class TestResult:
     review_reasons: list[str]
     source_status: str = ""
     samples: list[dict[str, float]] = field(default_factory=list)
+    hid_reports: list[dict[str, object]] = field(default_factory=list)
+    phase: str = "unspecified"
 
 
 def axis_metrics(values: list[float], threshold: float = 0.02) -> AxisMetrics:
@@ -592,13 +601,23 @@ class App(tk.Tk):
         controls.pack(fill="x", **padding)
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(controls, text=f"Duration: {TEST_DURATION_SECONDS:g} seconds").grid(row=0, column=0, sticky="w", **padding)
+        ttk.Label(controls, text="Phase:").grid(row=0, column=1, sticky="e", **padding)
+        self.phase_var = tk.StringVar(value="Before - default")
+        self.phase_combo = ttk.Combobox(
+            controls,
+            textvariable=self.phase_var,
+            values=("Before - default", "After - modified"),
+            state="readonly",
+            width=18,
+        )
+        self.phase_combo.grid(row=0, column=2, **padding)
         self.start_button = ttk.Button(controls, text="Start neutral test", command=self.start_test)
-        self.start_button.grid(row=0, column=1, **padding)
+        self.start_button.grid(row=0, column=3, **padding)
         self.export_button = ttk.Button(controls, text="Export to reports", command=self.export_report, state="disabled")
-        self.export_button.grid(row=0, column=2, **padding)
+        self.export_button.grid(row=0, column=4, **padding)
         self.open_reports_button = ttk.Button(controls, text="Open reports folder", command=self.open_reports_folder)
-        self.open_reports_button.grid(row=0, column=3, **padding)
-        ttk.Label(controls, textvariable=self.status_var).grid(row=1, column=0, columnspan=4, sticky="w", **padding)
+        self.open_reports_button.grid(row=0, column=5, **padding)
+        ttk.Label(controls, textvariable=self.status_var).grid(row=1, column=0, columnspan=6, sticky="w", **padding)
 
         live = ttk.LabelFrame(self, text="3. Verify live input before testing")
         live.pack(fill="x", **padding)
@@ -746,6 +765,10 @@ class App(tk.Tk):
                 "Choose a connected source above, then click Detect devices.",
             )
             return
+        source = self.backend.active if isinstance(self.backend, AutomaticControllerBackend) else self.backend
+        drain_raw = getattr(source, "drain_raw_reports", None)
+        if callable(drain_raw):
+            drain_raw()
         self.latest_result = None
         self.export_button.configure(state="disabled")
         self.result_var.set("Test running...")
@@ -763,6 +786,7 @@ class App(tk.Tk):
     def _run_test(self) -> None:
         axes = {axis: [] for axis in ("lx", "ly", "rx", "ry")}
         captured_samples: list[dict[str, float]] = []
+        captured_hid_reports: list[dict[str, object]] = []
         started = time.monotonic()
         started_at = datetime.now(timezone.utc).isoformat()
         source_status = self.backend.status()
@@ -777,6 +801,15 @@ class App(tk.Tk):
                     **{axis: round(float(sample[axis]), 6) for axis in axes},
                 })
                 samples += 1
+            source = self.backend.active if isinstance(self.backend, AutomaticControllerBackend) else self.backend
+            drain_raw = getattr(source, "drain_raw_reports", None)
+            if callable(drain_raw):
+                for report in drain_raw():
+                    captured_hid_reports.append({
+                        "t_ms": round((time.monotonic() - started) * 1000.0, 3),
+                        "length": len(report),
+                        "hex": bytes(report).hex(),
+                    })
             time.sleep(POLL_INTERVAL_SECONDS)
         elapsed = max(time.monotonic() - started, 0.001)
         result = TestResult(
@@ -790,6 +823,8 @@ class App(tk.Tk):
             review_reasons=[],
             source_status=source_status,
             samples=captured_samples,
+            hid_reports=captured_hid_reports,
+            phase=self.phase_var.get(),
         )
         result.classification, result.review_reasons = classify(result)
         self.after(0, lambda: self._finish_test(result))
@@ -809,7 +844,11 @@ class App(tk.Tk):
                 f"{metrics.nonzero_stationary_percent:.2f}%",
             ))
         reason_text = "; ".join(result.review_reasons) if result.review_reasons else "No neutral-input anomalies exceeded the initial review thresholds."
-        self.result_var.set(f"Result: {result.classification.upper()} - {reason_text} ({len(result.samples)} samples at {result.sample_rate_hz:.1f}/sec)")
+        self.result_var.set(
+            f"Result: {result.classification.upper()} - {reason_text} "
+            f"({len(result.samples)} samples at {result.sample_rate_hz:.1f}/sec; "
+            f"{len(result.hid_reports)} raw HID reports)"
+        )
         if result.classification == "pass":
             self.result_help_var.set("PASS means this sample stayed within the initial screening thresholds. It is not a guarantee that every controller behavior is compliant.")
         elif result.classification == "review":
@@ -832,15 +871,17 @@ class App(tk.Tk):
                 "backend": self.latest_result.backend,
                 "sourceStatus": controller_status,
             },
+            "phase": self.latest_result.phase,
             "result": result_data,
         }
         report["sha256"] = sha256_payload(report)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         controller_slug = safe_filename(controller_status)
-        destination = reports_directory() / f"{timestamp}_{controller_slug}.json"
+        phase_slug = safe_filename(self.latest_result.phase, fallback="phase")
+        destination = reports_directory() / f"{timestamp}_{phase_slug}_{controller_slug}.json"
         suffix = 2
         while destination.exists():
-            destination = reports_directory() / f"{timestamp}_{controller_slug}_{suffix}.json"
+            destination = reports_directory() / f"{timestamp}_{phase_slug}_{controller_slug}_{suffix}.json"
             suffix += 1
         destination.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
@@ -849,6 +890,7 @@ class App(tk.Tk):
             "file": destination.name,
             "sha256": report["sha256"],
             "classification": self.latest_result.classification,
+            "phase": self.latest_result.phase,
             "backend": self.latest_result.backend,
             "sourceStatus": controller_status,
         }
