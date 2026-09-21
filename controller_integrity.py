@@ -113,6 +113,105 @@ class XInputGamepad:
         return f"XInput controller connected (slot {self.connected_user_index})"
 
 
+class _JoyInfoEx(ctypes.Structure):
+    _fields_ = [
+        ("size", ctypes.c_uint32),
+        ("flags", ctypes.c_uint32),
+        ("x", ctypes.c_uint32),
+        ("y", ctypes.c_uint32),
+        ("z", ctypes.c_uint32),
+        ("r", ctypes.c_uint32),
+        ("u", ctypes.c_uint32),
+        ("v", ctypes.c_uint32),
+        ("buttons", ctypes.c_uint32),
+        ("button_number", ctypes.c_uint32),
+        ("pov", ctypes.c_uint32),
+        ("reserved_1", ctypes.c_uint32),
+        ("reserved_2", ctypes.c_uint32),
+    ]
+
+
+class WinMMJoystick:
+    """Fallback for generic DirectInput-style Windows joystick devices."""
+
+    name = "Windows Joystick (DirectInput fallback)"
+    _JOY_RETURNALL = 0x000000FF
+
+    def __init__(self) -> None:
+        self.device_id: Optional[int] = None
+        try:
+            self.dll = ctypes.WinDLL("winmm.dll")
+            self.get_num_devs = self.dll.joyGetNumDevs
+            self.get_num_devs.restype = ctypes.c_uint32
+            self.get_pos_ex = self.dll.joyGetPosEx
+            self.get_pos_ex.argtypes = [ctypes.c_uint32, ctypes.POINTER(_JoyInfoEx)]
+            self.get_pos_ex.restype = ctypes.c_uint32
+        except OSError:
+            self.dll = None
+            self.get_num_devs = None
+            self.get_pos_ex = None
+
+    @staticmethod
+    def _normalize(value: int) -> float:
+        return max(-1.0, min(1.0, (value - 32767.5) / 32767.5))
+
+    def read(self) -> Optional[dict[str, float]]:
+        if self.get_pos_ex is None:
+            return None
+        candidate_ids = [self.device_id] if self.device_id is not None else range(self.get_num_devs())
+        for device_id in candidate_ids:
+            info = _JoyInfoEx(size=ctypes.sizeof(_JoyInfoEx), flags=self._JOY_RETURNALL)
+            if self.get_pos_ex(device_id, ctypes.byref(info)) == 0:
+                self.device_id = device_id
+                return {
+                    "lx": self._normalize(info.x),
+                    "ly": -self._normalize(info.y),
+                    "rx": self._normalize(info.r),
+                    "ry": -self._normalize(info.u),
+                    "lt": info.z / 65535.0,
+                    "rt": info.v / 65535.0,
+                }
+        self.device_id = None
+        return None
+
+    def status(self) -> str:
+        if self.get_pos_ex is None:
+            return "DirectInput fallback is unavailable"
+        if self.device_id is None:
+            return "No DirectInput joystick detected"
+        return f"DirectInput joystick connected (device {self.device_id})"
+
+
+class AutomaticControllerBackend:
+    """Prefer XInput, then fall back to a generic Windows joystick device."""
+
+    name = "Automatic (XInput + DirectInput)"
+
+    def __init__(self) -> None:
+        self.xinput = XInputGamepad()
+        self.winmm = WinMMJoystick()
+        self.active: Optional[ControllerBackend] = None
+
+    def read(self) -> Optional[dict[str, float]]:
+        sample = self.xinput.read()
+        if sample is not None:
+            self.active = self.xinput
+            return sample
+        sample = self.winmm.read()
+        if sample is not None:
+            self.active = self.winmm
+            return sample
+        self.active = None
+        return None
+
+    def status(self) -> str:
+        if self.active is not None:
+            return self.active.status()
+        if self.xinput.get_state is None and self.winmm.get_pos_ex is None:
+            return "No supported Windows controller backend is available"
+        return "No controller detected — connect it in XInput or DirectInput mode"
+
+
 @dataclass
 class AxisMetrics:
     samples: int
@@ -188,7 +287,7 @@ class App(tk.Tk):
         self.title("RCM Tool")
         self.geometry("900x620")
         self.minsize(760, 520)
-        self.backend: ControllerBackend = XInputGamepad()
+        self.backend: ControllerBackend = AutomaticControllerBackend()
         self.test_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
         self.latest_result: Optional[TestResult] = None
