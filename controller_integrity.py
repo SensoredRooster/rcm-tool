@@ -549,6 +549,7 @@ class App(tk.Tk):
         self.source_backends: dict[str, ControllerBackend] = {}
         self.current_values = {axis: 0.0 for axis in ("lx", "ly", "rx", "ry")}
         self.value_labels: dict[str, ttk.Label] = {}
+        self.axis_bars: dict[str, ttk.Progressbar] = {}
         self.metric_labels: dict[str, ttk.Label] = {}
         reports_directory()
         self._build_ui()
@@ -563,6 +564,11 @@ class App(tk.Tk):
             header,
             text="Controller certification • reads input only; never injects input into a game",
         ).pack(anchor="w")
+        ttk.Label(
+            header,
+            text="Quick start: connect controller -> Detect devices -> choose Connected -> move sticks -> run test -> export report",
+            foreground="#1f5f8b",
+        ).pack(anchor="w", pady=(6, 0))
 
         source = ttk.LabelFrame(self, text="1. Select where RCM Tool should read controller input")
         source.pack(fill="x", **padding)
@@ -589,15 +595,23 @@ class App(tk.Tk):
         self.open_reports_button.grid(row=0, column=3, **padding)
         ttk.Label(controls, textvariable=self.status_var).grid(row=1, column=0, columnspan=4, sticky="w", **padding)
 
-        live = ttk.LabelFrame(self, text="Live normalized input")
+        live = ttk.LabelFrame(self, text="3. Verify live input before testing")
         live.pack(fill="x", **padding)
         for index, axis in enumerate(("lx", "ly", "rx", "ry")):
             ttk.Label(live, text=axis.upper()).grid(row=0, column=index, **padding)
             label = ttk.Label(live, text="0.0000", width=10, anchor="center", font=("Consolas", 13))
             label.grid(row=1, column=index, **padding)
             self.value_labels[axis] = label
+            bar = ttk.Progressbar(live, orient="horizontal", length=145, mode="determinate", maximum=100)
+            bar["value"] = 50
+            bar.grid(row=2, column=index, padx=12, pady=(0, 8))
+            self.axis_bars[axis] = bar
+        self.live_help_var = tk.StringVar(value="Move each stick. The number and bar must change before you start a test.")
+        ttk.Label(live, textvariable=self.live_help_var, foreground="#555555").grid(
+            row=3, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 8)
+        )
 
-        results = ttk.LabelFrame(self, text="Latest test metrics")
+        results = ttk.LabelFrame(self, text="4. Read the result")
         results.pack(fill="both", expand=True, **padding)
         columns = ("axis", "rms", "peak", "crossings", "active")
         self.tree = ttk.Treeview(results, columns=columns, show="headings", height=8)
@@ -608,9 +622,18 @@ class App(tk.Tk):
             self.tree.column(column, width=widths[column], anchor="center")
         self.tree.pack(fill="x", padx=8, pady=8)
         self.result_var = tk.StringVar(value="No test has been run.")
-        ttk.Label(results, textvariable=self.result_var, wraplength=780).pack(anchor="w", padx=8, pady=8)
+        ttk.Label(results, textvariable=self.result_var, wraplength=780, font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=8, pady=(4, 2))
+        self.result_help_var = tk.StringVar(value="Run a neutral test to see whether the controller produces movement while untouched.")
+        ttk.Label(results, textvariable=self.result_help_var, wraplength=780).pack(anchor="w", padx=8, pady=(0, 6))
+        ttk.Label(
+            results,
+            text="RMS = average noise. Peak-to-peak = total movement range. Threshold crossings = times input crossed the review boundary. Active while stationary = time the stick looked moved while untouched.",
+            wraplength=780,
+            foreground="#555555",
+        ).pack(anchor="w", padx=8, pady=(0, 8))
 
-        footer = ttk.Label(self, text="Reports are screening evidence only; review false positives and controller-specific baselines.", foreground="#555555")
+        self.report_location_var = tk.StringVar(value=f"Reports save automatically to: {reports_directory()}")
+        footer = ttk.Label(self, textvariable=self.report_location_var, foreground="#555555")
         footer.pack(fill="x", padx=12, pady=(0, 10))
         self.refresh_devices()
 
@@ -682,9 +705,15 @@ class App(tk.Tk):
             self.current_values.update(sample)
             for axis, label in self.value_labels.items():
                 label.configure(text=f"{self.current_values[axis]:+.4f}")
+                self.axis_bars[axis]["value"] = (self.current_values[axis] + 1.0) * 50.0
         status = getattr(self.backend, "status", None)
         if callable(status):
             self.input_status_var.set(status())
+            has_input = sample is not None or (
+                isinstance(self.backend, AutomaticControllerBackend) and self.backend.active is not None
+            )
+            if has_input:
+                self.live_help_var.set("Input detected. Move each stick once, then leave both sticks centered for the neutral test.")
         self.after(100, self._refresh_live_values)
 
     def start_test(self) -> None:
@@ -701,6 +730,8 @@ class App(tk.Tk):
             return
         self.latest_result = None
         self.export_button.configure(state="disabled")
+        self.result_var.set("Test running...")
+        self.result_help_var.set("Keep both sticks untouched until the test completes.")
         for item in self.tree.get_children():
             self.tree.delete(item)
         self.stop_event.clear()
@@ -752,7 +783,13 @@ class App(tk.Tk):
                 f"{metrics.nonzero_stationary_percent:.2f}%",
             ))
         reason_text = "; ".join(result.review_reasons) if result.review_reasons else "No neutral-input anomalies exceeded the initial review thresholds."
-        self.result_var.set(f"Classification: {result.classification.upper()} - {reason_text}")
+        self.result_var.set(f"Result: {result.classification.upper()} - {reason_text}")
+        if result.classification == "pass":
+            self.result_help_var.set("PASS means this sample stayed within the initial screening thresholds. It is not a guarantee that every controller behavior is compliant.")
+        elif result.classification == "review":
+            self.result_help_var.set("REVIEW means the measurements crossed an initial threshold. Save the report and compare it with a controller-specific baseline before making a decision.")
+        else:
+            self.result_help_var.set("UNSUPPORTED means RCM Tool did not receive a complete sample. Choose a connected input source and verify the live bars first.")
         self.status_var.set("Test complete")
 
     def export_report(self) -> None:
