@@ -26,6 +26,11 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional, Protocol
 
+try:
+    import pygame
+except ImportError:  # Optional until the SDL backend is installed.
+    pygame = None
+
 
 REPORT_VERSION = "0.1"
 TEST_DURATION_SECONDS = 10.0
@@ -192,14 +197,118 @@ class WinMMJoystick:
         return f"DirectInput device {self.device_id} is connected"
 
 
+class SDLJoystick:
+    """Broad controller backend using SDL through pygame."""
+
+    name = "SDL controller backend"
+
+    def __init__(self, fixed_index: Optional[int] = None) -> None:
+        self.fixed_index = fixed_index
+        self.active_index: Optional[int] = None
+        self.joystick = None
+        if pygame is not None:
+            try:
+                pygame.init()
+                pygame.joystick.init()
+            except Exception:
+                pass
+
+    @staticmethod
+    def available() -> bool:
+        return pygame is not None
+
+    @staticmethod
+    def device_count() -> int:
+        if pygame is None:
+            return 0
+        try:
+            pygame.joystick.init()
+            return pygame.joystick.get_count()
+        except Exception:
+            return 0
+
+    def _open(self, index: int) -> bool:
+        try:
+            pygame.event.pump()
+            joystick = pygame.joystick.Joystick(index)
+            if not joystick.get_init():
+                joystick.init()
+            self.joystick = joystick
+            self.active_index = index
+            return True
+        except Exception:
+            self.joystick = None
+            self.active_index = None
+            return False
+
+    @staticmethod
+    def _axis(joystick, index: int) -> float:
+        try:
+            if index < joystick.get_numaxes():
+                return max(-1.0, min(1.0, float(joystick.get_axis(index))))
+        except Exception:
+            pass
+        return 0.0
+
+    @staticmethod
+    def _trigger(value: float) -> float:
+        # SDL devices commonly expose triggers as either [-1, 1] or [0, 1].
+        return max(0.0, min(1.0, (value + 1.0) / 2.0 if value < 0.0 else value))
+
+    def read(self) -> Optional[dict[str, float]]:
+        if pygame is None:
+            return None
+        try:
+            pygame.event.pump()
+            count = pygame.joystick.get_count()
+        except Exception:
+            return None
+        candidates = [self.fixed_index] if self.fixed_index is not None else (
+            [self.active_index] if self.active_index is not None else range(count)
+        )
+        for index in candidates:
+            if index is None or index < 0 or index >= count:
+                continue
+            if self.joystick is None or self.active_index != index:
+                if not self._open(index):
+                    continue
+            lx = self._axis(self.joystick, 0)
+            ly = -self._axis(self.joystick, 1)
+            rx = self._axis(self.joystick, 2)
+            ry = -self._axis(self.joystick, 3)
+            return {
+                "lx": lx,
+                "ly": ly,
+                "rx": rx,
+                "ry": ry,
+                "lt": self._trigger(self._axis(self.joystick, 4)),
+                "rt": self._trigger(self._axis(self.joystick, 5)),
+            }
+        self.joystick = None
+        self.active_index = None
+        return None
+
+    def status(self) -> str:
+        if pygame is None:
+            return "SDL backend is not installed - run: python -m pip install -r requirements.txt"
+        if self.joystick is None or self.active_index is None:
+            return "No SDL controller detected"
+        try:
+            device_name = self.joystick.get_name()
+        except Exception:
+            device_name = "unknown device"
+        return f"SDL device {self.active_index} is connected: {device_name}"
+
+
 class AutomaticControllerBackend:
-    """Prefer XInput, then fall back to a generic Windows joystick device."""
+    """Prefer XInput, then DirectInput, then SDL for broad device coverage."""
 
     name = "Automatic (XInput + DirectInput)"
 
     def __init__(self) -> None:
         self.xinput = XInputGamepad()
         self.winmm = WinMMJoystick()
+        self.sdl = SDLJoystick()
         self.active: Optional[ControllerBackend] = None
 
     def read(self) -> Optional[dict[str, float]]:
@@ -211,15 +320,19 @@ class AutomaticControllerBackend:
         if sample is not None:
             self.active = self.winmm
             return sample
+        sample = self.sdl.read()
+        if sample is not None:
+            self.active = self.sdl
+            return sample
         self.active = None
         return None
 
     def status(self) -> str:
         if self.active is not None:
             return self.active.status()
-        if self.xinput.get_state is None and self.winmm.get_pos_ex is None:
-            return "No supported Windows controller backend is available"
-        return "No controller detected - connect it in XInput or DirectInput mode"
+        if self.xinput.get_state is None and self.winmm.get_pos_ex is None and not SDLJoystick.available():
+            return "No supported controller backend is available"
+        return "No controller detected - connect it in XInput, DirectInput, or SDL mode"
 
 
 @dataclass
@@ -387,6 +500,18 @@ class App(tk.Tk):
                 backend = WinMMJoystick(fixed_device=device_id)
                 if backend.read() is not None:
                     label = f"DirectInput device {device_id} - connected"
+                    choices.append(label)
+                    backends[label] = backend
+
+        if SDLJoystick.available():
+            for device_id in range(SDLJoystick.device_count()):
+                backend = SDLJoystick(fixed_index=device_id)
+                if backend.read() is not None:
+                    try:
+                        device_name = backend.joystick.get_name()
+                    except Exception:
+                        device_name = "unknown device"
+                    label = f"SDL device {device_id} - {device_name}"
                     choices.append(label)
                     backends[label] = backend
 

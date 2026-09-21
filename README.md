@@ -11,13 +11,19 @@ It is designed to answer one basic question first: **what controller input sourc
 3. Extract the ZIP to a normal folder, such as `C:\RCM Tool`.
 4. Install Python 3.10 or newer from [python.org](https://www.python.org/downloads/). During installation, enable **Add Python to PATH**.
 5. Open PowerShell in the extracted folder.
-6. Run:
+6. Install the broad SDL controller backend:
+
+```powershell
+python -m pip install -r .\requirements.txt
+```
+
+7. Run:
 
 ```powershell
 python .\rcm_tool.py
 ```
 
-The app uses only Python's standard library in this prototype; no `pip install` step is required.
+The SDL dependency is required for broad controller coverage. The built-in XInput and DirectInput readers remain available if SDL is not installed. The package is `pygame-ce`, but the application imports it through the normal `pygame` module name.
 
 ## Connect and select the controller
 
@@ -29,6 +35,7 @@ The app uses only Python's standard library in this prototype; no `pip install` 
    - `Automatic` — scans XInput first, then DirectInput.
    - `XInput slot 0` through `XInput slot 3` — Windows Xbox-compatible slots.
    - `DirectInput device N` — generic Windows joystick devices that responded during detection.
+   - `SDL device N` — SDL's broad controller layer, including many USB, Bluetooth, Xbox, PlayStation, Switch, arcade, and third-party devices.
 6. Select the entry marked **connected**.
 7. Move each stick. The `LX`, `LY`, `RX`, and `RY` values should change. If they stay at zero, the selected source is not the source receiving your controller input.
 
@@ -63,7 +70,7 @@ If the controller appears in `joy.cpl` but not in RCM Tool:
 - Select the specific XInput slot or DirectInput device instead of Automatic.
 - Close software that may exclusively claim the controller, such as remappers or virtual-controller tools.
 
-If it works in `joy.cpl` but still does not appear in either list, it likely uses a vendor-specific HID protocol. That requires the next capture backend; the current prototype does not claim to support every controller.
+If it works in `joy.cpl` but still does not appear in the list, it may use a vendor-specific HID protocol. Save the controller model and connection mode; the next backend will use Raw HID discovery and a device-specific axis mapping.
 
 ## Development checks
 
@@ -77,4 +84,4 @@ python -m unittest discover -v
 
 Stick noise varies with controller model, firmware, wear, temperature, deadzone configuration, and connection mode. Tournament deployment should establish controller-specific baselines, retain the raw sample stream or a signed digest, and require human review before any sanction.
 
-The current app supports Windows XInput and the legacy Windows DirectInput joystick API. Raw HID, SDL, DualSense metadata, guided calibration, server verification, and signed report envelopes are planned additions.
+The current app supports Windows XInput, the legacy Windows DirectInput joystick API, and SDL. Raw HID discovery, vendor-specific axis mappings, DualSense metadata, guided calibration, server verification, and signed report envelopes are planned additions. No universal API can guarantee identical mappings for every controller, so unsupported devices are reported rather than silently misclassified.
