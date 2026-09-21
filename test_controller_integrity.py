@@ -31,6 +31,15 @@ class ControllerIntegrityTests(unittest.TestCase):
         payload = {"b": 2, "a": [1, 2, 3]}
         self.assertEqual(app.sha256_payload(payload), app.sha256_payload(payload))
 
+    def test_dualsense_hid_report_parses_centered_sticks(self):
+        reader = app.HIDGamepad(info={"vendor_id": 0x054C, "product_string": "Wireless Controller"})
+        sample = reader._parse_report([0x01, 128, 128, 128, 128, 0, 0])
+        self.assertIsNotNone(sample)
+        self.assertAlmostEqual(sample["lx"], 0.0, places=2)
+        self.assertAlmostEqual(sample["ly"], 0.0, places=2)
+        self.assertAlmostEqual(sample["rx"], 0.0, places=2)
+        self.assertAlmostEqual(sample["ry"], 0.0, places=2)
+
 
 if __name__ == "__main__":
     unittest.main()

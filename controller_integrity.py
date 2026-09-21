@@ -32,6 +32,11 @@ try:
 except ImportError:  # Optional until the SDL backend is installed.
     pygame = None
 
+try:
+    import hid
+except ImportError:  # Optional until the Raw HID backend is installed.
+    hid = None
+
 
 REPORT_VERSION = "0.1"
 TEST_DURATION_SECONDS = 10.0
@@ -301,15 +306,125 @@ class SDLJoystick:
         return f"SDL device {self.active_index} is connected: {device_name}"
 
 
-class AutomaticControllerBackend:
-    """Prefer XInput, then DirectInput, then SDL for broad device coverage."""
+class HIDGamepad:
+    """Raw HID reader with a DualSense-compatible axis parser and generic fallback."""
 
-    name = "Automatic (XInput + DirectInput)"
+    name = "Raw HID controller"
+    _KEYWORDS = ("controller", "gamepad", "joystick", "dualsense", "dualshock", "wireless")
+
+    def __init__(self, path=None, info: Optional[dict] = None) -> None:
+        self.path = path
+        self.info = info or {}
+        self.device = None
+        self.last_sample: Optional[dict[str, float]] = None
+
+    @staticmethod
+    def available() -> bool:
+        return hid is not None
+
+    @classmethod
+    def enumerate_devices(cls) -> list[dict]:
+        if hid is None:
+            return []
+        try:
+            devices = hid.enumerate()
+        except Exception:
+            return []
+        result = []
+        for info in devices:
+            usage_page = info.get("usage_page")
+            usage = info.get("usage")
+            product = (info.get("product_string") or "").strip()
+            searchable = " ".join(
+                str(info.get(key) or "") for key in ("product_string", "manufacturer_string", "serial_number")
+            ).lower()
+            is_joystick_usage = usage_page == 0x01 and usage in (0x04, 0x05)
+            has_controller_name = any(keyword in searchable for keyword in cls._KEYWORDS)
+            if is_joystick_usage or has_controller_name:
+                result.append(info)
+        return result
+
+    def _open(self) -> bool:
+        if hid is None:
+            return False
+        if self.path is None:
+            devices = self.enumerate_devices()
+            if not devices:
+                return False
+            self.info = devices[0]
+            self.path = self.info.get("path")
+        if not self.path:
+            return False
+        try:
+            self.device = hid.device()
+            self.device.open_path(self.path)
+            self.device.set_nonblocking(True)
+            return True
+        except Exception:
+            self.device = None
+            return False
+
+    @staticmethod
+    def _axis(value: int, invert: bool = False) -> float:
+        normalized = max(-1.0, min(1.0, (value - 128.0) / 127.5))
+        return -normalized if invert else normalized
+
+    def _parse_report(self, report: list[int]) -> Optional[dict[str, float]]:
+        if len(report) < 5:
+            return None
+        product = (self.info.get("product_string") or "").lower()
+        vendor_id = self.info.get("vendor_id")
+        sony = vendor_id == 0x054C or "dualsense" in product or "dualshock" in product or "wireless controller" in product
+        report_id = report[0]
+        offset = 2 if sony and report_id in (0x31, 0x11) else 1 if report_id != 0 else 1
+        if len(report) < offset + 4:
+            return None
+        sample = {
+            "lx": self._axis(report[offset]),
+            "ly": self._axis(report[offset + 1], invert=True),
+            "rx": self._axis(report[offset + 2]),
+            "ry": self._axis(report[offset + 3], invert=True),
+            "lt": report[offset + 4] / 255.0 if len(report) > offset + 4 else 0.0,
+            "rt": report[offset + 5] / 255.0 if len(report) > offset + 5 else 0.0,
+        }
+        self.last_sample = sample
+        return sample
+
+    def read(self) -> Optional[dict[str, float]]:
+        if self.device is None and not self._open():
+            return None
+        try:
+            report = self.device.read(128)
+        except Exception:
+            self.device = None
+            return None
+        if report:
+            parsed = self._parse_report(report)
+            if parsed is not None:
+                return parsed
+        return self.last_sample
+
+    def status(self) -> str:
+        if hid is None:
+            return "Raw HID backend is not installed - run: python -m pip install -r requirements.txt"
+        product = self.info.get("product_string") or "unnamed HID controller"
+        vendor_id = self.info.get("vendor_id")
+        product_id = self.info.get("product_id")
+        if vendor_id is not None and product_id is not None:
+            return f"Raw HID connected: {product} (VID {vendor_id:04X}, PID {product_id:04X})"
+        return f"Raw HID connected: {product}"
+
+
+class AutomaticControllerBackend:
+    """Prefer XInput, then SDL, Raw HID, and DirectInput for broad coverage."""
+
+    name = "Automatic (XInput + SDL + Raw HID + DirectInput)"
 
     def __init__(self) -> None:
         self.xinput = XInputGamepad()
         self.winmm = WinMMJoystick()
         self.sdl = SDLJoystick()
+        self.hid = HIDGamepad()
         self.active: Optional[ControllerBackend] = None
 
     def read(self) -> Optional[dict[str, float]]:
@@ -317,13 +432,17 @@ class AutomaticControllerBackend:
         if sample is not None:
             self.active = self.xinput
             return sample
-        sample = self.winmm.read()
-        if sample is not None:
-            self.active = self.winmm
-            return sample
         sample = self.sdl.read()
         if sample is not None:
             self.active = self.sdl
+            return sample
+        sample = self.hid.read()
+        if sample is not None:
+            self.active = self.hid
+            return sample
+        sample = self.winmm.read()
+        if sample is not None:
+            self.active = self.winmm
             return sample
         self.active = None
         return None
@@ -331,9 +450,9 @@ class AutomaticControllerBackend:
     def status(self) -> str:
         if self.active is not None:
             return self.active.status()
-        if self.xinput.get_state is None and self.winmm.get_pos_ex is None and not SDLJoystick.available():
+        if self.xinput.get_state is None and self.winmm.get_pos_ex is None and not SDLJoystick.available() and not HIDGamepad.available():
             return "No supported controller backend is available"
-        return "No controller detected - connect it in XInput, DirectInput, or SDL mode"
+        return "No controller detected - connect it in XInput, DirectInput, SDL, or Raw HID mode"
 
 
 @dataclass
@@ -499,7 +618,7 @@ class App(tk.Tk):
         """Probe the available Windows input locations and populate the selector."""
         if self.test_thread and self.test_thread.is_alive():
             return
-        choices = ["Automatic - scan all XInput slots, then DirectInput"]
+        choices = ["Automatic - scan XInput, SDL, Raw HID, then DirectInput"]
         backends: dict[str, ControllerBackend] = {choices[0]: AutomaticControllerBackend()}
 
         for slot in range(4):
@@ -529,6 +648,17 @@ class App(tk.Tk):
                     label = f"SDL device {device_id} - {device_name}"
                     choices.append(label)
                     backends[label] = backend
+
+        for info in HIDGamepad.enumerate_devices():
+            path = info.get("path")
+            if not path:
+                continue
+            product = info.get("product_string") or "unnamed HID controller"
+            vendor_id = info.get("vendor_id") or 0
+            product_id = info.get("product_id") or 0
+            label = f"Raw HID - {product} (VID {vendor_id:04X}, PID {product_id:04X})"
+            choices.append(label)
+            backends[label] = HIDGamepad(path=path, info=info)
 
         self.source_choices = choices
         self.source_backends = backends

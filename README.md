@@ -23,7 +23,7 @@ python -m pip install -r .\requirements.txt
 python .\rcm_tool.py
 ```
 
-The SDL dependency is required for broad controller coverage. The built-in XInput and DirectInput readers remain available if SDL is not installed. The package is `pygame-ce`, but the application imports it through the normal `pygame` module name.
+The SDL and Raw HID dependencies are required for broad controller coverage. The built-in XInput and DirectInput readers remain available if they are not installed. The packages are `pygame-ce` and `hidapi`; the application imports them through the `pygame` and `hid` module names.
 
 ## Connect and select the controller
 
@@ -36,6 +36,7 @@ The SDL dependency is required for broad controller coverage. The built-in XInpu
    - `XInput slot 0` through `XInput slot 3` — Windows Xbox-compatible slots.
    - `DirectInput device N` — generic Windows joystick devices that responded during detection.
    - `SDL device N` — SDL's broad controller layer, including many USB, Bluetooth, Xbox, PlayStation, Switch, arcade, and third-party devices.
+   - `Raw HID - ...` — direct USB/Bluetooth HID discovery, including controller variants that do not register cleanly through DirectInput or SDL.
 6. Select the entry marked **connected**.
 7. Move each stick. The `LX`, `LY`, `RX`, and `RY` values should change. If they stay at zero, the selected source is not the source receiving your controller input.
 
@@ -70,7 +71,7 @@ If the controller appears in `joy.cpl` but not in RCM Tool:
 - Select the specific XInput slot or DirectInput device instead of Automatic.
 - Close software that may exclusively claim the controller, such as remappers or virtual-controller tools.
 
-If it works in `joy.cpl` but still does not appear in the list, it may use a vendor-specific HID protocol. Save the controller model and connection mode; the next backend will use Raw HID discovery and a device-specific axis mapping.
+If it works in `joy.cpl` but still does not appear in the list, it may use a vendor-specific HID protocol or a driver that hides the device from user-mode APIs. Save the controller model and connection mode so a device-specific mapping can be added.
 
 ## Development checks
 
@@ -84,4 +85,4 @@ python -m unittest discover -v
 
 Stick noise varies with controller model, firmware, wear, temperature, deadzone configuration, and connection mode. Tournament deployment should establish controller-specific baselines, retain the raw sample stream or a signed digest, and require human review before any sanction.
 
-The current app supports Windows XInput, the legacy Windows DirectInput joystick API, and SDL. Raw HID discovery, vendor-specific axis mappings, DualSense metadata, guided calibration, server verification, and signed report envelopes are planned additions. No universal API can guarantee identical mappings for every controller, so unsupported devices are reported rather than silently misclassified.
+The current app supports Windows XInput, the legacy Windows DirectInput joystick API, SDL, and Raw HID discovery with a DualSense-compatible parser and generic fallback. Vendor-specific axis mappings, DualSense metadata, guided calibration, server verification, and signed report envelopes are planned additions. No universal API can guarantee identical mappings for every controller, so unsupported devices are reported rather than silently misclassified.

@@ -1,1 +1,2 @@
 pygame-ce>=2.5,<3
+hidapi>=0.14,<1
