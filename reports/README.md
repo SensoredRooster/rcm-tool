@@ -1,6 +1,6 @@
 # Exported controller reports
 
-RCM Tool writes each exported test into this folder as a timestamped JSON file and appends a summary line to `index.jsonl`.
+RCM Tool writes each exported test into this folder as a timestamped JSON file and appends a summary line to `index.jsonl`. Each JSON file contains the summary metrics plus the timestamped normalized sample stream captured during the test.
 
 The reports are intended for comparing controller behavior and tuning tournament review thresholds. They may contain controller product names, vendor/product IDs, timestamps, and measured input metrics. Review the data before committing or sharing it outside the tournament team.
 

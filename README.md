@@ -49,9 +49,9 @@ The status line tells you exactly what RCM Tool is reading, for example `XInput 
 3. Click **Start neutral test**.
 4. Do not touch the controller for the 10-second test.
 5. Review the RMS noise, peak-to-peak movement, threshold crossings, and stationary activity percentage.
-6. Click **Export report** to save the JSON report.
+6. Click **Export to reports** to save the JSON report and captured timestamped samples in the repository's `reports` folder.
 
-`PASS` means the initial screening thresholds were not exceeded. `REVIEW` means one or more measurements exceeded those thresholds. `UNSUPPORTED` means the test did not capture a complete controller sample. These are screening results, not automatic proof of misconduct.
+`PASS` means the initial screening thresholds were not exceeded. `REVIEW` means one or more measurements exceeded those thresholds. `UNSUPPORTED` means the test did not capture a complete or fast-enough sample stream. These are screening results, not automatic proof of misconduct.
 
 ## If the app says no controller is detected
 

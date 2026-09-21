@@ -21,7 +21,7 @@ import statistics
 import threading
 import time
 import tkinter as tk
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -477,6 +477,8 @@ class TestResult:
     axes: dict[str, AxisMetrics]
     classification: str
     review_reasons: list[str]
+    source_status: str = ""
+    samples: list[dict[str, float]] = field(default_factory=list)
 
 
 def axis_metrics(values: list[float], threshold: float = 0.02) -> AxisMetrics:
@@ -508,6 +510,8 @@ def classify(result: TestResult) -> tuple[str, list[str]]:
     reasons: list[str] = []
     if any(result.axes[axis].samples == 0 for axis in ("lx", "ly", "rx", "ry")):
         return "unsupported", ["No complete controller sample was captured"]
+    if result.sample_rate_hz < 20.0:
+        return "unsupported", [f"Capture rate is too low ({result.sample_rate_hz:.1f} samples/sec)"]
     for axis_name in ("lx", "ly", "rx", "ry"):
         metrics = result.axes[axis_name]
         if metrics.nonzero_stationary_percent >= 5.0:
@@ -744,14 +748,20 @@ class App(tk.Tk):
 
     def _run_test(self) -> None:
         axes = {axis: [] for axis in ("lx", "ly", "rx", "ry")}
+        captured_samples: list[dict[str, float]] = []
         started = time.monotonic()
         started_at = datetime.now(timezone.utc).isoformat()
+        source_status = self.backend.status()
         samples = 0
         while time.monotonic() - started < TEST_DURATION_SECONDS and not self.stop_event.is_set():
             sample = self.backend.read()
             if sample:
                 for axis in axes:
                     axes[axis].append(sample[axis])
+                captured_samples.append({
+                    "t_ms": round((time.monotonic() - started) * 1000.0, 3),
+                    **{axis: round(float(sample[axis]), 6) for axis in axes},
+                })
                 samples += 1
             time.sleep(POLL_INTERVAL_SECONDS)
         elapsed = max(time.monotonic() - started, 0.001)
@@ -764,6 +774,8 @@ class App(tk.Tk):
             axes={axis: axis_metrics(values) for axis, values in axes.items()},
             classification="pending",
             review_reasons=[],
+            source_status=source_status,
+            samples=captured_samples,
         )
         result.classification, result.review_reasons = classify(result)
         self.after(0, lambda: self._finish_test(result))
@@ -783,7 +795,7 @@ class App(tk.Tk):
                 f"{metrics.nonzero_stationary_percent:.2f}%",
             ))
         reason_text = "; ".join(result.review_reasons) if result.review_reasons else "No neutral-input anomalies exceeded the initial review thresholds."
-        self.result_var.set(f"Result: {result.classification.upper()} - {reason_text}")
+        self.result_var.set(f"Result: {result.classification.upper()} - {reason_text} ({len(result.samples)} samples at {result.sample_rate_hz:.1f}/sec)")
         if result.classification == "pass":
             self.result_help_var.set("PASS means this sample stayed within the initial screening thresholds. It is not a guarantee that every controller behavior is compliant.")
         elif result.classification == "review":
@@ -796,7 +808,7 @@ class App(tk.Tk):
         if not self.latest_result:
             return
         result_data = asdict(self.latest_result)
-        controller_status = self.backend.status()
+        controller_status = self.latest_result.source_status or self.backend.status()
         report = {
             "reportVersion": REPORT_VERSION,
             "tool": "RCM Tool",
