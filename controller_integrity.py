@@ -60,8 +60,9 @@ class XInputGamepad:
 
     name = "Windows XInput"
 
-    def __init__(self, user_index: int = 0) -> None:
+    def __init__(self, user_index: int = 0, scan_all: bool = True) -> None:
         self.user_index = user_index
+        self.scan_all = scan_all
         self.connected_user_index: Optional[int] = None
         self.dll = None
         self.get_state = None
@@ -85,7 +86,10 @@ class XInputGamepad:
             return None
         state = _XInputState()
         connected_index = self.connected_user_index
-        indexes = [connected_index] if connected_index is not None else list(range(4))
+        if self.scan_all:
+            indexes = [connected_index] if connected_index is not None else list(range(4))
+        else:
+            indexes = [self.user_index]
         for index in indexes:
             state = _XInputState()
             if self.get_state(index, ctypes.byref(state)) == 0:
@@ -109,8 +113,8 @@ class XInputGamepad:
         if self.get_state is None:
             return "XInput is unavailable on this Windows installation"
         if self.connected_user_index is None:
-            return "No XInput controller detected — try USB, Xbox mode, or another backend"
-        return f"XInput controller connected (slot {self.connected_user_index})"
+            return "No XInput controller detected - try USB, Xbox mode, or another backend"
+        return f"XInput slot {self.connected_user_index} is connected"
 
 
 class _JoyInfoEx(ctypes.Structure):
@@ -137,7 +141,8 @@ class WinMMJoystick:
     name = "Windows Joystick (DirectInput fallback)"
     _JOY_RETURNALL = 0x000000FF
 
-    def __init__(self) -> None:
+    def __init__(self, fixed_device: Optional[int] = None) -> None:
+        self.fixed_device = fixed_device
         self.device_id: Optional[int] = None
         try:
             self.dll = ctypes.WinDLL("winmm.dll")
@@ -158,7 +163,12 @@ class WinMMJoystick:
     def read(self) -> Optional[dict[str, float]]:
         if self.get_pos_ex is None:
             return None
-        candidate_ids = [self.device_id] if self.device_id is not None else range(self.get_num_devs())
+        if self.fixed_device is not None:
+            candidate_ids = [self.fixed_device]
+        elif self.device_id is not None:
+            candidate_ids = [self.device_id]
+        else:
+            candidate_ids = range(self.get_num_devs())
         for device_id in candidate_ids:
             info = _JoyInfoEx(size=ctypes.sizeof(_JoyInfoEx), flags=self._JOY_RETURNALL)
             if self.get_pos_ex(device_id, ctypes.byref(info)) == 0:
@@ -179,7 +189,7 @@ class WinMMJoystick:
             return "DirectInput fallback is unavailable"
         if self.device_id is None:
             return "No DirectInput joystick detected"
-        return f"DirectInput joystick connected (device {self.device_id})"
+        return f"DirectInput device {self.device_id} is connected"
 
 
 class AutomaticControllerBackend:
@@ -209,7 +219,7 @@ class AutomaticControllerBackend:
             return self.active.status()
         if self.xinput.get_state is None and self.winmm.get_pos_ex is None:
             return "No supported Windows controller backend is available"
-        return "No controller detected — connect it in XInput or DirectInput mode"
+        return "No controller detected - connect it in XInput or DirectInput mode"
 
 
 @dataclass
@@ -291,6 +301,8 @@ class App(tk.Tk):
         self.test_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
         self.latest_result: Optional[TestResult] = None
+        self.source_choices: list[str] = []
+        self.source_backends: dict[str, ControllerBackend] = {}
         self.current_values = {axis: 0.0 for axis in ("lx", "ly", "rx", "ry")}
         self.value_labels: dict[str, ttk.Label] = {}
         self.metric_labels: dict[str, ttk.Label] = {}
@@ -304,21 +316,31 @@ class App(tk.Tk):
         ttk.Label(header, text="RCM Tool", font=("Segoe UI", 18, "bold")).pack(anchor="w")
         ttk.Label(
             header,
-            text="Neutral-stick certification prototype • capture only, no game input injection",
+            text="Controller certification • reads input only; never injects input into a game",
         ).pack(anchor="w")
 
-        controls = ttk.LabelFrame(self, text="Certification test")
+        source = ttk.LabelFrame(self, text="1. Select where RCM Tool should read controller input")
+        source.pack(fill="x", **padding)
+        self.source_var = tk.StringVar()
+        self.source_combo = ttk.Combobox(source, textvariable=self.source_var, state="readonly", width=58)
+        self.source_combo.grid(row=0, column=0, sticky="w", **padding)
+        self.source_combo.bind("<<ComboboxSelected>>", self._source_changed)
+        self.refresh_button = ttk.Button(source, text="Detect devices", command=self.refresh_devices)
+        self.refresh_button.grid(row=0, column=1, **padding)
+        self.backend_var = tk.StringVar(value=self.backend.name)
+        ttk.Label(source, textvariable=self.backend_var).grid(row=1, column=0, sticky="w", **padding)
+        self.input_status_var = tk.StringVar(value="Detecting devices...")
+        ttk.Label(source, textvariable=self.input_status_var, wraplength=700).grid(row=2, column=0, columnspan=2, sticky="w", **padding)
+
+        controls = ttk.LabelFrame(self, text="2. Run the certification test")
         controls.pack(fill="x", **padding)
         self.status_var = tk.StringVar(value="Ready")
-        ttk.Label(controls, text="Backend:").grid(row=0, column=0, sticky="w", **padding)
-        ttk.Label(controls, text=self.backend.name).grid(row=0, column=1, sticky="w", **padding)
-        ttk.Label(controls, text="Duration:").grid(row=0, column=2, sticky="w", **padding)
-        ttk.Label(controls, text=f"{TEST_DURATION_SECONDS:g} seconds").grid(row=0, column=3, sticky="w", **padding)
+        ttk.Label(controls, text=f"Duration: {TEST_DURATION_SECONDS:g} seconds").grid(row=0, column=0, sticky="w", **padding)
         self.start_button = ttk.Button(controls, text="Start neutral test", command=self.start_test)
-        self.start_button.grid(row=0, column=4, **padding)
+        self.start_button.grid(row=0, column=1, **padding)
         self.export_button = ttk.Button(controls, text="Export report", command=self.export_report, state="disabled")
-        self.export_button.grid(row=0, column=5, **padding)
-        ttk.Label(controls, textvariable=self.status_var).grid(row=1, column=0, columnspan=6, sticky="w", **padding)
+        self.export_button.grid(row=0, column=2, **padding)
+        ttk.Label(controls, textvariable=self.status_var).grid(row=1, column=0, columnspan=3, sticky="w", **padding)
 
         live = ttk.LabelFrame(self, text="Live normalized input")
         live.pack(fill="x", **padding)
@@ -343,6 +365,46 @@ class App(tk.Tk):
 
         footer = ttk.Label(self, text="Reports are screening evidence only; review false positives and controller-specific baselines.", foreground="#555555")
         footer.pack(fill="x", padx=12, pady=(0, 10))
+        self.refresh_devices()
+
+    def refresh_devices(self) -> None:
+        """Probe the available Windows input locations and populate the selector."""
+        if self.test_thread and self.test_thread.is_alive():
+            return
+        choices = ["Automatic - scan all XInput slots, then DirectInput"]
+        backends: dict[str, ControllerBackend] = {choices[0]: AutomaticControllerBackend()}
+
+        for slot in range(4):
+            backend = XInputGamepad(user_index=slot, scan_all=False)
+            connected = backend.read() is not None
+            label = f"XInput slot {slot} - {'connected' if connected else 'not connected'}"
+            choices.append(label)
+            backends[label] = backend
+
+        probe = WinMMJoystick()
+        if probe.get_num_devs is not None:
+            for device_id in range(probe.get_num_devs()):
+                backend = WinMMJoystick(fixed_device=device_id)
+                if backend.read() is not None:
+                    label = f"DirectInput device {device_id} - connected"
+                    choices.append(label)
+                    backends[label] = backend
+
+        self.source_choices = choices
+        self.source_backends = backends
+        self.source_combo["values"] = choices
+        if self.source_var.get() not in choices:
+            self.source_var.set(choices[0])
+        self._source_changed()
+
+    def _source_changed(self, _event=None) -> None:
+        selected = self.source_var.get()
+        backend = self.source_backends.get(selected)
+        if backend is None:
+            return
+        self.backend = backend
+        self.backend_var.set(f"Reading through: {backend.name}")
+        self.input_status_var.set(backend.status())
 
     def _refresh_live_values(self) -> None:
         sample = self.backend.read()
@@ -351,12 +413,21 @@ class App(tk.Tk):
             for axis, label in self.value_labels.items():
                 label.configure(text=f"{self.current_values[axis]:+.4f}")
         status = getattr(self.backend, "status", None)
-        if callable(status) and not (self.test_thread and self.test_thread.is_alive()):
-            self.status_var.set(status())
+        if callable(status):
+            self.input_status_var.set(status())
         self.after(100, self._refresh_live_values)
 
     def start_test(self) -> None:
         if self.test_thread and self.test_thread.is_alive():
+            return
+        if self.backend.read() is None:
+            self.status_var.set("Cannot start: the selected input source is not connected")
+            self.input_status_var.set(self.backend.status())
+            messagebox.showwarning(
+                "No controller input",
+                "RCM Tool cannot start because the selected input source is not returning controller data.\n\n"
+                "Choose a connected source above, then click Detect devices.",
+            )
             return
         self.latest_result = None
         self.export_button.configure(state="disabled")
@@ -364,7 +435,9 @@ class App(tk.Tk):
             self.tree.delete(item)
         self.stop_event.clear()
         self.start_button.configure(state="disabled")
-        self.status_var.set("Testing… keep both sticks untouched")
+        self.source_combo.configure(state="disabled")
+        self.refresh_button.configure(state="disabled")
+        self.status_var.set("Testing... keep both sticks untouched")
         self.test_thread = threading.Thread(target=self._run_test, daemon=True)
         self.test_thread.start()
 
@@ -398,6 +471,8 @@ class App(tk.Tk):
         self.latest_result = result
         self.start_button.configure(state="normal")
         self.export_button.configure(state="normal")
+        self.source_combo.configure(state="readonly")
+        self.refresh_button.configure(state="normal")
         for axis, metrics in result.axes.items():
             self.tree.insert("", "end", values=(
                 axis.upper(),
@@ -407,7 +482,7 @@ class App(tk.Tk):
                 f"{metrics.nonzero_stationary_percent:.2f}%",
             ))
         reason_text = "; ".join(result.review_reasons) if result.review_reasons else "No neutral-input anomalies exceeded the initial review thresholds."
-        self.result_var.set(f"Classification: {result.classification.upper()} — {reason_text}")
+        self.result_var.set(f"Classification: {result.classification.upper()} - {reason_text}")
         self.status_var.set("Test complete")
 
     def export_report(self) -> None:
@@ -417,7 +492,7 @@ class App(tk.Tk):
             title="Export RCM Tool report",
             defaultextension=".json",
             filetypes=[("JSON report", "*.json")],
-            initialfile="controller-integrity-report.json",
+            initialfile="rcm-tool-report.json",
         )
         if not destination:
             return
