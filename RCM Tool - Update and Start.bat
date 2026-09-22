@@ -43,6 +43,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo Applying injected self-test if needed...
+python apply_injection.py
+if errorlevel 1 (
+    echo Injection wiring failed. Run apply_rc_wiring.py first.
+    pause
+    exit /b 1
+)
+
 echo Installing or updating required controller backends...
 python -m pip install -r requirements.txt
 if errorlevel 1 (
