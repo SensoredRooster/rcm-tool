@@ -36,14 +36,15 @@ If `tkinter` is missing, the Windows Python installer was customized without Tcl
 | `rcm_tool.py` | Entry point. Calls `controller_integrity.main()`. |
 | `controller_integrity.py` | UI, backends, capture, classification, JSON export. On GitHub this file starts unwired. Local apply scripts patch it. |
 | `rc_filter.py` | First-order RC low-pass and `build_rc_filter_metrics`. |
-| `apply_rc_wiring.py` | Patches `controller_integrity.py` so capture stores filtered samples and reports include `rc_filter_metrics`. Safe to re-run. |
-| `apply_ui_pass.py` | Second patch: progress bar, HF RMS column, export button re-enabled, live HID reads paused during capture. Run after `apply_rc_wiring.py`. Safe to re-run. |
-| `test_controller_integrity.py` | Unit tests for classification helpers, HID parse, RC math. |
+| `apply_rc_wiring.py` | RC filter into capture and JSON. Safe to re-run. |
+| `apply_ui_pass.py` | Progress bar, HF RMS column, live reads paused during capture. Run after RC wiring. |
+| `apply_auto_export.py` | Writes the JSON as soon as a single test finishes. You do not click Export. Run after the UI pass. |
+| `test_controller_integrity.py` | Unit tests. |
 | `requirements.txt` | pygame-ce and hidapi pins. |
-| `RCM Tool - Update and Start.bat` | `git pull`, both apply scripts, `pip install`, `python rcm_tool.py`. |
-| `RCM Tool - Submit Reports.bat` | Shows `git status --short reports`, requires `YES`, commits only `reports\`, pushes `origin master`. |
-| `HARDWARE_MEASUREMENTS.md` | Lab protocol for external sensor / USB analyzer work. Not required to run the app. |
-| `reports\` | JSON outputs and `index.jsonl`. |
+| `RCM Tool - Update and Start.bat` | `git pull`, all three apply scripts, `pip install`, start. |
+| `RCM Tool - Submit Reports.bat` | Shows pending files in `reports\`, requires `YES`, commits only that folder, pushes `origin master`. |
+| `HARDWARE_MEASUREMENTS.md` | External lab protocol. Not required to run the app. |
+| `reports\` | Auto-written JSON and `index.jsonl`. |
 | `.gitignore` | Ignores `__pycache__/`, `*.py[cod]`, `.venv/`. Report JSON is not ignored. |
 
 ## 3. Install from a Git clone (preferred)
@@ -54,39 +55,37 @@ cd rcm-tool
 python -m pip install -r requirements.txt
 python apply_rc_wiring.py
 python apply_ui_pass.py
+python apply_auto_export.py
 python -m unittest discover -v
 python rcm_tool.py
 ```
 
-Later sessions: same apply lines (they skip if already applied) or double-click **RCM Tool - Update and Start.bat**.
+Or double-click **RCM Tool - Update and Start.bat**.
 
-If apply prints `could not find block`, your `controller_integrity.py` does not match the script. Run:
+If apply prints `could not find block`:
 
 ```powershell
 git checkout -- controller_integrity.py
 python apply_rc_wiring.py
 python apply_ui_pass.py
+python apply_auto_export.py
 ```
 
 ## 4. Install from Download ZIP
-
-1. GitHub to Code to Download ZIP.
-2. Extract to a writable folder such as `C:\RCM Tool`.
-3. Install Python 3.10+ with PATH.
-4. In that folder:
 
 ```powershell
 python -m pip install -r .\requirements.txt
 python apply_rc_wiring.py
 python apply_ui_pass.py
+python apply_auto_export.py
 python .\rcm_tool.py
 ```
 
-ZIP users do not get `git pull` or Submit Reports unless they later clone or add the remote. For Grok review, clone + submit bat puts JSON on GitHub.
+For Grok review use a git clone so Submit Reports can push JSON.
 
 ## 5. Wiring check (do this once)
 
-After apply, `controller_integrity.py` must contain all of:
+`controller_integrity.py` must contain:
 
 - `from rc_filter import`
 - `REPORT_VERSION = "0.2"`
@@ -94,146 +93,83 @@ After apply, `controller_integrity.py` must contain all of:
 - `rc_filter_metrics=`
 - `self.progress = ttk.Progressbar`
 - `testing = bool(self.test_thread`
-
-If `REPORT_VERSION` is still `"0.1"`, reports will not have `rc_filter_metrics`.
+- `saved = self.write_report(result, show_message=False)`
 
 ## 6. Window map
 
 Default size after the UI pass: **980x740**, minimum **900x660**.
 
-**Section 1** dropdown + **Detect devices** rebuilds sources by probing XInput slots 0-3, WinMM devices, SDL joysticks, and HID devices whose usage page/usage or name looks like a gamepad.
+**Section 1** Detect devices, pick the connected source whose live bars move.
 
-| Entry | Meaning |
-|---|---|
-| Automatic | Tries XInput, SDL, Raw HID, then DirectInput on every `read()`. |
-| XInput slot N | Official Xbox-compatible slot. |
-| DirectInput device N | WinMM `joyGetPosEx`. Only listed if that id returned a packet during detect. |
-| SDL device N | pygame-ce joystick. |
-| Raw HID | hidapi path + DualSense-aware parser with generic 8-bit axis fallback. |
+**Section 2:** Neutral = 10.0 s. Guided = 20.0 s. Progress bar is UI only.
 
-Select the connected line whose live bars move when you move that pad. With two pads, do not use Automatic.
+**Start single test** captures and **writes `reports\*.json` by itself** when the timer ends. Status line shows `Test complete. Saved <filename>`.
 
-**Section 2:** Neutral duration is **10.0 s**. Guided is **20.0 s**. During a run the UI shows remaining seconds and a progress bar. The bar is UI only.
+**Run Before + After pair** already auto-saved both phases and the comparison file.
 
-Phase labels the file and JSON. It does not change math.
+An Export button may still be visible from older UI wiring. You do not need it. Do not click it unless you want a second copy of the same result.
 
-**Start single test** = one capture; you Export yourself. **Pair** = Before auto-save, prompt, After auto-save, comparison JSON if both usable.
+While capture runs: Start, Pair, Phase, Protocol, Source, and Detect are locked.
 
-Export is disabled until a test finishes (UI pass fix). While capture runs, Start, Pair, Phase, Protocol, Source, Detect, and Export are locked.
-
-**Section 3** live axes: -1.0 to +1.0. While capture runs, live UI does **not** call `backend.read()`. Capture owns the device. After the test, live reads resume at 80 ms.
+**Section 3** live axes: -1.0 to +1.0. During capture the UI does not call `backend.read()`.
 
 If live numbers stay `+0.0000`, do not start a test.
 
-Axes seen lists axes that crossed +/-0.05 since the last source change.
-
-**Section 4** table after a test:
-
-- Signal RMS = RMS of raw axis
-- Jitter RMS = RMS of raw minus RC trend
-- HF RMS = `rc_filter_metrics` axis `high_freq_rms`
-- Peak-to-peak = max raw minus min raw
-- Threshold crossings = crossings of +/-0.02
-- Active % = percent of samples with `abs(x) > 0.02`
+**Section 4** table: Signal RMS, Jitter RMS, HF RMS, peak-to-peak, threshold crossings, active %.
 
 ## 7. Neutral hold
 
-1. One controller. Close or deliberately keep remappers; record which.
-2. Detect devices, select connected source, wiggle all four axes.
-3. Protocol = Neutral hold. Thumbs off sticks.
-4. Start single test. Do not bump the desk.
-5. Export to reports.
+1. Detect devices, select connected source, wiggle all four axes.
+2. Protocol = Neutral hold. Thumbs off.
+3. Start single test. Wait. File is already in `reports\`.
 
-`UNSUPPORTED` means no samples or sample rate under 20 Hz. Do not interpret RMS.
+`UNSUPPORTED` means no samples or rate under 20 Hz. Do not interpret RMS.
 
 ## 8. Guided movement
 
-1. Same source as Neutral if you will compare.
-2. Protocol = Guided movement (20 s).
-3. Confirm the dialog. Slow left stick left/right then up/down, then right stick. No shake.
-4. Export.
+Same source as Neutral if you will compare. Slow sticks only. File writes when 20 s ends.
 
-If you shake the stick you manufacture a REVIEW. That is operator error.
+Shaking the stick manufactures a REVIEW.
 
 ## 9. Before + After
 
-Same protocol both sides. The app does not change the controller.
-
-1. Pair button starts Before.
-2. Change only the thing under test.
-3. OK. After runs. Comparison JSON includes `highFreqRmsDelta` when both phases are usable.
+Same protocol both sides. Pair button. Change only the thing under test between phases. Comparison JSON includes `highFreqRmsDelta` when both phases are usable.
 
 ## 10. Sampling, filter, JSON
 
-`POLL_INTERVAL_SECONDS = 0.004`. Achieved rate is `samples / elapsed`. Classification requires >= 20 Hz.
+`POLL_INTERVAL_SECONDS = 0.004`. Classification requires >= 20 Hz.
 
-RC filter in `rc_filter.py`:
+RC: `alpha = 1 - exp(-dt / tau)`, `tau = 0.05 s`, cutoff about 3.18 Hz. Residual = raw - filtered. `lx_high_freq_rms` is RMS of that residual.
 
-- `alpha = 1 - exp(-dt / tau)`
-- `smoothed[n] = alpha * raw[n] + (1 - alpha) * smoothed[n-1]`
-- `tau = 0.05 s`
-- `cutoff_hz = 1 / (2 * pi * tau)` approximately 3.18 Hz
-
-`dt` is the real gap between accepted samples.
-
-Residual = raw - filtered. `lx_high_freq_rms` is RMS of that residual on LX.
-
-After wiring each sample has `t_ms`, `lx`, `ly`, `rx`, `ry`, and `lx_filtered` through `ry_filtered`.
-
-Report fields for review: `reportVersion` 0.2, `protocol.jitterEstimator`, `protocol.rcFilterTauSeconds` 0.05, `protocol.inputInjected` false, `protocol.noiseInjected` false, `rc_filter_metrics`, `result.classification`, `result.review_reasons`, `result.sample_rate_hz`, `result.samples`, `result.hid_reports`, `sha256`.
-
-`sha256` is the hash of the payload before the `sha256` field is inserted. Do not edit a report and keep the old hash.
+`reportVersion` must be `0.2`. `sha256` is hashed before that field is inserted.
 
 ## 11. Classification thresholds
 
-Any protocol: `samples == 0` on an axis or `sample_rate_hz < 20` -> `unsupported`.
+Unsupported: no samples or `sample_rate_hz < 20`.
 
-Guided: `jitter_rms >= 0.015` or `jitter_peak_to_peak >= 0.06` on an axis -> `review`, else `pass`.
+Guided review: `jitter_rms >= 0.015` or `jitter_peak_to_peak >= 0.06`.
 
-Neutral: `nonzero_stationary_percent >= 5.0` or `rms >= 0.015` or `deadzone_crossings >= 10` -> `review`, else `pass`.
-
-These are initial screens, not a published tournament law. Compare the same pad, PC, and backend.
+Neutral review: `nonzero_stationary_percent >= 5.0` or `rms >= 0.015` or `deadzone_crossings >= 10`.
 
 ## 12. Noise vs extra high-frequency energy
 
-You cannot prove intent from one RMS.
+You cannot prove intent from one RMS. Compare Neutral vs Guided on the same pad, PC, and backend. Repeat three times.
 
-Minimum set to say extra high-frequency energy showed up:
+Motion slower than about 3 Hz stays in the RC trend and will not inflate HF RMS.
 
-1. Neutral HF RMS matches other runs of that pad on that backend.
-2. Guided path was slow.
-3. Guided LX/LY HF RMS is repeatably much larger than Neutral on the same source.
-4. RX/RY stay near Neutral if only the aim stick was supposed to move.
-5. Three repeats. One spike is a bump.
+## 13. After the file is written
 
-If only one backend is loud, suspect that path, not the Hall sensor.
-
-Motion slower than about 3 Hz sits inside the RC trend and will not inflate HF RMS. Do not mix different `tau` values in one comparison.
-
-## 13. Export and submit
-
-Files: `reports\<UTC>_<phase>_<source-slug>.json` plus a line in `reports\index.jsonl`.
-
-Submit bat: prints `git status --short reports`, you type `YES`, `git add reports` only, commit message `Add controller test reports`, `git push origin master`. If `user.name` / `user.email` are missing it prompts.
-
-Then tell Grok the filename.
-
-If push fails the commit is still local. Fix GitHub auth. Do not re-run apply scripts for a push failure.
+Status line names the file. Open reports folder if you want to look. Then **RCM Tool - Submit Reports.bat**, type `YES`, tell Grok the filename.
 
 ## 14. Troubleshooting
 
-- Window never opens: `python -c "import tkinter"` then repair Tcl/Tk.
-- `No module named pygame`: `pip install -r requirements.txt`.
-- Detect list empty: `joy.cpl`, USB direct, Xbox mode, Detect again.
-- Live zeros: wrong dropdown row. Try SDL, Raw HID, then the XInput slot `joy.cpl` uses.
-- Guided REVIEW after shaking: re-run slowly, discard the shaken file.
-- `reportVersion` 0.1: `python apply_rc_wiring.py`.
-- Export button dead after a test: `python apply_ui_pass.py`.
-- apply `could not find block`: `git checkout -- controller_integrity.py` then apply RC then UI.
-- `git pull` rejected: stash or commit reports first.
-- DualSense weird axes: Raw HID. Parser offsets Sony report ids `0x31` and `0x11`.
+- No JSON after a test: `python apply_auto_export.py`
+- `reportVersion` 0.1: `python apply_rc_wiring.py` then capture again
+- apply `could not find block`: checkout `controller_integrity.py` and run all three apply scripts in order
+- Live zeros: wrong dropdown. Try SDL, Raw HID, then the XInput slot `joy.cpl` uses
+- Window never opens: repair Tcl/Tk
 
-Win+R, `joy.cpl`, Properties. If axes do not move there, RCM Tool cannot invent them.
+Win+R, `joy.cpl`. If axes do not move there, RCM Tool cannot invent them.
 
 ## 15. Tests
 
@@ -241,16 +177,6 @@ Win+R, `joy.cpl`, Properties. If axes do not move there, RCM Tool cannot invent 
 python -m unittest discover -v
 ```
 
-No controller required. Working directory must be the repo folder.
-
 ## 16. Scope limits
 
-Windows first. `main()` warns on other OS; XInput/WinMM will not load.
-
-Axis maps are not universal. A fightstick slider can appear as RY.
-
-Bluetooth vs USB changes sample rate and HF RMS. Record the connection in the filename.
-
-Reports may contain product strings, VID/PID, timestamps, and full sample arrays.
-
-Not in this tree: signed envelopes, server ingest, per-vendor calibration UI, DualSense IMU metadata.
+Windows first. Reports may contain product strings, VID/PID, timestamps, and full sample arrays.
