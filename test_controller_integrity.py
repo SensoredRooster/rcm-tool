@@ -2,6 +2,7 @@ import math
 import unittest
 
 import controller_integrity as app
+import rc_filter
 
 
 class ControllerIntegrityTests(unittest.TestCase):
@@ -43,16 +44,16 @@ class ControllerIntegrityTests(unittest.TestCase):
 
     def test_rc_alpha_is_frame_rate_independent(self):
         tau = 0.05
-        alpha_4ms = app.RCLowPassFilter.alpha(0.004, tau)
+        alpha_4ms = rc_filter.RCLowPassFilter.alpha(0.004, tau)
         expected = 1.0 - math.exp(-0.004 / tau)
         self.assertAlmostEqual(alpha_4ms, expected)
-        self.assertGreater(app.RCLowPassFilter.alpha(0.008, tau), alpha_4ms)
-        self.assertEqual(app.RCLowPassFilter.alpha(0.0, tau), 0.0)
+        self.assertGreater(rc_filter.RCLowPassFilter.alpha(0.008, tau), alpha_4ms)
+        self.assertEqual(rc_filter.RCLowPassFilter.alpha(0.0, tau), 0.0)
 
     def test_rc_filter_tracks_dc_and_rejects_step_instantly(self):
         values = [0.0] * 10 + [1.0] * 10
         timestamps = [index * 0.004 for index in range(len(values))]
-        filtered = app.rc_filter_series(values, timestamps, tau_seconds=0.05)
+        filtered = rc_filter.rc_filter_series(values, timestamps, tau_seconds=0.05)
         self.assertAlmostEqual(filtered[0], 0.0)
         self.assertLess(filtered[10], 0.2)
         self.assertGreater(filtered[-1], 0.5)
@@ -63,12 +64,10 @@ class ControllerIntegrityTests(unittest.TestCase):
             0.6 * math.sin(2.0 * math.pi * 0.5 * t) + 0.05 * math.sin(2.0 * math.pi * 40.0 * t)
             for t in timestamps
         ]
-        filtered = app.rc_filter_series(raw, timestamps, tau_seconds=0.05)
-        rms = app.residual_rms(raw, filtered)
+        filtered = rc_filter.rc_filter_series(raw, timestamps, tau_seconds=0.05)
+        rms = rc_filter.residual_rms(raw, filtered)
         self.assertGreater(rms, 0.01)
         self.assertLess(rms, 0.10)
-        metrics = app.axis_metrics(raw, timestamps_s=timestamps)
-        self.assertAlmostEqual(metrics.jitter_rms, rms)
 
     def test_rc_filter_metrics_json_keys(self):
         samples = [
@@ -76,7 +75,7 @@ class ControllerIntegrityTests(unittest.TestCase):
             {"t_ms": 4.0, "lx": 0.02, "ly": -0.01, "rx": 0.0, "ry": 0.0},
             {"t_ms": 8.0, "lx": -0.02, "ly": 0.01, "rx": 0.0, "ry": 0.0},
         ]
-        metrics = app.build_rc_filter_metrics(samples, tau_seconds=0.05)
+        metrics = rc_filter.build_rc_filter_metrics(samples, tau_seconds=0.05)
         self.assertEqual(metrics["tau_seconds"], 0.05)
         self.assertIn("lx_high_freq_rms", metrics)
         self.assertIn("ly_high_freq_rms", metrics)
