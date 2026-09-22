@@ -4,6 +4,21 @@ RCM Tool is a Windows controller-certification prototype for tournament use. It 
 
 It is designed to answer one basic question first: **what controller input source is Windows exposing, and is that source returning data?**
 
+## Update an existing clone
+
+From the `rcm-tool` folder:
+
+```powershell
+git pull
+python apply_rc_wiring.py
+python -m unittest discover -v
+python rcm_tool.py
+```
+
+`apply_rc_wiring.py` is safe to re-run. After the first successful apply, later runs print `skip ... already applied`.
+
+**RCM Tool - Update and Start.bat** now runs `git pull` and `apply_rc_wiring.py` before launching the app.
+
 ## Download and run from the GitHub ZIP
 
 1. Open the [RCM Tool repository](https://github.com/SensoredRooster/rcm-tool).
@@ -15,6 +30,7 @@ It is designed to answer one basic question first: **what controller input sourc
 
 ```powershell
 python -m pip install -r .\\requirements.txt
+python apply_rc_wiring.py
 ```
 
 7. Run:
@@ -71,7 +87,7 @@ Use **Run Before + After pair** when comparing a default controller state with a
 
 The Before and After phases use the same duration, sampling loop, thresholds, protocol, and input source. RCM Tool does **not** add noise, inject input, or modify the controller between phases. The only intended difference is the operator-applied controller configuration or hardware state.
 
-For **Guided movement**, `Jitter RMS` is the RMS of `raw - RC_filtered` after a first-order digital RC low-pass (`tau = 0.05 s`, cutoff ≈ 3.18 Hz). The filter is frame-rate independent: `alpha = 1 - exp(-dt / tau)`. Implementation is in `rc_filter.py`. Each exported sample includes `lx_filtered` … `ry_filtered`, and the report has an `rc_filter_metrics` block with `lx_high_freq_rms` through `ry_high_freq_rms`. That is a measurement of the captured stream, not proof of where the jitter originated.
+For **Guided movement**, `Jitter RMS` is the RMS of `raw - RC_filtered` after a first-order digital RC low-pass (`tau = 0.05 s`, cutoff ≈ 3.18 Hz). The filter is frame-rate independent: `alpha = 1 - exp(-dt / tau)`. Implementation is in `rc_filter.py`. After wiring, each exported sample includes `lx_filtered` … `ry_filtered`, and the report has an `rc_filter_metrics` block with `lx_high_freq_rms` through `ry_high_freq_rms`. That is a measurement of the captured stream, not proof of where the jitter originated.
 
 ## If the app says no controller is detected
 
