@@ -1,3 +1,4 @@
+import math
 import unittest
 
 import controller_integrity as app
@@ -39,6 +40,49 @@ class ControllerIntegrityTests(unittest.TestCase):
         self.assertAlmostEqual(sample["ly"], 0.0, places=2)
         self.assertAlmostEqual(sample["rx"], 0.0, places=2)
         self.assertAlmostEqual(sample["ry"], 0.0, places=2)
+
+    def test_rc_alpha_is_frame_rate_independent(self):
+        tau = 0.05
+        alpha_4ms = app.RCLowPassFilter.alpha(0.004, tau)
+        expected = 1.0 - math.exp(-0.004 / tau)
+        self.assertAlmostEqual(alpha_4ms, expected)
+        self.assertGreater(app.RCLowPassFilter.alpha(0.008, tau), alpha_4ms)
+        self.assertEqual(app.RCLowPassFilter.alpha(0.0, tau), 0.0)
+
+    def test_rc_filter_tracks_dc_and_rejects_step_instantly(self):
+        values = [0.0] * 10 + [1.0] * 10
+        timestamps = [index * 0.004 for index in range(len(values))]
+        filtered = app.rc_filter_series(values, timestamps, tau_seconds=0.05)
+        self.assertAlmostEqual(filtered[0], 0.0)
+        self.assertLess(filtered[10], 0.2)
+        self.assertGreater(filtered[-1], 0.5)
+
+    def test_high_freq_rms_is_residual_after_rc_trend(self):
+        timestamps = [index * 0.004 for index in range(250)]
+        raw = [
+            0.6 * math.sin(2.0 * math.pi * 0.5 * t) + 0.05 * math.sin(2.0 * math.pi * 40.0 * t)
+            for t in timestamps
+        ]
+        filtered = app.rc_filter_series(raw, timestamps, tau_seconds=0.05)
+        rms = app.residual_rms(raw, filtered)
+        self.assertGreater(rms, 0.01)
+        self.assertLess(rms, 0.10)
+        metrics = app.axis_metrics(raw, timestamps_s=timestamps)
+        self.assertAlmostEqual(metrics.jitter_rms, rms)
+
+    def test_rc_filter_metrics_json_keys(self):
+        samples = [
+            {"t_ms": 0.0, "lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0},
+            {"t_ms": 4.0, "lx": 0.02, "ly": -0.01, "rx": 0.0, "ry": 0.0},
+            {"t_ms": 8.0, "lx": -0.02, "ly": 0.01, "rx": 0.0, "ry": 0.0},
+        ]
+        metrics = app.build_rc_filter_metrics(samples, tau_seconds=0.05)
+        self.assertEqual(metrics["tau_seconds"], 0.05)
+        self.assertIn("lx_high_freq_rms", metrics)
+        self.assertIn("ly_high_freq_rms", metrics)
+        self.assertIn("rx_high_freq_rms", metrics)
+        self.assertIn("ry_high_freq_rms", metrics)
+        self.assertGreater(metrics["lx_high_freq_rms"], 0.0)
 
 
 if __name__ == "__main__":
