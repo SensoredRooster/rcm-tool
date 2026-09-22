@@ -27,6 +27,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo Applying auto-export if needed...
+python apply_auto_export.py
+if errorlevel 1 (
+    echo Auto-export wiring failed.
+    pause
+    exit /b 1
+)
+
 echo Installing or updating required controller backends...
 python -m pip install -r requirements.txt
 if errorlevel 1 (
