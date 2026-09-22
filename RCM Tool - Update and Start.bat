@@ -11,6 +11,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo Applying RC filter wiring if needed...
+python apply_rc_wiring.py
+
 echo Installing or updating required controller backends...
 python -m pip install -r requirements.txt
 if errorlevel 1 (
