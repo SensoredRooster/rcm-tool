@@ -13,6 +13,19 @@ if errorlevel 1 (
 
 echo Applying RC filter wiring if needed...
 python apply_rc_wiring.py
+if errorlevel 1 (
+    echo RC wiring failed.
+    pause
+    exit /b 1
+)
+
+echo Applying UI and capture-performance pass if needed...
+python apply_ui_pass.py
+if errorlevel 1 (
+    echo UI pass failed. Run apply_rc_wiring.py first, then apply_ui_pass.py.
+    pause
+    exit /b 1
+)
 
 echo Installing or updating required controller backends...
 python -m pip install -r requirements.txt
