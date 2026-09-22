@@ -71,7 +71,7 @@ OLD_CAPTURE = """        samples = 0
                 for axis in axes:
                     axes[axis].append(sample[axis])
                 captured_samples.append({
-                    \"t_ms\": round((time.monotonic() - started) * 1000.0, 3),
+                    "t_ms": round((time.monotonic() - started) * 1000.0, 3),
                     **{axis: round(float(sample[axis]), 6) for axis in axes},
                 })
                 samples += 1
@@ -90,15 +90,15 @@ NEW_CAPTURE = """        samples = 0
                 for axis in axes:
                     axes[axis].append(sample[axis])
                 captured_samples.append({
-                    \"t_ms\": round((now - started) * 1000.0, 3),
+                    "t_ms": round((now - started) * 1000.0, 3),
                     **{axis: round(float(sample[axis]), 6) for axis in axes},
-                    **{f\"{axis}_filtered\": round(float(filtered[axis]), 6) for axis in axes},
+                    **{f"{axis}_filtered": round(float(filtered[axis]), 6) for axis in axes},
                 })
                 samples += 1
 """
 
 OLD_RESULT = """            axes={axis: axis_metrics(values) for axis, values in axes.items()},
-            classification=\"pending\",
+            classification="pending",
             review_reasons=[],
             source_status=source_status,
             samples=captured_samples,
@@ -111,11 +111,11 @@ OLD_RESULT = """            axes={axis: axis_metrics(values) for axis, values in
 NEW_RESULT = """            axes={
                 axis: axis_metrics(
                     values,
-                    timestamps_s=[sample[\"t_ms\"] / 1000.0 for sample in captured_samples],
+                    timestamps_s=[sample["t_ms"] / 1000.0 for sample in captured_samples],
                 )
                 for axis, values in axes.items()
             },
-            classification=\"pending\",
+            classification="pending",
             review_reasons=[],
             source_status=source_status,
             samples=captured_samples,
@@ -126,67 +126,67 @@ NEW_RESULT = """            axes={
         )
 """
 
-OLD_PROTO = '''                \"jitterEstimator\": \"high-frequency residual from slow EMA (alpha=0.12)\",
+OLD_PROTO = '''                "jitterEstimator": "high-frequency residual from slow EMA (alpha=0.12)",
             },
-            \"result\": result_data,
+            "result": result_data,
 '''
 
-NEW_PROTO = '''                \"jitterEstimator\": \"high-frequency residual after first-order RC low-pass (tau=0.05s)\",
-                \"rcFilterTauSeconds\": RC_FILTER_TAU_SECONDS,
+NEW_PROTO = '''                "jitterEstimator": "high-frequency residual after first-order RC low-pass (tau=0.05s)",
+                "rcFilterTauSeconds": RC_FILTER_TAU_SECONDS,
             },
-            \"rc_filter_metrics\": result.rc_filter_metrics,
-            \"result\": result_data,
+            "rc_filter_metrics": result.rc_filter_metrics,
+            "result": result_data,
 '''
 
-OLD_DELTA = '''                \"jitterRmsDelta\": after_metrics.jitter_rms - before_metrics.jitter_rms,
-                \"jitterPeakToPeakDelta\": after_metrics.jitter_peak_to_peak - before_metrics.jitter_peak_to_peak,
+OLD_DELTA = '''                "jitterRmsDelta": after_metrics.jitter_rms - before_metrics.jitter_rms,
+                "jitterPeakToPeakDelta": after_metrics.jitter_peak_to_peak - before_metrics.jitter_peak_to_peak,
 '''
 
-NEW_DELTA = '''                \"jitterRmsDelta\": after_metrics.jitter_rms - before_metrics.jitter_rms,
-                \"highFreqRmsDelta\": after.rc_filter_metrics.get(f\"{axis}_high_freq_rms\", 0.0)
-                - before.rc_filter_metrics.get(f\"{axis}_high_freq_rms\", 0.0),
-                \"jitterPeakToPeakDelta\": after_metrics.jitter_peak_to_peak - before_metrics.jitter_peak_to_peak,
+NEW_DELTA = '''                "jitterRmsDelta": after_metrics.jitter_rms - before_metrics.jitter_rms,
+                "highFreqRmsDelta": after.rc_filter_metrics.get(f"{axis}_high_freq_rms", 0.0)
+                - before.rc_filter_metrics.get(f"{axis}_high_freq_rms", 0.0),
+                "jitterPeakToPeakDelta": after_metrics.jitter_peak_to_peak - before_metrics.jitter_peak_to_peak,
 '''
 
-OLD_CMP_PROTO = '''                \"jitterEstimator\": \"high-frequency residual from slow EMA (alpha=0.12)\",
+OLD_CMP_PROTO = '''                "jitterEstimator": "high-frequency residual from slow EMA (alpha=0.12)",
             },
-            \"beforeReport\": before_path.name if before_path else None,
+            "beforeReport": before_path.name if before_path else None,
 '''
 
-NEW_CMP_PROTO = '''                \"jitterEstimator\": \"high-frequency residual after first-order RC low-pass (tau=0.05s)\",
-                \"rcFilterTauSeconds\": RC_FILTER_TAU_SECONDS,
+NEW_CMP_PROTO = '''                "jitterEstimator": "high-frequency residual after first-order RC low-pass (tau=0.05s)",
+                "rcFilterTauSeconds": RC_FILTER_TAU_SECONDS,
             },
-            \"beforeRcFilterMetrics\": before.rc_filter_metrics,
-            \"afterRcFilterMetrics\": after.rc_filter_metrics,
-            \"beforeReport\": before_path.name if before_path else None,
+            "beforeRcFilterMetrics": before.rc_filter_metrics,
+            "afterRcFilterMetrics": after.rc_filter_metrics,
+            "beforeReport": before_path.name if before_path else None,
 '''
 
 
 def apply_one(text: str, old: str, new: str, label: str) -> str:
     if new.strip() and new in text and old not in text:
-        print(f\"skip {label}: already applied\")
+        print(f"skip {label}: already applied")
         return text
     if old not in text:
-        raise SystemExit(f\"could not find block: {label}\")
-    print(f\"apply {label}\")
+        raise SystemExit(f"could not find block: {label}")
+    print(f"apply {label}")
     return text.replace(old, new, 1)
 
 
 def main() -> None:
-    text = TARGET.read_text(encoding=\"utf-8\")
-    text = apply_one(text, OLD_IMPORT, IMPORT_BLOCK, \"import rc_filter\")
-    text = apply_one(text, OLD_VERSION, NEW_VERSION, \"report version\")
-    text = apply_one(text, OLD_RESULT_END, NEW_RESULT_END, \"TestResult field\")
-    text = apply_one(text, OLD_AXIS_DEF, NEW_AXIS_DEF, \"axis_metrics signature\")
-    text = apply_one(text, OLD_EMA, NEW_EMA, \"RC residual instead of EMA\")
-    text = apply_one(text, OLD_CAPTURE, NEW_CAPTURE, \"capture loop dt + filtered samples\")
-    text = apply_one(text, OLD_RESULT, NEW_RESULT, \"TestResult construction\")
-    text = apply_one(text, OLD_PROTO, NEW_PROTO, \"report protocol + rc_filter_metrics\")
-    text = apply_one(text, OLD_DELTA, NEW_DELTA, \"comparison highFreqRmsDelta\")
-    text = apply_one(text, OLD_CMP_PROTO, NEW_CMP_PROTO, \"comparison protocol\")
-    TARGET.write_text(text, encoding=\"utf-8\")
-    print(f\"updated {TARGET}\")
+    text = TARGET.read_text(encoding="utf-8")
+    text = apply_one(text, OLD_IMPORT, IMPORT_BLOCK, "import rc_filter")
+    text = apply_one(text, OLD_VERSION, NEW_VERSION, "report version")
+    text = apply_one(text, OLD_RESULT_END, NEW_RESULT_END, "TestResult field")
+    text = apply_one(text, OLD_AXIS_DEF, NEW_AXIS_DEF, "axis_metrics signature")
+    text = apply_one(text, OLD_EMA, NEW_EMA, "RC residual instead of EMA")
+    text = apply_one(text, OLD_CAPTURE, NEW_CAPTURE, "capture loop dt + filtered samples")
+    text = apply_one(text, OLD_RESULT, NEW_RESULT, "TestResult construction")
+    text = apply_one(text, OLD_PROTO, NEW_PROTO, "report protocol + rc_filter_metrics")
+    text = apply_one(text, OLD_DELTA, NEW_DELTA, "comparison highFreqRmsDelta")
+    text = apply_one(text, OLD_CMP_PROTO, NEW_CMP_PROTO, "comparison protocol")
+    TARGET.write_text(text, encoding="utf-8")
+    print(f"updated {TARGET}")
 
 
-if __name__ == \"__main__\":
+if __name__ == "__main__":
     main()
