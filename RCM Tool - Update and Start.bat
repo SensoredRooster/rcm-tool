@@ -22,7 +22,7 @@ if errorlevel 1 (
 echo Applying UI and capture-performance pass if needed...
 python apply_ui_pass.py
 if errorlevel 1 (
-    echo UI pass failed. Run apply_rc_wiring.py first, then apply_ui_pass.py.
+    echo UI pass failed.
     pause
     exit /b 1
 )
@@ -31,6 +31,14 @@ echo Applying auto-export if needed...
 python apply_auto_export.py
 if errorlevel 1 (
     echo Auto-export wiring failed.
+    pause
+    exit /b 1
+)
+
+echo Applying pair-delta classification if needed...
+python apply_pair_delta.py
+if errorlevel 1 (
+    echo Pair-delta wiring failed.
     pause
     exit /b 1
 )
