@@ -11,42 +11,12 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo Applying RC filter wiring if needed...
-python apply_rc_wiring.py
+echo Applying prototype wiring...
+python apply_all.py
 if errorlevel 1 (
-    echo RC wiring failed.
-    pause
-    exit /b 1
-)
-
-echo Applying UI and capture-performance pass if needed...
-python apply_ui_pass.py
-if errorlevel 1 (
-    echo UI pass failed.
-    pause
-    exit /b 1
-)
-
-echo Applying auto-export if needed...
-python apply_auto_export.py
-if errorlevel 1 (
-    echo Auto-export wiring failed.
-    pause
-    exit /b 1
-)
-
-echo Applying pair-delta classification if needed...
-python apply_pair_delta.py
-if errorlevel 1 (
-    echo Pair-delta wiring failed.
-    pause
-    exit /b 1
-)
-
-echo Applying injected self-test if needed...
-python apply_injection.py
-if errorlevel 1 (
-    echo Injection wiring failed. Run apply_rc_wiring.py first.
+    echo Wiring failed. If an apply script could not find a block:
+    echo   git checkout -- controller_integrity.py
+    echo   python apply_all.py
     pause
     exit /b 1
 )
