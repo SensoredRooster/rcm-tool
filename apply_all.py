@@ -12,6 +12,7 @@ SCRIPTS = (
     "apply_auto_export.py",
     "apply_pair_delta.py",
     "apply_injection.py",
+    "apply_theme.py",
 )
 
 
