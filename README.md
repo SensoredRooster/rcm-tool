@@ -8,19 +8,19 @@ It is designed to answer one basic question first: **what controller input sourc
 
 1. Open the [RCM Tool repository](https://github.com/SensoredRooster/rcm-tool).
 2. Select **Code → Download ZIP**.
-3. Extract the ZIP to a normal folder, such as `C:\RCM Tool`.
+3. Extract the ZIP to a normal folder, such as `C:\\RCM Tool`.
 4. Install Python 3.10 or newer from [python.org](https://www.python.org/downloads/). During installation, enable **Add Python to PATH**.
 5. Open PowerShell in the extracted folder.
 6. Install the broad SDL controller backend:
 
 ```powershell
-python -m pip install -r .\requirements.txt
+python -m pip install -r .\\requirements.txt
 ```
 
 7. Run:
 
 ```powershell
-python .\rcm_tool.py
+python .\\rcm_tool.py
 ```
 
 For a double-click workflow, use **RCM Tool - Update and Start.bat**. After testing, use **RCM Tool - Submit Reports.bat**. The submit file shows the pending report files and asks for confirmation before committing and pushing them to GitHub.
@@ -69,9 +69,9 @@ Use **Run Before + After pair** when comparing a default controller state with a
 6. Click **OK** in the prompt. RCM Tool automatically runs the After phase.
 7. RCM Tool saves the After report and creates a `before_after_comparison.json` report only when both phases return usable data.
 
-The Before and After phases use the same duration, sampling loop, thresholds, protocol, and input source. RCM Tool does **not** add noise, inject input, smooth the captured signal, or modify the controller between phases. The only intended difference is the operator-applied controller configuration or hardware state.
+The Before and After phases use the same duration, sampling loop, thresholds, protocol, and input source. RCM Tool does **not** add noise, inject input, or modify the controller between phases. The only intended difference is the operator-applied controller configuration or hardware state.
 
-For **Guided movement**, `Jitter RMS` estimates high-frequency movement left after a slow trend is removed. It is a measurement of the output stream, not proof of where the jitter originated. Comparing the Before and After jitter deltas tells us whether the modified state produced more or less high-frequency variation during intended movement.
+For **Guided movement**, `Jitter RMS` is the RMS of `raw - RC_filtered` after a first-order digital RC low-pass (`tau = 0.05 s`, cutoff ≈ 3.18 Hz). The filter is frame-rate independent: `alpha = 1 - exp(-dt / tau)`. Implementation is in `rc_filter.py`. Each exported sample includes `lx_filtered` … `ry_filtered`, and the report has an `rc_filter_metrics` block with `lx_high_freq_rms` through `ry_high_freq_rms`. That is a measurement of the captured stream, not proof of where the jitter originated.
 
 ## If the app says no controller is detected
 
