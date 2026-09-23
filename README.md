@@ -9,7 +9,7 @@ The application is measurement-focused. It does not inject game inputs, modify c
 - Modern PySide6/Qt desktop UI with rounded panels, dark/light modes, high-DPI scaling, dashboard cards, live plots, and dedicated lab pages.
 - Existing RCM controller acquisition through Windows XInput, SDL/pygame, Raw HID/hidapi, and WinMM fallback.
 - Controller timing analysis: effective report rate, interval statistics, RMS timing deviation, peak-to-peak jitter, successive interval variation, P50/P90/P95/P99/P99.9, late reports, and estimated missing reports.
-- Live stick visualization, button/D-pad display where decoded by the active backend, trigger display, and stationary analog-noise inspection.
+- Controller Lab with **Auto / Xbox / DualSense / Generic** visual modes. Auto uses backend + VID/PID + product identity conservatively; Xbox and DualSense remain manually selectable. Manual visual override never changes the trusted input mapping. Live sticks, triggers, button/D-pad state where decoded, and stationary analog-noise inspection remain separate from device/backend diagnostics.
 - Live Capture controls for zoom, pan, crosshair inspection, pause-visualization-without-pausing-acquisition, display-only moving-average smoothing, PNG export, fullscreen inspection, raw-data viewing, report-interval histogram, and explicit unavailable labeling for latency when no device-origin timestamp exists.
 - Oscillator Lab: frequency, error in Hz and ppm, frequency standard deviation/span, first-to-last-window drift, configurable sigma outlier count, period statistics, RMS period jitter, peak-to-peak jitter, cycle-to-cycle jitter, and one-sample-interval Allan deviation.
 - A dedicated read-only VISA/SCPI measurement role for counters, oscilloscopes, and analyzers.
