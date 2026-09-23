@@ -43,6 +43,11 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python scripts/smoke_gamepad_signal_lab.py
+      - name: Upload UI preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: GamepadSignalLab-ui-preview
+          path: artifacts/ui-preview/*.png
       - name: Build portable application
         shell: powershell
         run: |

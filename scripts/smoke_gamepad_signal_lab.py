@@ -31,6 +31,9 @@ def main() -> int:
     app = QApplication.instance() or QApplication([])
     QSettings("SensoredRooster", "GamepadSignalLab").setValue("welcomed", True)
     window = MainWindow()
+    window.resize(1440, 900)
+    window.show()
+    pump(app, 0.15)
     assert window.simulation_mode
     assert not window.instrument.output_enabled()
 
@@ -74,6 +77,22 @@ def main() -> int:
 
     window._add_user_marker()
     assert any(event == "user_marker" for _, event, _ in window.events)
+
+    preview_root = ROOT / "artifacts" / "ui-preview"
+    preview_root.mkdir(parents=True, exist_ok=True)
+    for index, filename in (
+        (0, "dashboard.png"),
+        (2, "controller_lab.png"),
+        (3, "oscillator_lab.png"),
+        (5, "sweep_lab.png"),
+        (6, "correlation_lab.png"),
+    ):
+        window._navigate(index)
+        window._refresh_ui()
+        pump(app, 0.12)
+        image = window.grab()
+        assert not image.isNull()
+        assert image.save(str(preview_root / filename), "PNG")
 
     window.db.flush()
     assert window.session_id
