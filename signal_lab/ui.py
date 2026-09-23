@@ -441,9 +441,9 @@ class MainWindow(QMainWindow):
         grid = QGridLayout()
         self.osc_labels = {}
         for i,(key,title) in enumerate([
-            ("mean","Measured frequency"),("error_hz","Frequency error"),("error_ppm","Error ppm"),
-            ("period","Mean period"),("rms","RMS period jitter"),("p2p","Peak-to-peak jitter"),
-            ("ctc","Cycle-to-cycle RMS"),("allan","Allan deviation τ=1 sample")
+            ("mean","Measured frequency"),("stdev","Frequency stdev"),("error_hz","Frequency error"),("error_ppm","Error ppm"),
+            ("drift","Frequency drift"),("outliers","Outliers"),("period","Mean period"),("rms","RMS period jitter"),
+            ("p2p","Peak-to-peak jitter"),("ctc","Cycle-to-cycle RMS"),("allan","Allan deviation τ=1 sample")
         ]):
             c=MetricCard(title); self.osc_labels[key]=c; grid.addWidget(c,i//4,i%4)
         layout.addLayout(grid)
@@ -592,9 +592,10 @@ class MainWindow(QMainWindow):
         self.baseline_seconds=QSpinBox(); self.baseline_seconds.setRange(5,3600); self.baseline_seconds.setValue(60); self.baseline_seconds.setSuffix(" s")
         self.expected_rate=QDoubleSpinBox(); self.expected_rate.setRange(1,8000); self.expected_rate.setValue(1000); self.expected_rate.setSuffix(" Hz")
         self.late_factor=QDoubleSpinBox(); self.late_factor.setRange(1.01,10.0); self.late_factor.setDecimals(2); self.late_factor.setValue(1.50); self.late_factor.setSuffix(" × expected interval")
+        self.outlier_sigma=QDoubleSpinBox(); self.outlier_sigma.setRange(0.5,20.0); self.outlier_sigma.setDecimals(2); self.outlier_sigma.setValue(4.0); self.outlier_sigma.setSuffix(" σ")
         self.graph_refresh=QSpinBox(); self.graph_refresh.setRange(33,1000); self.graph_refresh.setValue(100); self.graph_refresh.setSuffix(" ms")
         self.graph_refresh.valueChanged.connect(lambda v: self.ui_timer.setInterval(v) if hasattr(self,"ui_timer") else None)
-        form.addRow("Theme",self.theme_combo); form.addRow("Default baseline duration",self.baseline_seconds); form.addRow("Expected polling rate",self.expected_rate); form.addRow("Late-report threshold",self.late_factor); form.addRow("Graph refresh interval",self.graph_refresh)
+        form.addRow("Theme",self.theme_combo); form.addRow("Default baseline duration",self.baseline_seconds); form.addRow("Expected polling rate",self.expected_rate); form.addRow("Late-report threshold",self.late_factor); form.addRow("Oscillator outlier threshold",self.outlier_sigma); form.addRow("Graph refresh interval",self.graph_refresh)
         gl.addLayout(form); layout.addWidget(g)
 
         s, sl=card("INSTRUMENT SAFETY LIMITS")
@@ -785,7 +786,7 @@ class MainWindow(QMainWindow):
         self.current_timing=timing_metrics(timestamps,expected_interval_ms=expected_ms,late_factor=self.late_factor.value())
         freqs=list(self.osc_freq)[-3000:]
         nominal=self.nominal_freq.value()
-        self.current_osc=oscillator_metrics(freqs,nominal)
+        self.current_osc=oscillator_metrics(freqs,nominal,outlier_sigma=self.outlier_sigma.value())
         self.current_corr=self._aligned_correlation(timestamps,list(self.osc_ts),freqs,nominal)
         t,o=self.current_timing,self.current_osc
 
@@ -828,10 +829,13 @@ class MainWindow(QMainWindow):
         self.osc_stability_chart.set_series([("frequency",freqs[-1200:],"#6DE0B1")])
         self.osc_period_chart.set_series([("period ns",[(1/f)*1e9 for f in freqs[-1200:] if f>0],"#6AA2FF")])
 
-        self.osc_labels["mean"].set_value(f"{o.mean_frequency_hz:,.6f} Hz" if o.sample_count else "—")
-        self.osc_labels["error_hz"].set_value(f"{o.frequency_error_hz:+.6f} Hz" if o.sample_count else "—")
-        self.osc_labels["error_ppm"].set_value(f"{o.frequency_error_ppm:+.6f} ppm" if o.sample_count else "—")
-        self.osc_labels["period"].set_value(f"{o.mean_period_s*1e9:.6f} ns" if o.sample_count else "—")
+        self.osc_labels["mean"].set_value(f"{o.mean_frequency_hz:,.6f} Hz" if o.sample_count else "—","Measured / source-limited")
+        self.osc_labels["stdev"].set_value(f"{o.frequency_stdev_hz:.6f} Hz" if o.sample_count else "—","Calculated")
+        self.osc_labels["error_hz"].set_value(f"{o.frequency_error_hz:+.6f} Hz" if o.sample_count else "—","Calculated from nominal")
+        self.osc_labels["error_ppm"].set_value(f"{o.frequency_error_ppm:+.6f} ppm" if o.sample_count else "—","Calculated")
+        self.osc_labels["drift"].set_value(f"{o.frequency_drift_ppm:+.6f} ppm" if o.sample_count else "—",f"{o.frequency_drift_hz:+.6f} Hz first/last window" if o.sample_count else "")
+        self.osc_labels["outliers"].set_value(str(o.outlier_count) if o.sample_count else "—",f">{self.outlier_sigma.value():.2f} σ from mean")
+        self.osc_labels["period"].set_value(f"{o.mean_period_s*1e9:.6f} ns" if o.sample_count else "—","Calculated from frequency")
         self.osc_labels["rms"].set_value(f"{o.rms_period_jitter_s*1e12:.3f} ps" if o.sample_count else "—")
         self.osc_labels["p2p"].set_value(f"{o.peak_to_peak_period_jitter_s*1e12:.3f} ps" if o.sample_count else "—")
         self.osc_labels["ctc"].set_value(f"{o.cycle_to_cycle_rms_s*1e12:.3f} ps" if o.sample_count else "—")
@@ -997,7 +1001,7 @@ class MainWindow(QMainWindow):
     def _finish_baseline(self) -> None:
         self.baseline_active=False
         t=timing_metrics(self.baseline_controller_ts,expected_interval_ms=1000.0/max(self.expected_rate.value(),1),late_factor=self.late_factor.value())
-        o=oscillator_metrics(self.baseline_osc_freq,self.nominal_freq.value())
+        o=oscillator_metrics(self.baseline_osc_freq,self.nominal_freq.value(),outlier_sigma=self.outlier_sigma.value())
         self.last_baseline={"timing":asdict(t),"oscillator":asdict(o)}
         self.baseline_progress.setValue(1000)
         self.baseline_state.setText(f"Baseline complete • {t.sample_count:,} controller samples • {o.sample_count:,} oscillator samples")
@@ -1332,6 +1336,7 @@ class MainWindow(QMainWindow):
         step_osc=oscillator_metrics(
             self.sweep_step_osc_freq,
             self.nominal_freq.value(),
+            outlier_sigma=self.outlier_sigma.value(),
         )
         gp=step_timing.rms_deviation_ms if step_timing.sample_count>=2 else None
         ppm=step_osc.frequency_error_ppm if step_osc.sample_count else None
@@ -1516,6 +1521,7 @@ class MainWindow(QMainWindow):
         self.baseline_seconds.setValue(int(self.settings.value("baseline_seconds",60)))
         self.expected_rate.setValue(float(self.settings.value("expected_rate",1000)))
         self.late_factor.setValue(float(self.settings.value("late_factor",1.5)))
+        self.outlier_sigma.setValue(float(self.settings.value("outlier_sigma",4.0)))
         self.nominal_freq.setValue(float(self.settings.value("nominal_freq",12_000_000)))
         self.graph_refresh.setValue(int(self.settings.value("graph_refresh",100)))
         self.max_freq.setValue(float(self.settings.value("max_freq",20_000_000)))
@@ -1539,7 +1545,7 @@ class MainWindow(QMainWindow):
         self._sync_safety_limits()
         values={
             "theme":self.theme_combo.currentText(),"baseline_seconds":self.baseline_seconds.value(),
-            "expected_rate":self.expected_rate.value(),"late_factor":self.late_factor.value(),"nominal_freq":self.nominal_freq.value(),
+            "expected_rate":self.expected_rate.value(),"late_factor":self.late_factor.value(),"outlier_sigma":self.outlier_sigma.value(),"nominal_freq":self.nominal_freq.value(),
             "graph_refresh":self.graph_refresh.value(),"max_freq":self.max_freq.value(),
             "max_amp":self.max_amp.value(),"max_offset":self.max_offset.value(),
             "sim_rate":self.sim_rate.value(),"sim_jitter":self.sim_jitter.value(),
