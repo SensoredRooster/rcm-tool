@@ -2,10 +2,6 @@ name: Deploy Cloudflare Support Collector
 
 on:
   workflow_dispatch:
-  push:
-    branches: [master]
-    paths:
-      - ".github/workflows/deploy-support-worker.yml"
 
 jobs:
   deploy:
@@ -88,35 +84,3 @@ jobs:
           test "$STATUS" = "400"
           grep -q '"Empty bundle"' upload-probe.json
 
-      - name: Probe Python urllib upload request
-        shell: bash
-        run: |
-          python - <<'PY'
-          import urllib.error
-          import urllib.request
-
-          url = "https://rcm-tool-support.sensoredrooster-com.workers.dev/upload"
-          for label, headers in [
-              ("default", {
-                  "Content-Type": "application/zip",
-                  "X-RCM-Session": "ci-python-default",
-                  "X-RCM-Filename": "probe.zip",
-              }),
-              ("browser-headers", {
-                  "Content-Type": "application/zip",
-                  "X-RCM-Session": "ci-python-browser",
-                  "X-RCM-Filename": "probe.zip",
-                  "User-Agent": "RCMTool/1.0 (+https://github.com/SensoredRooster/rcm-tool)",
-                  "Accept": "application/json",
-              }),
-          ]:
-              request = urllib.request.Request(url, data=b"", method="POST", headers=headers)
-              try:
-                  with urllib.request.urlopen(request, timeout=15) as response:
-                      print(label, response.status, response.read().decode("utf-8", "replace"))
-              except urllib.error.HTTPError as exc:
-                  body = exc.read().decode("utf-8", "replace")
-                  print(label, exc.code, body)
-                  if label == "browser-headers":
-                      assert exc.code == 400 and "Empty bundle" in body
-          PY
