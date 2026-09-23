@@ -94,3 +94,33 @@ class StimulusState:
     amplitude_vpp: float = 0.10
     offset_v: float = 0.0
     waveform: str = "SINE"
+
+
+@dataclass(frozen=True)
+class SimulatedStimulusResponse:
+    gamepad_extra_jitter_ms: float
+    oscillator_extra_ppm: float
+    analog_noise_extra: float
+
+
+def stimulus_response(frequency_hz: float, amplitude_vpp: float) -> SimulatedStimulusResponse:
+    """Deterministic synthetic DUT response used only in simulation mode.
+
+    The shape intentionally includes two broad resonances so automated sweeps
+    produce a known, testable response surface. It is not a physical model of a
+    particular controller.
+    """
+    if frequency_hz <= 0 or amplitude_vpp <= 0:
+        return SimulatedStimulusResponse(0.0, 0.0, 0.0)
+
+    def resonance(center_hz: float, width_octaves: float) -> float:
+        distance = math.log2(max(frequency_hz, 1e-12) / center_hz)
+        return math.exp(-0.5 * (distance / width_octaves) ** 2)
+
+    response = 0.15 + 1.8 * resonance(1000.0, 0.55) + 1.0 * resonance(5200.0, 0.42)
+    scale = max(0.0, amplitude_vpp)
+    return SimulatedStimulusResponse(
+        gamepad_extra_jitter_ms=0.12 * scale * response,
+        oscillator_extra_ppm=4.0 * scale * response,
+        analog_noise_extra=0.004 * scale * response,
+    )

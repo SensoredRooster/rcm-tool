@@ -4,7 +4,7 @@ import unittest
 
 from signal_lab.analysis import align_nearest, oscillator_metrics, pearson_correlation, timing_metrics
 from signal_lab.instruments import SafetyLimits, SimulatedInstrument, VisaScpiMeasurementInstrument
-from signal_lab.simulation import GamepadSimulator, SimulatedGamepadConfig, OscillatorSimulator, SimulatedOscillatorConfig
+from signal_lab.simulation import GamepadSimulator, SimulatedGamepadConfig, OscillatorSimulator, SimulatedOscillatorConfig, stimulus_response
 from signal_lab.storage import LabDatabase
 from signal_lab.sweep import make_sweep
 
@@ -59,6 +59,24 @@ class SignalLabTests(unittest.TestCase):
         plan = make_sweep(100, 10000, 3, logarithmic=True)
         self.assertEqual(len(plan), 3)
         self.assertAlmostEqual(plan[1].frequency_hz, 1000, places=6)
+
+    def test_amplitude_grid_sweep(self):
+        plan = make_sweep(
+            100, 1000, 2,
+            amplitude_start_vpp=0.1,
+            amplitude_stop_vpp=0.3,
+            amplitude_steps=3,
+        )
+        self.assertEqual(len(plan), 6)
+        self.assertEqual(sorted({round(x.amplitude_vpp, 3) for x in plan}), [0.1, 0.2, 0.3])
+
+    def test_simulated_stimulus_has_known_response(self):
+        quiet = stimulus_response(1000, 0.0)
+        driven = stimulus_response(1000, 0.5)
+        off_resonance = stimulus_response(50, 0.5)
+        self.assertEqual(quiet.gamepad_extra_jitter_ms, 0.0)
+        self.assertGreater(driven.gamepad_extra_jitter_ms, off_resonance.gamepad_extra_jitter_ms)
+        self.assertGreater(driven.oscillator_extra_ppm, 0.0)
 
     def test_sqlite_round_trip(self):
         with tempfile.TemporaryDirectory() as td:
