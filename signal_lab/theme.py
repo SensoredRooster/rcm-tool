@@ -36,8 +36,9 @@ QFrame#MetricCard:hover {
 }
 QLabel#Brand {
     color: #F5F8FF;
-    font-size: 16pt;
-    font-weight: 750;
+    font-size: 14pt;
+    font-weight: 780;
+    letter-spacing: 0.6px;
 }
 QLabel#Eyebrow {
     color: #70D6FF;
@@ -185,7 +186,7 @@ QFrame#Topbar { background: #FFFFFF; border-bottom: 1px solid #D8E0EA; }
 QFrame#Card, QFrame#SectionCard { background: #FFFFFF; border: 1px solid #D9E2ED; border-radius: 18px; }
 QFrame#MetricCard { background: #FFFFFF; border: 1px solid #D5DFEB; border-radius: 18px; }
 QFrame#MetricCard:hover { background: #F7FAFE; border-color: #ABC0DC; }
-QLabel#Brand { color: #132039; font-size: 16pt; font-weight: 750; }
+QLabel#Brand { color: #132039; font-size: 14pt; font-weight: 780; letter-spacing: 0.6px; }
 QLabel#Eyebrow { color: #2469C5; font-size: 8pt; font-weight: 750; }
 QLabel#Title { color: #132039; font-size: 22pt; font-weight: 750; }
 QLabel#PageTitle { color: #132039; font-size: 19pt; font-weight: 720; }

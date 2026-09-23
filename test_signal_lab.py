@@ -273,6 +273,21 @@ class SignalLabTests(unittest.TestCase):
             self.assertIn("Unavailable", html)
             self.assertIn("200", html)
 
+    def test_database_buffers_rows_until_flush(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = LabDatabase(Path(td) / "buffered.sqlite3")
+            sid = db.create_session("buffered", "simulation", "test")
+            db.add_controller_sample(
+                sid, 123,
+                {"lx":0.0,"ly":0.0,"rx":0.0,"ry":0.0,"lt":0.0,"rt":0.0},
+                source="test",
+            )
+            self.assertEqual(db.pending_row_count, 1)
+            db.flush()
+            self.assertEqual(db.pending_row_count, 0)
+            self.assertEqual(db.session_summary(sid)["controller_samples"], 1)
+            db.close()
+
     def test_sqlite_round_trip(self):
         with tempfile.TemporaryDirectory() as td:
             db = LabDatabase(Path(td)/"lab.sqlite3")

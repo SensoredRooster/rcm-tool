@@ -213,6 +213,10 @@ class MainWindow(QMainWindow):
         self.ui_timer.timeout.connect(self._refresh_ui)
         self.ui_timer.start(self.graph_refresh.value())
 
+        self.db_flush_timer = QTimer(self)
+        self.db_flush_timer.timeout.connect(self._flush_database_buffer)
+        self.db_flush_timer.start(500)
+
         if not bool(self.settings.value("welcomed", False, type=bool)):
             QTimer.singleShot(150, self._first_run)
 
@@ -227,10 +231,13 @@ class MainWindow(QMainWindow):
         sidebar.setObjectName("Sidebar")
         sidebar.setFixedWidth(238)
         side = QVBoxLayout(sidebar)
-        side.setContentsMargins(12, 16, 12, 14)
+        side.setContentsMargins(12, 14, 12, 14)
 
-        brand = QLabel("GAMEPAD\nSIGNAL LAB")
+        brand = QLabel("GAMEPAD\nSIGNAL\nLAB")
         brand.setObjectName("Brand")
+        brand.setMinimumHeight(76)
+        brand.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        brand.setWordWrap(False)
         side.addWidget(brand)
         byline = QLabel("Measurement workstation")
         byline.setObjectName("Muted")
@@ -314,6 +321,8 @@ class MainWindow(QMainWindow):
             self._refresh_compare()
         elif NAV[index] == "Instruments":
             self._refresh_capabilities()
+        if hasattr(self, "ui_timer"):
+            QTimer.singleShot(0, self._refresh_ui)
 
     @staticmethod
     def _scroll(widget: QWidget) -> QScrollArea:
@@ -1061,7 +1070,7 @@ class MainWindow(QMainWindow):
         if not all(k in sample for k in ("lx","ly","rx","ry")):
             return
         self.controller_ts.append(int(timestamp_ns)); self.controller_samples.append(dict(sample)); self.controller_sources.append((source,quality))
-        if metadata:
+        if metadata and metadata != self.controller_metadata:
             self.controller_metadata=dict(metadata)
         if duplicate_raw:
             self.duplicate_raw_reports += 1
@@ -1356,8 +1365,11 @@ class MainWindow(QMainWindow):
             remaining=max(0,self.baseline_deadline-time.monotonic())
             self.baseline_progress.setValue(int((1-remaining/max(1,duration))*1000))
             self.baseline_state.setText(f"Baseline capture running • {remaining:.1f}s remaining")
-        self.db.flush()
 
+
+    def _flush_database_buffer(self) -> None:
+        if self.db.pending_row_count:
+            self.db.flush()
 
     def _timing_reference_ms(self, intervals_ms:list[float]) -> float | None:
         if hasattr(self,"timing_reference_mode") and self.timing_reference_mode.currentData()=="configured":
@@ -2315,6 +2327,8 @@ class MainWindow(QMainWindow):
             support_log_event("gamepad_signal_lab_stop", version=__version__)
         except Exception:
             pass
+        if hasattr(self, "db_flush_timer"):
+            self.db_flush_timer.stop()
         self.db.close(); event.accept()
 
 
