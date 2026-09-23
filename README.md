@@ -16,10 +16,10 @@ The application is measurement-focused. It does not inject game inputs, modify c
 - A separate VISA/SCPI signal-generator role with output-off-by-default behavior.
 - Interference Lab with explicit output enable, configurable software limits, and an EMERGENCY OUTPUT OFF control.
 - Linear/logarithmic frequency and amplitude sweep planning with repetitions, settling time, dwell time, sequential/randomized ordering, event logging, selectable response heat maps, per-step isolated measurement windows, and forced output-off at completion.
-- Synchronized controller and oscillator storage with descriptive correlation.
-- SQLite/WAL session storage, experiment history/timeline, JSON export, controller CSV export, saved baseline JSON, and self-contained HTML engineering reports containing plots, sweep response, timeline, metadata, and limitations.
+- Synchronized controller and oscillator storage with descriptive correlation, shared cross-chart cursors, user markers, and timeline-event cursor positioning.
+- SQLite/WAL session storage, experiment history/timeline, JSON export, controller CSV export, saved baseline JSON, saved-session vs saved-session comparison, live-reference comparison, and self-contained HTML engineering reports containing plots, sweep response, timeline, metadata, and limitations.
 - Deterministic gamepad/oscillator simulation with configurable rate, random/periodic jitter, spikes, missing-report cadence, oscillator offset/jitter/drift, plus known stimulus-response relationships for validating sweep/correlation behavior.
-- Automated tests and Windows CI packaging for a portable app and Inno Setup installer.
+- Automated tests plus Windows CI validation for unit tests, Qt desktop launch, full simulation workflow, portable build, standalone one-file EXE, and Inno Setup installer.
 
 ## Measurement integrity
 
@@ -122,14 +122,14 @@ The sweep engine supports:
 - sequential or deterministic randomized ordering
 - isolated per-step measurement windows
 - requested-vs-instrument-reported configuration capture
-- gamepad/clock response heat maps
+- selectable response heat maps for gamepad jitter, oscillator jitter, polling-rate deviation, clock frequency deviation, late reports, and analog noise
 - timestamped experiment events
 
-Correlation is descriptive. A coefficient or visual time alignment can show that values moved together; it does not establish causation.
+Correlation is descriptive. A coefficient or visual time alignment can show that values moved together; it does not establish causation. The Correlation page keeps stimulus, oscillator, and controller plots aligned on the same experiment timeline, supports synchronized measurement cursors across charts, allows user markers, and lets timeline-event selection position the common cursor near that event.
 
 ## Data storage
 
-Gamepad Signal Lab uses SQLite with WAL journaling. Sessions contain controller samples, oscillator samples, and experiment events.
+Gamepad Signal Lab uses SQLite with WAL journaling. Sessions contain controller samples, oscillator samples, controller backend-specific fields such as button/D-pad state where available, oscillator measurements, and experiment events. Hardware/controller metadata such as VID, PID, HID path, interface, firmware release, battery/power status, and connection method are shown only when the active backend can actually provide them.
 
 Exports include:
 
@@ -165,7 +165,7 @@ Installer definition:
 installer\GamepadSignalLab.iss
 ~~~
 
-The GitHub Actions workflow at .github/workflows/build-windows.yml runs the tests and an offscreen Qt smoke test on Windows, creates both a portable folder build and a true one-file standalone GamepadSignalLab.exe, builds the Inno Setup installer, and uploads all three as workflow artifacts.
+The GitHub Actions workflow at .github/workflows/build-windows.yml runs the unit tests, an offscreen Qt window smoke test, and a full no-hardware simulation workflow smoke covering capture, baseline, reference selection, sweep, correlation/timeline activity, SQLite persistence, CSV/JSON exports, HTML reporting, and emergency output-off. It then creates a portable folder build, a true one-file standalone GamepadSignalLab.exe, and the Inno Setup installer, and uploads all three as workflow artifacts.
 
 ## Tests
 
@@ -173,7 +173,7 @@ The GitHub Actions workflow at .github/workflows/build-windows.yml runs the test
 python -m unittest discover -v
 ~~~
 
-The suite covers the legacy RCM measurement code plus timing calculations, configurable late-report detection, ppm/period/jitter calculations, oscillator drift/outlier statistics, deterministic simulation, correlation, SCPI readback and output safety, sweep construction, report generation, and SQLite/CSV/JSON persistence. Windows CI also performs an offscreen Qt window smoke test before packaging.
+The suite covers the legacy RCM measurement code plus timing calculations, configurable late-report detection, ppm/period/jitter calculations, oscillator drift/outlier statistics, deterministic simulation, controller metadata extraction, correlation, SCPI readback and output safety, sweep construction, report generation, saved-session retrieval, and SQLite/CSV/JSON persistence. Windows CI also performs both the offscreen Qt launch smoke and the full simulated laboratory workflow before packaging.
 
 ## Project layout
 
