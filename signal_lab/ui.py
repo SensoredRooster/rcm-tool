@@ -71,14 +71,12 @@ def card(title: str) -> tuple[QFrame, QVBoxLayout]:
 def page(title: str, subtitle: str) -> tuple[QWidget, QVBoxLayout]:
     outer = QWidget()
     layout = QVBoxLayout(outer)
-    layout.setContentsMargins(22, 20, 22, 22)
+    layout.setContentsMargins(22, 18, 22, 22)
     layout.setSpacing(14)
-    heading = QLabel(title)
-    heading.setObjectName("PageTitle")
     desc = QLabel(subtitle)
     desc.setObjectName("Muted")
     desc.setWordWrap(True)
-    layout.addWidget(heading)
+    desc.setMinimumHeight(34)
     layout.addWidget(desc)
     return outer, layout
 
@@ -460,6 +458,7 @@ class MainWindow(QMainWindow):
         tl.addWidget(QLabel("RT")); tl.addWidget(self.rt_bar)
         self.axis_noise = QLabel("Stationary noise: waiting for samples")
         self.axis_noise.setObjectName("Muted")
+        self.axis_noise.setWordWrap(True)
         tl.addWidget(self.axis_noise)
         self.button_capability = QLabel("Buttons / D-pad: waiting for an input sample")
         self.button_capability.setObjectName("Muted")
@@ -469,7 +468,7 @@ class MainWindow(QMainWindow):
         self.controller_capability.setObjectName("Muted")
         self.controller_capability.setWordWrap(True)
         tl.addWidget(self.controller_capability)
-        row.addWidget(trg,1)
+        row.addWidget(trg,2)
         layout.addLayout(row)
         return self._scroll(w)
 

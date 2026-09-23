@@ -64,10 +64,12 @@ def main() -> int:
     preview_root.mkdir(parents=True, exist_ok=True)
     captures = (
         (0, "dashboard.png"),
+        (1, "live_capture.png"),
         (2, "controller_lab.png"),
         (3, "oscillator_lab.png"),
         (5, "sweep_lab.png"),
         (6, "correlation_lab.png"),
+        (11, "support.png"),
     )
     for index, filename in captures:
         window._navigate(index)

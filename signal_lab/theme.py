@@ -3,6 +3,7 @@ from __future__ import annotations
 
 DARK = """
 QWidget {
+    background: #070A10;
     color: #EAF0FA;
     font-family: "Segoe UI Variable", "Segoe UI";
     font-size: 10pt;
@@ -10,7 +11,7 @@ QWidget {
 QMainWindow, QDialog, QScrollArea, QAbstractScrollArea::viewport {
     background: #070A10;
 }
-QLabel { background: transparent; }
+QLabel, QCheckBox, QRadioButton { background: transparent; }
 QFrame#Sidebar {
     background: #0A0F18;
     border-right: 1px solid #1B2637;
@@ -172,6 +173,7 @@ QScrollBar::handle:horizontal { background: #2C3D57; min-width: 32px; border-rad
 
 LIGHT = """
 QWidget {
+    background: #F3F6FA;
     color: #182235;
     font-family: "Segoe UI Variable", "Segoe UI";
     font-size: 10pt;
