@@ -7,6 +7,52 @@ import time
 from typing import Callable
 
 
+SONY_VENDOR_ID = 0x054C
+MICROSOFT_VENDOR_ID = 0x045E
+DUALSENSE_PRODUCT_IDS = frozenset({0x0CE6, 0x0DF2})
+
+
+def _coerce_usb_id(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        if isinstance(value, str):
+            return int(value, 0)
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def detect_controller_family(metadata: dict | None = None, source: str = "") -> str:
+    """Return xbox, dualsense, or generic from evidence supplied by the backend.
+
+    This is deliberately conservative. Visual identity may be overridden in the
+    UI, but named button mappings should rely on this detected family.
+    """
+    meta = metadata or {}
+    backend = str(meta.get("backend") or "")
+    connection = str(meta.get("connection_method") or "")
+    name = str(meta.get("controller_name") or "")
+    manufacturer = str(meta.get("manufacturer") or "")
+    evidence = " ".join((source, backend, connection, name, manufacturer)).lower()
+    vid = _coerce_usb_id(meta.get("vid"))
+    pid = _coerce_usb_id(meta.get("pid"))
+
+    if "xinput" in evidence or "xbox" in evidence:
+        return "xbox"
+
+    if "dualsense" in evidence or "dual sense" in evidence:
+        return "dualsense"
+    if vid == SONY_VENDOR_ID and pid in DUALSENSE_PRODUCT_IDS:
+        return "dualsense"
+
+    # Microsoft VID alone is not enough; require controller/gamepad evidence.
+    if vid == MICROSOFT_VENDOR_ID and any(token in evidence for token in ("controller", "gamepad", "xbox")):
+        return "xbox"
+
+    return "generic"
+
+
 @dataclass(frozen=True)
 class ControllerMeasurement:
     timestamp_ns: int
