@@ -19,6 +19,37 @@ class SignalLabTests(unittest.TestCase):
         self.assertAlmostEqual(m.rms_deviation_ms, 0.0, places=9)
         self.assertEqual(m.late_reports, 0)
 
+    def test_default_timing_reference_uses_measured_median(self):
+        stamps = [0, 1_000_000, 2_000_000, 4_000_000]
+        measured_reference = timing_metrics(stamps)
+        configured_reference = timing_metrics(stamps, expected_interval_ms=2.0)
+        self.assertAlmostEqual(measured_reference.rms_deviation_ms, (1.0 / 3.0) ** 0.5, places=9)
+        self.assertNotAlmostEqual(
+            measured_reference.rms_deviation_ms,
+            configured_reference.rms_deviation_ms,
+            places=6,
+        )
+
+    def test_timing_percentiles_are_interval_percentiles(self):
+        stamps = [0]
+        total = 0
+        for interval_ms in range(1, 101):
+            total += interval_ms * 1_000_000
+            stamps.append(total)
+        metrics = timing_metrics(stamps)
+        self.assertAlmostEqual(metrics.p50_ms, 50.5, places=9)
+        self.assertAlmostEqual(metrics.p90_ms, 90.1, places=9)
+        self.assertAlmostEqual(metrics.p95_ms, 95.05, places=9)
+        self.assertAlmostEqual(metrics.p99_ms, 99.01, places=9)
+        self.assertAlmostEqual(metrics.p999_ms, 99.901, places=9)
+
+    def test_reciprocal_period_metrics_are_zero_for_stable_frequency(self):
+        metrics = oscillator_metrics([10_000_000.0] * 20, 10_000_000.0)
+        self.assertAlmostEqual(metrics.mean_period_s, 100e-9, places=15)
+        self.assertEqual(metrics.rms_period_jitter_s, 0.0)
+        self.assertEqual(metrics.peak_to_peak_period_jitter_s, 0.0)
+        self.assertEqual(metrics.cycle_to_cycle_rms_s, 0.0)
+
     def test_simulator_is_deterministic(self):
         cfg = SimulatedGamepadConfig(rate_hz=1000, jitter_ms=0.05, seed=9)
         a, b = GamepadSimulator(cfg), GamepadSimulator(cfg)
