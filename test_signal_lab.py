@@ -29,6 +29,20 @@ class SignalLabTests(unittest.TestCase):
         self.assertAlmostEqual(m.frequency_error_hz, -12.0, places=6)
         self.assertAlmostEqual(m.frequency_error_ppm, -1.0, places=6)
 
+    def test_oscillator_drift_and_outlier_metrics(self):
+        values = [12_000_000.0] * 10 + [12_000_006.0] * 10 + [12_001_000.0]
+        m = oscillator_metrics(values, 12_000_000.0, outlier_sigma=2.0)
+        self.assertGreater(m.frequency_drift_hz, 0.0)
+        self.assertGreater(m.frequency_span_hz, 0.0)
+        self.assertGreaterEqual(m.outlier_count, 1)
+
+    def test_late_report_threshold_is_configurable(self):
+        stamps = [0, 1_000_000, 2_000_000, 3_600_000]
+        strict = timing_metrics(stamps, expected_interval_ms=1.0, late_factor=1.5)
+        loose = timing_metrics(stamps, expected_interval_ms=1.0, late_factor=2.0)
+        self.assertEqual(strict.late_reports, 1)
+        self.assertEqual(loose.late_reports, 0)
+
     def test_oscillator_simulator(self):
         sim = OscillatorSimulator(SimulatedOscillatorConfig(nominal_frequency_hz=10_000_000, ppm_offset=2.0, random_jitter_ppm=0, periodic_jitter_ppm=0, drift_ppm_per_second=0))
         self.assertAlmostEqual(sim.next_frequency_hz(), 10_000_020.0, places=3)
@@ -76,6 +90,31 @@ class SignalLabTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             generator.set_output(False)
         self.assertTrue(generator.output_enabled())
+
+    def test_generator_state_readback(self):
+        class FakeResource:
+            def write(self, command):
+                pass
+            def query(self, command):
+                responses = {
+                    "OUTP?": "1",
+                    "FREQ?": "1000",
+                    "VOLT?": "0.25",
+                    "VOLT:OFFS?": "0.01",
+                    "FUNC?": "SINE",
+                }
+                return responses[command]
+
+        Generator = __import__("signal_lab.instruments", fromlist=["VisaScpiGenerator"]).VisaScpiGenerator
+        generator = Generator.__new__(Generator)
+        generator.resource = FakeResource()
+        generator._output = True
+        state = generator.read_generator_state()
+        self.assertTrue(state["output_enabled"])
+        self.assertEqual(state["frequency_hz"], 1000.0)
+        self.assertEqual(state["amplitude_vpp"], 0.25)
+        self.assertEqual(state["offset_v"], 0.01)
+        self.assertEqual(state["waveform"], "SINE")
 
     def test_sweep_log(self):
         plan = make_sweep(100, 10000, 3, logarithmic=True)
