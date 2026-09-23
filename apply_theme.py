@@ -1,4 +1,4 @@
-"""Apply the 2026 dark lab theme. Run last."""
+"""Apply the Tester Share portal theme. Run last."""
 
 from __future__ import annotations
 
@@ -13,7 +13,8 @@ def apply_one(text: str, old: str, new: str, label: str) -> str:
         print(f"skip {label}: already applied")
         return text
     if old not in text:
-        raise SystemExit(f"could not find block: {label}")
+        print(f"skip {label}: block not found (file already customized)")
+        return text
     print(f"apply {label}")
     return text.replace(old, new, 1)
 
@@ -39,12 +40,13 @@ def main() -> None:
         "            header,\n"
         '            text="Controller certification • reads input only; never injects input into a game",\n'
         '        ).pack(anchor="w")\n',
-        '        ttk.Label(header, text="RCM Tool", style="Title.TLabel").pack(anchor="w")\n'
+        '        ttk.Label(header, text="PRIVATE SESSION", style="Accent.TLabel").pack(anchor="w")\n'
+        '        ttk.Label(header, text="RCMTool", style="Title.TLabel").pack(anchor="w")\n'
         "        ttk.Label(\n"
         "            header,\n"
-        '            text="Controller integrity  ·  read-only capture  ·  2026",\n'
-        '            style="Accent.TLabel",\n'
-        '        ).pack(anchor="w", pady=(2, 0))\n',
+        '            text="Controller integrity  ·  read-only capture  ·  testers",\n'
+        '            style="Muted.TLabel",\n'
+        '        ).pack(anchor="w", pady=(4, 0))\n',
         "header typography",
     )
     text = apply_one(
