@@ -12,11 +12,28 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from ble_observe import save as save_ble
+from injection import RECIPES, describe, is_injected
 
 ROOT = Path(__file__).resolve().parent
 WEBUI = ROOT / "webui" / "index.html"
 HOST = "127.0.0.1"
 PORT = 8765
+
+
+def recipe_catalog() -> list[dict]:
+    rows = []
+    for protocol, spec in RECIPES.items():
+        rows.append(
+            {
+                "protocol": protocol,
+                "label": spec["label"],
+                "self_test": is_injected(protocol),
+                "writes_to_controller": False,
+                "filename_tag": "INJECTED_",
+                **describe(protocol),
+            }
+        )
+    return rows
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -45,12 +62,17 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             self._send(200, WEBUI.read_bytes(), "text/html; charset=utf-8")
             return
+        if path == "/api/recipes":
+            self._send(200, json.dumps({"ok": True, "recipes": recipe_catalog()}).encode(), "application/json")
+            return
         if path == "/health":
             payload = {
                 "ok": True,
                 "service": "rcm-tool-webui",
                 "write_to_controller": False,
                 "ble_radio_in_process": False,
+                "injection": "software-self-test-after-read",
+                "recipes": [row["protocol"] for row in recipe_catalog()],
             }
             self._send(200, json.dumps(payload).encode(), "application/json")
             return
@@ -59,9 +81,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urlparse(self.path).path
         if path == "/api/launch-bench":
+            body = self._json_body()
+            protocol = str(body.get("protocol", "") or "")
             script = ROOT / "rcm_tool.py"
             subprocess.Popen([sys.executable, str(script)], cwd=str(ROOT))
-            self._send(200, b"{\"ok\":true}", "application/json")
+            hint = "Select Neutral hold or Guided for an honest pair."
+            if protocol.startswith("injected-") or protocol.startswith("after-"):
+                hint = (
+                    f"In the capture window set Protocol to the matching injected recipe "
+                    f"({protocol}). Thumbs off. File will be tagged INJECTED_. Not a pad screen."
+                )
+            payload = {"ok": True, "protocol": protocol, "hint": hint, "writes_to_controller": False}
+            self._send(200, json.dumps(payload).encode(), "application/json")
             return
         if path == "/api/ble-observe":
             stored = save_ble(self._json_body())

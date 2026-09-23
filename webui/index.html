@@ -11,23 +11,29 @@ body{margin:0;font-family:Inter,system-ui,sans-serif;background:#080b12;color:#f
 header{position:sticky;top:0;z-index:3;background:#090d16ef;backdrop-filter:blur(16px);border-bottom:1px solid #222b3d;padding:14px 20px;display:flex;align-items:center;justify-content:space-between}
 .brand strong{display:block;font-size:18px}
 .brand span{color:#8fa1ba;font-size:12px}
-.wrap{max-width:1180px;margin:auto;padding:28px 20px 48px}
+.wrap{max-width:1240px;margin:auto;padding:28px 20px 56px}
 .eyebrow{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:#7dd3fc;font-weight:800}
 h1{margin:8px 0 6px;font-size:34px}
 .muted{color:#9da8bc;line-height:1.55}
-.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:18px;margin-top:22px}
+.hero{max-width:720px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:24px}
 .card{background:linear-gradient(180deg,#151b2a,#0e1320);border:1px solid #293246;border-radius:22px;padding:22px;box-shadow:0 24px 70px #0008}
-.card h2{margin:0 0 10px;font-size:18px}
+.card h2{margin:0 0 8px;font-size:18px}
+.tag{display:inline-block;margin-bottom:10px;padding:4px 8px;border-radius:999px;background:#0d2441;border:1px solid #245a9c;color:#93c5fd;font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+.tag.warn{background:#2a1a0c;border-color:#7c4a12;color:#fbbf24}
 ol{margin:8px 0 0;padding-left:18px;color:#cbd5e1}
 label{display:block;margin:12px 0 6px;color:#8fa1ba;font-size:12px;letter-spacing:.04em;text-transform:uppercase}
-input,select,textarea{width:100%;border-radius:12px;border:1px solid #30394e;background:#0a0f19;color:#fff;padding:12px 14px;font:inherit}
-textarea{min-height:72px;resize:vertical}
-button,a.btn{display:inline-block;border-radius:12px;border:1px solid #3b82f6;background:#2563eb;color:#fff;padding:12px 16px;font:inherit;font-weight:800;text-decoration:none;cursor:pointer}
+input,select,textarea{width:100%;border-radius:12px;border:1px solid #30394e;background:#0a0f19;color:#fff;padding:11px 13px;font:inherit}
+textarea{min-height:68px;resize:vertical}
+button,a.btn{display:inline-block;border-radius:12px;border:1px solid #3b82f6;background:#2563eb;color:#fff;padding:11px 15px;font:inherit;font-weight:800;text-decoration:none;cursor:pointer}
 button.ghost,a.ghost{background:#0a0f19;border-color:#30394e}
 .actions{margin-top:16px;display:flex;gap:8px;flex-wrap:wrap}
-.status{min-height:22px;margin-top:12px;color:#93c5fd}
+.status{min-height:22px;margin-top:12px;color:#93c5fd;font-size:13px}
 .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-@media(max-width:900px){.grid,.row{grid-template-columns:1fr}}
+.recipes{margin:0;padding:0;list-style:none}
+.recipes li{padding:8px 0;border-bottom:1px solid #202a3d;font-size:13px;color:#cbd5e1}
+.recipes li span{display:block;color:#8fa1ba;font-size:12px}
+@media(max-width:980px){.grid,.row{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -36,89 +42,100 @@ button.ghost,a.ghost{background:#0a0f19;border-color:#30394e}
   <a class="btn ghost" href="https://rcm-tool-share.sensoredrooster-com.workers.dev" target="_blank" rel="noreferrer">Tester Share</a>
 </header>
 <div class="wrap">
-  <div class="eyebrow">Private session</div>
-  <h1>RCMTool</h1>
-  <p class="muted">Portal visual system. Python reads HID. BLE notes are operator observations from an external sniffer — no radio driver and no injection in this process.</p>
+  <div class="hero">
+    <div class="eyebrow">Private session</div>
+    <h1>RCMTool</h1>
+    <p class="muted">Same card language as Tester Share. HID reader is separate. Injection recipes overlay the captured stream after read() so you can verify HF RMS and pair-delta. They do not drive the pad.</p>
+  </div>
   <div class="grid">
     <section class="card">
-      <h2>Honest pair</h2>
+      <div class="tag">Pair</div>
+      <h2>Hardware in vs out</h2>
       <ol>
-        <li>Before: pad straight to the PC. Neutral, then Guided.</li>
-        <li>Unplug. Device under test in the path.</li>
+        <li>Before: pad direct. Neutral, then Guided.</li>
+        <li>Device under test in the path.</li>
         <li>After: same protocol, same hands.</li>
-        <li>Compare HF RMS, sample rate, jitter, unique levels.</li>
+        <li>Read HF RMS, rate, jitter, unique levels.</li>
       </ol>
       <div class="actions">
         <button id="bench">Open capture bench</button>
-        <a class="btn ghost" href="/health">Health</a>
       </div>
       <div class="status" id="status"></div>
     </section>
     <section class="card">
+      <div class="tag warn">Self-test</div>
+      <h2>Injection recipes</h2>
+      <p class="muted">Software only. Files tagged INJECTED_. Do not submit as a pad screen. Pair mode stays Neutral/Guided.</p>
+      <ul class="recipes" id="recipes"><li class="muted">Loading recipes…</li></ul>
+      <label>Recipe</label>
+      <select id="recipe"></select>
+      <div class="actions">
+        <button id="selftest">Open bench for self-test</button>
+      </div>
+      <div class="status" id="injstatus"></div>
+    </section>
+    <section class="card">
+      <div class="tag">Air</div>
       <h2>BLE observation</h2>
-      <p class="muted">Fill this from nRF Sniffer / Sniffle / Ellisys on hardware you are authorized to test. Saved under reports/ as a sidecar JSON.</p>
+      <p class="muted">External sniffer. No radio in this process.</p>
       <div class="row">
         <div>
           <label>Phase</label>
-          <select id="phase">
-            <option>Before</option>
-            <option>After</option>
-            <option>Unspecified</option>
-          </select>
+          <select id="phase"><option>Before</option><option>After</option></select>
         </div>
         <div>
           <label>BLE present</label>
-          <select id="present">
-            <option value="unknown">Unknown</option>
-            <option value="absent">Absent</option>
-            <option value="present">Present</option>
-          </select>
+          <select id="present"><option value="unknown">Unknown</option><option value="absent">Absent</option><option value="present">Present</option></select>
         </div>
       </div>
       <div class="row">
         <div>
           <label>Encryption</label>
-          <select id="enc">
-            <option value="unknown">Unknown</option>
-            <option value="n/a">N/A</option>
-            <option value="clear">Clear</option>
-            <option value="encrypted">Encrypted</option>
-            <option value="not_followed">Not followed</option>
-          </select>
+          <select id="enc"><option value="unknown">Unknown</option><option value="n/a">N/A</option><option value="clear">Clear</option><option value="encrypted">Encrypted</option><option value="not_followed">Not followed</option></select>
         </div>
         <div>
-          <label>Adapter MAC</label>
-          <input id="mac" placeholder="AA:BB:CC:DD:EE:FF" maxlength="32">
+          <label>MAC</label>
+          <input id="mac" maxlength="32" placeholder="AA:BB:CC:DD:EE:FF">
         </div>
       </div>
-      <label>PCAP path</label>
-      <input id="pcap" placeholder="C:\captures\after.pcapng" maxlength="260">
+      <label>PCAP</label>
+      <input id="pcap" maxlength="260">
       <label>Notes</label>
-      <textarea id="notes" maxlength="500" placeholder="Advertiser name, RSSI, PHY, whether CONNECT_IND was followed."></textarea>
-      <div class="actions">
-        <button id="saveble">Save BLE note</button>
-      </div>
+      <textarea id="notes" maxlength="500"></textarea>
+      <div class="actions"><button id="saveble">Save BLE note</button></div>
       <div class="status" id="blestatus"></div>
     </section>
   </div>
 </div>
 <script>
+async function launch(protocol){
+  const r = await fetch("/api/launch-bench", {
+    method:"POST",
+    headers:{"content-type":"application/json"},
+    body: JSON.stringify({protocol: protocol || ""})
+  });
+  return r.json();
+}
 document.getElementById("bench").onclick = async () => {
   const el = document.getElementById("status");
-  el.textContent = "Starting capture bench…";
-  try {
-    const r = await fetch("/api/launch-bench", {method:"POST"});
-    const d = await r.json();
-    el.textContent = d.ok ? "Capture bench launched." : (d.error || "Launch failed");
-  } catch (e) { el.textContent = String(e); }
+  el.textContent = "Starting…";
+  try { const d = await launch(""); el.textContent = d.hint || "Launched."; }
+  catch(e){ el.textContent = String(e); }
+};
+document.getElementById("selftest").onclick = async () => {
+  const el = document.getElementById("injstatus");
+  const protocol = document.getElementById("recipe").value;
+  el.textContent = "Starting…";
+  try { const d = await launch(protocol); el.textContent = d.hint || "Launched."; }
+  catch(e){ el.textContent = String(e); }
 };
 document.getElementById("saveble").onclick = async () => {
   const el = document.getElementById("blestatus");
   el.textContent = "Saving…";
   try {
     const r = await fetch("/api/ble-observe", {
-      method: "POST",
-      headers: {"content-type": "application/json"},
+      method:"POST",
+      headers:{"content-type":"application/json"},
       body: JSON.stringify({
         phase: document.getElementById("phase").value,
         ble_present: document.getElementById("present").value,
@@ -130,8 +147,25 @@ document.getElementById("saveble").onclick = async () => {
     });
     const d = await r.json();
     el.textContent = d.ok ? ("Wrote " + d.path) : (d.error || "Save failed");
-  } catch (e) { el.textContent = String(e); }
+  } catch(e){ el.textContent = String(e); }
 };
+(async () => {
+  const r = await fetch("/api/recipes");
+  const d = await r.json();
+  const list = document.getElementById("recipes");
+  const sel = document.getElementById("recipe");
+  list.innerHTML = "";
+  sel.innerHTML = "";
+  (d.recipes || []).forEach(row => {
+    const li = document.createElement("li");
+    li.innerHTML = row.label + "<span>" + row.recipe + " · " + row.freq_hz + " Hz · amp " + row.amplitude + " · " + row.axes.join(",") + "</span>";
+    list.appendChild(li);
+    const opt = document.createElement("option");
+    opt.value = row.protocol;
+    opt.textContent = row.label;
+    sel.appendChild(opt);
+  });
+})();
 </script>
 </body>
 </html>
