@@ -1501,7 +1501,7 @@ class MainWindow(QMainWindow):
         o=oscillator_metrics(
             self.baseline_osc_freq,self.nominal_freq.value(),
             duty_cycles_percent=self.baseline_osc_duty,
-            outlier_sigma=float(metadata.get("oscillator_outlier_sigma") or self.outlier_sigma.value()),
+            outlier_sigma=self.outlier_sigma.value(),
         )
         self.last_baseline={"timing":asdict(t),"oscillator":asdict(o)}
         self.baseline_progress.setValue(1000)
@@ -2023,9 +2023,28 @@ class MainWindow(QMainWindow):
             data["oscillator_frequencies_hz"],
             nominal,
             duty_cycles_percent=data["duty_cycles_percent"],
-            outlier_sigma=self.outlier_sigma.value(),
+            outlier_sigma=float(metadata.get("oscillator_outlier_sigma") or self.outlier_sigma.value()),
         )
         return timing,oscillator,data["session"]
+
+    @staticmethod
+    def _comparison_metric_help(name:str) -> str:
+        help_map={
+            "Effective rate Hz":METRIC_HELP["rate"],
+            "Mean interval ms":METRIC_HELP["interval"],
+            "RMS timing deviation ms":METRIC_HELP["jitter"],
+            "Peak-to-peak jitter ms":"Maximum observed report interval minus minimum observed report interval.",
+            "P99 ms":"99th percentile of positive consecutive controller-report intervals.",
+            "P99.9 ms":"99.9th percentile of positive consecutive controller-report intervals.",
+            "Late reports":METRIC_HELP["late"],
+            "Missing reports estimate":"Estimated missing reports inferred from unusually long intervals relative to the selected timing reference.",
+            "Clock frequency Hz":METRIC_HELP["osc_mean"],
+            "Clock error ppm":METRIC_HELP["osc_error_ppm"],
+            "Oscillator RMS jitter s":METRIC_HELP["osc_rms"],
+            "Successive sampled-period RMS s":METRIC_HELP["osc_ctc"],
+            "Duty cycle %":METRIC_HELP["duty"],
+        }
+        return help_map.get(name,name)
 
     def _populate_compare_table(self,reference_t,reference_o,test_t,test_o,label:str) -> None:
         metrics=[
@@ -2039,16 +2058,22 @@ class MainWindow(QMainWindow):
             ("Clock frequency Hz",reference_o.mean_frequency_hz,test_o.mean_frequency_hz),
             ("Clock error ppm",reference_o.frequency_error_ppm,test_o.frequency_error_ppm),
             ("Oscillator RMS jitter s",reference_o.rms_period_jitter_s,test_o.rms_period_jitter_s),
-            ("Cycle-to-cycle RMS s",reference_o.cycle_to_cycle_rms_s,test_o.cycle_to_cycle_rms_s),
-            ("Duty cycle %",reference_o.duty_cycle_percent or 0.0,test_o.duty_cycle_percent or 0.0),
+            ("Successive sampled-period RMS s",reference_o.cycle_to_cycle_rms_s,test_o.cycle_to_cycle_rms_s),
+            ("Duty cycle %",reference_o.duty_cycle_percent,test_o.duty_cycle_percent),
         ]
         self.compare_state.setText(label)
         self.compare_table.setRowCount(len(metrics))
         for r,(name,ref,cur) in enumerate(metrics):
-            ref=float(ref); cur=float(cur)
-            pct="Unavailable" if math.isclose(ref,0.0,abs_tol=1e-30) else f"{((cur-ref)/abs(ref))*100:+.3f}%"
-            for c,val in enumerate([name,f"{ref:.9g}",f"{cur:.9g}",f"{cur-ref:+.9g}",pct]):
-                self.compare_table.setItem(r,c,QTableWidgetItem(str(val)))
+            if ref is None or cur is None:
+                values=[name,"Unavailable" if ref is None else f"{float(ref):.9g}","Unavailable" if cur is None else f"{float(cur):.9g}","Unavailable","Unavailable"]
+            else:
+                ref_value=float(ref); cur_value=float(cur)
+                pct="Unavailable" if math.isclose(ref_value,0.0,abs_tol=1e-30) else f"{((cur_value-ref_value)/abs(ref_value))*100:+.3f}%"
+                values=[name,f"{ref_value:.9g}",f"{cur_value:.9g}",f"{cur_value-ref_value:+.9g}",pct]
+            for c,val in enumerate(values):
+                item=QTableWidgetItem(str(val))
+                item.setToolTip(self._comparison_metric_help(name))
+                self.compare_table.setItem(r,c,item)
 
     def _compare_saved_sessions(self) -> None:
         a=self.compare_a.currentData() if hasattr(self,"compare_a") else None
