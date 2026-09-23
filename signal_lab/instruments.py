@@ -171,12 +171,23 @@ class VisaScpiGenerator(_VisaBase):
             raise RuntimeError("Could not establish a safe OUTPUT OFF state on this SCPI resource")
 
     def set_output(self, enabled: bool) -> None:
-        self.resource.write("OUTP ON" if enabled else "OUTP OFF")
-        self._output = bool(enabled)
+        requested = bool(enabled)
+        self.resource.write("OUTP ON" if requested else "OUTP OFF")
+        self._output = requested
+        verified: bool | None = None
         try:
-            self._output = self.query("OUTP?").strip().upper() in {"1", "ON"}
+            verified = self.query("OUTP?").strip().upper() in {"1", "ON"}
         except Exception:
-            pass
+            # Some valid SCPI generators accept OUTP but do not expose OUTP?.
+            # In that case we retain the commanded state, but when read-back is
+            # available it must agree with the requested state.
+            verified = None
+        if verified is not None:
+            self._output = verified
+            if verified != requested:
+                raise RuntimeError(
+                    "Generator output state did not match the requested safe state"
+                )
 
     def output_enabled(self) -> bool:
         # Return cached state so dashboard refreshes never introduce VISA I/O

@@ -56,6 +56,27 @@ class SignalLabTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             measurement.set_output(True)
 
+    def test_generator_rejects_output_readback_mismatch(self):
+        class FakeResource:
+            def __init__(self):
+                self.writes = []
+            def write(self, command):
+                self.writes.append(command)
+            def query(self, command):
+                self.writes.append(command)
+                return "1"
+
+        generator = __import__(
+            "signal_lab.instruments", fromlist=["VisaScpiGenerator"]
+        ).VisaScpiGenerator.__new__(
+            __import__("signal_lab.instruments", fromlist=["VisaScpiGenerator"]).VisaScpiGenerator
+        )
+        generator.resource = FakeResource()
+        generator._output = True
+        with self.assertRaises(RuntimeError):
+            generator.set_output(False)
+        self.assertTrue(generator.output_enabled())
+
     def test_sweep_log(self):
         plan = make_sweep(100, 10000, 3, logarithmic=True)
         self.assertEqual(len(plan), 3)
