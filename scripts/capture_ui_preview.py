@@ -60,6 +60,11 @@ def main() -> int:
     window._refresh_ui()
     window._add_user_marker()
 
+    # Show a high-rate controller configuration in the Settings preview.
+    window.timing_reference_mode.setCurrentIndex(window.timing_reference_mode.findData("configured"))
+    window.expected_rate.setValue(32000.0)
+    window.sim_rate.setValue(32000.0)
+
     preview_root = ROOT / "artifacts" / "ui-preview-native"
     preview_root.mkdir(parents=True, exist_ok=True)
     captures = (
@@ -70,6 +75,7 @@ def main() -> int:
         (5, "sweep_lab.png"),
         (6, "correlation_lab.png"),
         (11, "support.png"),
+        (12, "settings.png"),
     )
     for index, filename in captures:
         window._navigate(index)
