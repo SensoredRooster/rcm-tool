@@ -186,6 +186,7 @@ class MainWindow(QMainWindow):
         self.sweep_step_controller_samples: list[dict] = []
         self.sweep_step_osc_freq: list[float] = []
         self.sweep_phase = "idle"
+        self.sweep_reference_rate_hz = 0.0
         self.sweep_timer = QTimer(self)
         self.sweep_timer.setSingleShot(True)
         self.sweep_timer.timeout.connect(self._sweep_timer_tick)
@@ -622,11 +623,26 @@ class MainWindow(QMainWindow):
         marker_button=QPushButton("Add User Marker"); marker_button.clicked.connect(self._add_user_marker)
         marker_row.addWidget(self.marker_text,1); marker_row.addWidget(marker_button)
         layout.addLayout(marker_row)
-        self.corr_card=MetricCard("Aligned correlation coefficient","—","Gamepad interval deviation vs nearest oscillator ppm sample")
+        self.corr_card=MetricCard(
+            "Aligned correlation coefficient","—","Gamepad interval deviation vs nearest oscillator ppm sample",
+            help_text=METRIC_HELP["correlation"],source="CALCULATED"
+        )
         layout.addWidget(self.corr_card)
-        self.corr_stimulus_chart=LineChart("Stimulus frequency (Hz)")
-        self.corr_osc_chart=LineChart("Oscillator error (ppm)")
-        self.corr_gamepad_chart=LineChart("Gamepad report timing deviation (ms)")
+        self.corr_stimulus_chart=LineChart(
+            "Stimulus frequency",
+            help_text="Requested controlled-stimulus frequency aligned to the common experiment timeline.",
+            x_label="Elapsed correlated time (s)",
+        )
+        self.corr_osc_chart=LineChart(
+            "Oscillator frequency error",
+            help_text=CHART_HELP["osc_ppm"],
+            x_label="Elapsed correlated time (s)",
+        )
+        self.corr_gamepad_chart=LineChart(
+            "Controller timing deviation",
+            help_text=CHART_HELP["gamepad_deviation"],
+            x_label="Elapsed correlated time (s)",
+        )
         self.corr_charts=[self.corr_stimulus_chart,self.corr_osc_chart,self.corr_gamepad_chart]
         for chart in self.corr_charts:
             chart.cursorRatioChanged.connect(lambda ratio, source=chart: self._sync_correlation_cursor(source,ratio))
@@ -1337,8 +1353,12 @@ class MainWindow(QMainWindow):
         dlg.setWindowTitle(source.title)
         dlg.resize(1280,760)
         layout=QVBoxLayout(dlg)
-        chart=LineChart(source.title)
-        chart.set_series([(name,values,color.name()) for name,values,color in source.series])
+        chart=LineChart(source.title,help_text=source.help_text,x_label=source.x_label)
+        chart.set_series(
+            [(name,values,color.name()) for name,values,color in source.series],
+            x_values=source.x_values,
+            x_label=source.x_label,
+        )
         layout.addWidget(chart)
         close=QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         close.rejected.connect(dlg.reject); close.accepted.connect(dlg.accept)
@@ -1438,7 +1458,12 @@ class MainWindow(QMainWindow):
 
     def _finish_baseline(self) -> None:
         self.baseline_active=False
-        t=timing_metrics(self.baseline_controller_ts,expected_interval_ms=1000.0/max(self.expected_rate.value(),1),late_factor=self.late_factor.value())
+        baseline_intervals=[(b-a)/1e6 for a,b in zip(self.baseline_controller_ts,self.baseline_controller_ts[1:]) if b>a]
+        t=timing_metrics(
+            self.baseline_controller_ts,
+            expected_interval_ms=self._timing_reference_ms(baseline_intervals),
+            late_factor=self.late_factor.value(),
+        )
         o=oscillator_metrics(self.baseline_osc_freq,self.nominal_freq.value(),outlier_sigma=self.outlier_sigma.value())
         self.last_baseline={"timing":asdict(t),"oscillator":asdict(o)}
         self.baseline_progress.setValue(1000)
@@ -1690,6 +1715,7 @@ class MainWindow(QMainWindow):
         self.sweep_step_controller_ts=[]
         self.sweep_step_controller_samples=[]
         self.sweep_step_osc_freq=[]
+        self.sweep_reference_rate_hz=self.current_timing.effective_rate_hz or self.expected_rate.value()
         self.sweep_table.setRowCount(0)
         self.sweep_heatmap.set_points([])
         self.sweep_active=True
@@ -1698,6 +1724,8 @@ class MainWindow(QMainWindow):
             "settling_ms":self.settle_ms.value(),
             "dwell_ms":self.dwell_ms.value(),
             "randomized":self.sweep_random.isChecked(),
+            "reference_rate_hz":self.sweep_reference_rate_hz,
+            "timing_reference_mode":self.timing_reference_mode.currentData(),
         })
         self._sweep_apply_next()
 
@@ -1778,9 +1806,10 @@ class MainWindow(QMainWindow):
             return
 
         freq,amp,rep=self.sweep_plan[self.sweep_index]
+        step_intervals=[(b-a)/1e6 for a,b in zip(self.sweep_step_controller_ts,self.sweep_step_controller_ts[1:]) if b>a]
         step_timing=timing_metrics(
             self.sweep_step_controller_ts,
-            expected_interval_ms=1000.0/max(self.expected_rate.value(),1.0),
+            expected_interval_ms=self._timing_reference_ms(step_intervals),
             late_factor=self.late_factor.value(),
         )
         step_osc=oscillator_metrics(
@@ -1790,7 +1819,7 @@ class MainWindow(QMainWindow):
         )
         gp=step_timing.rms_deviation_ms if step_timing.sample_count>=2 else None
         ppm=step_osc.frequency_error_ppm if step_osc.sample_count else None
-        polling_dev=(step_timing.effective_rate_hz-self.expected_rate.value()) if step_timing.sample_count>=2 else None
+        polling_dev=(step_timing.effective_rate_hz-self.sweep_reference_rate_hz) if step_timing.sample_count>=2 else None
         osc_jitter_ps=(step_osc.rms_period_jitter_s*1e12) if step_osc.sample_count else None
         analog_noise=self._analog_noise_rms(self.sweep_step_controller_samples)
         metric_row={
@@ -1941,11 +1970,12 @@ class MainWindow(QMainWindow):
     def _session_metrics(self,session_id:str):
         data=self.db.session_series(session_id)
         metadata=data["session"].get("metadata") or {}
-        expected_rate=float(metadata.get("expected_rate_hz") or self.expected_rate.value())
+        configured_rate=float(metadata.get("configured_reference_rate_hz") or metadata.get("expected_rate_hz") or self.expected_rate.value())
+        reference_mode=str(metadata.get("timing_reference_mode") or "median")
         nominal=float(metadata.get("nominal_frequency_hz") or self.nominal_freq.value())
         timing=timing_metrics(
             data["controller_timestamps_ns"],
-            expected_interval_ms=1000.0/max(expected_rate,1.0),
+            expected_interval_ms=(1000.0/max(configured_rate,1.0)) if reference_mode=="configured" else None,
             late_factor=self.late_factor.value(),
         )
         oscillator=oscillator_metrics(
@@ -2025,9 +2055,10 @@ class MainWindow(QMainWindow):
         path,_=QFileDialog.getSaveFileName(self,"Engineering Report",str(self.data_root/"GamepadSignalLab_Report.html"),"HTML (*.html)")
         if not path: return
         timestamps=list(self.controller_ts)[-5000:]
-        expected_ms=1000.0/max(self.expected_rate.value(),1.0)
         intervals=[(b-a)/1e6 for a,b in zip(timestamps,timestamps[1:]) if b>a]
-        deviations=[value-expected_ms for value in intervals]
+        expected_override=self._timing_reference_ms(intervals)
+        report_reference_ms=expected_override if expected_override is not None else self._median(intervals)
+        deviations=[value-report_reference_ms for value in intervals]
         freqs=list(self.osc_freq)[-3000:]
         nominal=self.nominal_freq.value()
         ppm=[(value-nominal)/nominal*1e6 for value in freqs] if nominal>0 else []
@@ -2042,7 +2073,10 @@ class MainWindow(QMainWindow):
                 "correlation":self.current_corr,
                 "app_version":__version__,
                 "nominal_frequency_hz":self.nominal_freq.value(),
-                "expected_polling_rate_hz":self.expected_rate.value(),
+                "timing_reference_mode":self.timing_reference_mode.currentData(),
+                "timing_reference_interval_ms":report_reference_ms,
+                "configured_reference_rate_hz":self.expected_rate.value(),
+                "host_timer_resolution_ns":self.host_timer_resolution_ns,
                 "baseline_reference":self.reference_baseline,
                 "stimulus":{
                     "waveform":self.waveform_combo.currentText(),
@@ -2054,7 +2088,7 @@ class MainWindow(QMainWindow):
                 "sweep_points":len(self.sweep_results),
             },
             plots={
-                "Report interval vs sample (ms)":intervals[-1200:],
+                "Report interval (ms)":intervals[-1200:],
                 "Gamepad timing deviation (ms)":deviations[-1200:],
                 "Oscillator frequency (Hz)":freqs[-1200:],
                 "Oscillator error (ppm)":ppm[-1200:],
