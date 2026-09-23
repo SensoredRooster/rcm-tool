@@ -166,12 +166,14 @@ class MainWindow(QMainWindow):
         self.controller_metadata: dict = {}
         self.osc_ts = deque(maxlen=12000)
         self.osc_freq = deque(maxlen=12000)
+        self.osc_duty = deque(maxlen=12000)
         self.events: list[tuple[int, str, dict]] = []
 
         self.baseline_active = False
         self.baseline_deadline = 0.0
         self.baseline_controller_ts: list[int] = []
         self.baseline_osc_freq: list[float] = []
+        self.baseline_osc_duty: list[float] = []
         self.last_baseline: dict | None = None
         self.reference_baseline: dict | None = None
 
@@ -183,6 +185,7 @@ class MainWindow(QMainWindow):
         self.sweep_step_controller_ts: list[int] = []
         self.sweep_step_controller_samples: list[dict] = []
         self.sweep_step_osc_freq: list[float] = []
+        self.sweep_step_osc_duty: list[float] = []
         self.sweep_phase = "idle"
         self.sweep_reference_rate_hz = 0.0
         self.sweep_timer = QTimer(self)
@@ -515,6 +518,7 @@ class MainWindow(QMainWindow):
             ("rms","RMS derived period jitter","osc_rms","CALCULATED"),
             ("p2p","P2P derived period jitter","osc_p2p","CALCULATED"),
             ("ctc","Successive-period RMS","osc_ctc","CALCULATED"),
+            ("duty","Duty cycle","duty","MEASURED"),
             ("allan","Allan deviation","allan","CALCULATED"),
         ]
         for i,(key,title,help_key,source) in enumerate(specs):
@@ -917,16 +921,30 @@ class MainWindow(QMainWindow):
                 "timing_reference_mode":self.timing_reference_mode.currentData(),
                 "configured_reference_rate_hz":self.expected_rate.value(),
                 "host_timer_resolution_ns":self.host_timer_resolution_ns,
+                "late_factor":self.late_factor.value(),
+                "oscillator_outlier_sigma":self.outlier_sigma.value(),
             },
         )
         self.capture_active=True
         self.capture_button.setText("Stop Capture")
-        self._add_event("capture_started",{"mode":mode})
+        self._add_event("capture_started",{
+            "mode":mode,
+            "timing_reference_mode":self.timing_reference_mode.currentData(),
+            "configured_reference_rate_hz":self.expected_rate.value(),
+            "nominal_frequency_hz":self.nominal_freq.value(),
+            "host_timer_resolution_ns":self.host_timer_resolution_ns,
+        })
 
     def _stop_capture(self) -> None:
         if not self.capture_active:
             return
-        self._add_event("capture_stopped",{})
+        self._add_event("capture_stopped",{
+            "controller":asdict(self.current_timing),
+            "oscillator":asdict(self.current_osc),
+            "correlation":self.current_corr,
+            "duplicate_raw_reports":self.duplicate_raw_reports,
+            "controller_metadata":self.controller_metadata,
+        })
         self.db.flush()
         self.capture_active=False
         self.capture_button.setText("Start Capture")
@@ -1028,10 +1046,13 @@ class MainWindow(QMainWindow):
             self.db.add_controller_sample(self.session_id,timestamp_ns,sample,source=f"{source} [{quality}]",raw_report_hex=raw_hex)
 
     def _accept_oscillator(self,timestamp_ns:int,frequency_hz:float,source:str,quality:str,duty_cycle_percent:float|None=None) -> None:
-        self.osc_ts.append(int(timestamp_ns)); self.osc_freq.append(float(frequency_hz))
-        if self.baseline_active: self.baseline_osc_freq.append(float(frequency_hz))
+        self.osc_ts.append(int(timestamp_ns)); self.osc_freq.append(float(frequency_hz)); self.osc_duty.append(duty_cycle_percent)
+        if self.baseline_active:
+            self.baseline_osc_freq.append(float(frequency_hz))
+            if duty_cycle_percent is not None: self.baseline_osc_duty.append(float(duty_cycle_percent))
         if self.sweep_active and self.sweep_phase=="dwell":
             self.sweep_step_osc_freq.append(float(frequency_hz))
+            if duty_cycle_percent is not None: self.sweep_step_osc_duty.append(float(duty_cycle_percent))
         if self.capture_active and self.session_id:
             self.db.add_oscillator_sample(self.session_id,timestamp_ns,frequency_hz,source=source,duty_cycle_percent=duty_cycle_percent,quality=quality)
 
@@ -1050,12 +1071,18 @@ class MainWindow(QMainWindow):
 
         osc_times_all=list(self.osc_ts)
         osc_freq_all=list(self.osc_freq)
+        osc_duty_all=list(self.osc_duty)
         osc_count=min(3000,len(osc_times_all),len(osc_freq_all))
         osc_times=osc_times_all[-osc_count:] if osc_count else []
         freqs=osc_freq_all[-osc_count:] if osc_count else []
+        duties=[float(value) for value in osc_duty_all[-osc_count:] if value is not None] if osc_count else []
         nominal=self.nominal_freq.value()
-        self.current_osc=oscillator_metrics(freqs,nominal,outlier_sigma=self.outlier_sigma.value())
-        self.current_corr=self._aligned_correlation(timestamps,osc_times,freqs,nominal)
+        self.current_osc=oscillator_metrics(
+            freqs,nominal,duty_cycles_percent=duties,outlier_sigma=self.outlier_sigma.value()
+        )
+        self.current_corr=self._aligned_correlation(
+            timestamps,osc_times,freqs,nominal,expected_interval_ms=expected_override
+        )
         t,o=self.current_timing,self.current_osc
 
         reference_name="configured" if expected_override is not None else "measured median"
@@ -1205,6 +1232,11 @@ class MainWindow(QMainWindow):
         self.osc_labels["rms"].set_value(f"{o.rms_period_jitter_s*1e12:.3f} ps" if o.sample_count else "Unavailable","RMS reciprocal-period deviation",source="CALCULATED")
         self.osc_labels["p2p"].set_value(f"{o.peak_to_peak_period_jitter_s*1e12:.3f} ps" if o.sample_count else "Unavailable","Peak-to-peak reciprocal-period deviation",source="CALCULATED")
         self.osc_labels["ctc"].set_value(f"{o.cycle_to_cycle_rms_s*1e12:.3f} ps" if o.sample_count else "Unavailable","Successive sampled-period difference; see hover definition",source="CALCULATED")
+        self.osc_labels["duty"].set_value(
+            f"{o.duty_cycle_percent:.4f} %" if o.duty_cycle_percent is not None else "Unavailable",
+            "Instrument-reported duty-cycle samples only",
+            source="MEASURED" if o.duty_cycle_percent is not None else "UNAVAILABLE",
+        )
         self.osc_labels["allan"].set_value(f"{o.allan_deviation_tau1:.3e}" if o.allan_deviation_tau1 is not None else "Unavailable","τ = one sample interval",source="CALCULATED")
 
         if samples:
@@ -1427,7 +1459,10 @@ class MainWindow(QMainWindow):
         return counts
 
     @staticmethod
-    def _aligned_correlation(controller_ts:list[int],osc_ts:list[int],osc_freq:list[float],nominal:float) -> float|None:
+    def _aligned_correlation(
+        controller_ts:list[int],osc_ts:list[int],osc_freq:list[float],nominal:float,
+        expected_interval_ms:float|None=None,
+    ) -> float|None:
         if len(controller_ts)<3 or len(osc_ts)<2 or nominal<=0: return None
         intervals=[]; midpoints=[]
         segment=controller_ts[-600:]
@@ -1435,7 +1470,7 @@ class MainWindow(QMainWindow):
             if b>a:
                 intervals.append((b-a)/1e6); midpoints.append((a+b)//2)
         if len(intervals)<3: return None
-        expected=sorted(intervals)[len(intervals)//2]
+        expected=float(expected_interval_ms) if expected_interval_ms is not None else sorted(intervals)[len(intervals)//2]
         deviations=[x-expected for x in intervals]
         times=osc_ts[-len(osc_freq):]; freqs=osc_freq[-len(times):]
         paired_ppm=[]; paired_dev=[]
@@ -1450,7 +1485,7 @@ class MainWindow(QMainWindow):
     def _start_baseline(self) -> None:
         if self.baseline_active: return
         if not self.capture_active: self._start_capture()
-        self.baseline_controller_ts=[]; self.baseline_osc_freq=[]
+        self.baseline_controller_ts=[]; self.baseline_osc_freq=[]; self.baseline_osc_duty=[]
         self.baseline_deadline=time.monotonic()+self.baseline_seconds.value()
         self.baseline_active=True; self.baseline_progress.setValue(0)
         self._add_event("baseline_started",{"duration_s":self.baseline_seconds.value()})
@@ -1463,7 +1498,11 @@ class MainWindow(QMainWindow):
             expected_interval_ms=self._timing_reference_ms(baseline_intervals),
             late_factor=self.late_factor.value(),
         )
-        o=oscillator_metrics(self.baseline_osc_freq,self.nominal_freq.value(),outlier_sigma=self.outlier_sigma.value())
+        o=oscillator_metrics(
+            self.baseline_osc_freq,self.nominal_freq.value(),
+            duty_cycles_percent=self.baseline_osc_duty,
+            outlier_sigma=float(metadata.get("oscillator_outlier_sigma") or self.outlier_sigma.value()),
+        )
         self.last_baseline={"timing":asdict(t),"oscillator":asdict(o)}
         self.baseline_progress.setValue(1000)
         self.baseline_state.setText(f"Baseline complete • {t.sample_count:,} controller samples • {o.sample_count:,} oscillator samples")
@@ -1714,6 +1753,8 @@ class MainWindow(QMainWindow):
         self.sweep_step_controller_ts=[]
         self.sweep_step_controller_samples=[]
         self.sweep_step_osc_freq=[]
+        self.sweep_step_osc_duty=[]
+        self.sweep_step_osc_duty=[]
         self.sweep_reference_rate_hz=self.current_timing.effective_rate_hz or self.expected_rate.value()
         self.sweep_table.setRowCount(0)
         self.sweep_heatmap.set_points([])
@@ -1814,6 +1855,7 @@ class MainWindow(QMainWindow):
         step_osc=oscillator_metrics(
             self.sweep_step_osc_freq,
             self.nominal_freq.value(),
+            duty_cycles_percent=self.sweep_step_osc_duty,
             outlier_sigma=self.outlier_sigma.value(),
         )
         gp=step_timing.rms_deviation_ms if step_timing.sample_count>=2 else None
@@ -1975,7 +2017,7 @@ class MainWindow(QMainWindow):
         timing=timing_metrics(
             data["controller_timestamps_ns"],
             expected_interval_ms=(1000.0/max(configured_rate,1.0)) if reference_mode=="configured" else None,
-            late_factor=self.late_factor.value(),
+            late_factor=float(metadata.get("late_factor") or self.late_factor.value()),
         )
         oscillator=oscillator_metrics(
             data["oscillator_frequencies_hz"],

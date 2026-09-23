@@ -55,6 +55,10 @@ METRIC_HELP: dict[str, str] = {
         "RMS difference between successive reciprocal-frequency period samples. "
         "Only equivalent to true cycle-to-cycle jitter when each sample represents an individual cycle."
     ),
+    "duty": (
+        "Arithmetic mean of duty-cycle values returned by the connected measurement instrument. "
+        "Unavailable when the instrument/SCPI dialect does not provide duty-cycle measurement."
+    ),
     "allan": (
         "Two-sample Allan deviation using adjacent fractional-frequency samples at τ = one sample interval. "
         "τ is not one second unless the measurement cadence is exactly 1 Hz."

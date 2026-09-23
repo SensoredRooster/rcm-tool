@@ -78,6 +78,19 @@ class SignalLabTests(unittest.TestCase):
         sim = OscillatorSimulator(SimulatedOscillatorConfig(nominal_frequency_hz=10_000_000, ppm_offset=2.0, random_jitter_ppm=0, periodic_jitter_ppm=0, drift_ppm_per_second=0))
         self.assertAlmostEqual(sim.next_frequency_hz(), 10_000_020.0, places=3)
 
+    def test_correlation_reference_override_changes_deviation_basis(self):
+        controller = [0, 1_000_000, 2_000_000, 4_000_000, 5_000_000]
+        oscillator_times = [500_000, 1_500_000, 3_000_000, 4_500_000]
+        oscillator_freq = [10_000_000.0, 10_000_010.0, 9_999_990.0, 10_000_000.0]
+        from signal_lab.ui import MainWindow
+        median_corr = MainWindow._aligned_correlation(controller, oscillator_times, oscillator_freq, 10_000_000.0)
+        configured_corr = MainWindow._aligned_correlation(
+            controller, oscillator_times, oscillator_freq, 10_000_000.0, expected_interval_ms=2.0
+        )
+        self.assertIsNotNone(median_corr)
+        self.assertIsNotNone(configured_corr)
+        self.assertNotAlmostEqual(median_corr, configured_corr, places=9)
+
     def test_correlation(self):
         self.assertAlmostEqual(pearson_correlation([1,2,3,4],[2,4,6,8]), 1.0, places=9)
 
