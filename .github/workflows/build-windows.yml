@@ -41,12 +41,21 @@ jobs:
         shell: powershell
         run: |
           python -m PyInstaller --noconfirm --clean --windowed --name GamepadSignalLab --collect-all pyvisa_py gamepad_signal_lab.py
+      - name: Build standalone executable
+        shell: powershell
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --distpath dist/standalone --workpath build/standalone --specpath build/standalone --name GamepadSignalLab --collect-all pyvisa_py gamepad_signal_lab.py
       - name: Install Inno Setup
         shell: powershell
         run: choco install innosetup -y --no-progress
       - name: Build installer
         shell: powershell
         run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\GamepadSignalLab.iss"'
+      - name: Upload standalone executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: GamepadSignalLab-standalone
+          path: dist/standalone/GamepadSignalLab.exe
       - name: Upload portable build
         uses: actions/upload-artifact@v4
         with:

@@ -147,10 +147,16 @@ Local build:
 powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
 ~~~
 
-Portable output:
+Portable folder output:
 
 ~~~text
 dist\GamepadSignalLab\GamepadSignalLab.exe
+~~~
+
+Standalone one-file output:
+
+~~~text
+dist\standalone\GamepadSignalLab.exe
 ~~~
 
 Installer definition:
@@ -159,7 +165,7 @@ Installer definition:
 installer\GamepadSignalLab.iss
 ~~~
 
-The GitHub Actions workflow at .github/workflows/build-windows.yml runs the tests on Windows, creates the PyInstaller application, builds the Inno Setup installer, and uploads both as workflow artifacts.
+The GitHub Actions workflow at .github/workflows/build-windows.yml runs the tests and an offscreen Qt smoke test on Windows, creates both a portable folder build and a true one-file standalone GamepadSignalLab.exe, builds the Inno Setup installer, and uploads all three as workflow artifacts.
 
 ## Tests
 
