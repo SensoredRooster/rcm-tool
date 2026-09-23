@@ -27,6 +27,9 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional, Protocol
 
+from support import log_event, start_heartbeat
+from support_dialog import open_support_center
+
 try:
     import pygame
 except ImportError:  # Optional until the SDL backend is installed.
@@ -613,6 +616,8 @@ class App(tk.Tk):
         self.axis_bars: dict[str, ttk.Progressbar] = {}
         self.metric_labels: dict[str, ttk.Label] = {}
         reports_directory()
+        start_heartbeat()
+        log_event("app_start")
         self._build_ui()
         self.after(100, self._refresh_live_values)
 
@@ -629,7 +634,10 @@ class App(tk.Tk):
             header,
             text="Quick start: connect controller -> Detect devices -> choose Connected -> move sticks -> run test -> export report",
             foreground="#1f5f8b",
-        ).pack(anchor="w", pady=(6, 0))
+        ).pack(side="left", anchor="w", pady=(6, 0))
+        ttk.Button(header, text="Support & Diagnostics", command=lambda: open_support_center(self)).pack(
+            side="right", anchor="e", padx=(12, 0)
+        )
 
         source = ttk.LabelFrame(self, text="1. Select where RCM Tool should read controller input")
         source.pack(fill="x", **padding)
