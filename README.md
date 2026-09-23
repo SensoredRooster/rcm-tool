@@ -49,3 +49,26 @@ Then Neutral Before+After pair. Then Guided pair. Pair is blocked while an Injec
 ## 6. After a run
 
 JSON writes itself. **Submit Reports.bat**, type YES. Do not submit `INJECTED_` files as a pad screen.
+
+## Support, diagnostics, and tester sharing
+
+RCMTool includes a local-first diagnostics system plus two isolated Cloudflare services.
+
+### Support diagnostics
+
+- Worker: `https://rcm-tool-support.sensoredrooster-com.workers.dev`
+- Upload endpoint: `https://rcm-tool-support.sensoredrooster-com.workers.dev/upload`
+- R2 bucket: `rcm-tool-support-logs`
+- The Support & Diagnostics window creates redacted ZIP bundles and sends them only after explicit confirmation.
+- `RCM_SUPPORT_UPLOAD_URL` is supported as a development override.
+
+### Tester Share
+
+- Portal: `https://rcm-tool-share.sensoredrooster-com.workers.dev`
+- R2 bucket: `rcm-tool-share`
+- Open it from **Support & Diagnostics → Tester Share**.
+- Folders: `Releases`, `Tester Uploads`, `Screenshots`, `Bug Reports`, `Logs`, `Archived`
+
+Testers can browse/download and upload to tester-facing folders. Admin access can upload releases, mark **Latest**, delete files, and manage archived content.
+
+See [docs/SUPPORT.md](docs/SUPPORT.md) and [docs/TESTER_SHARE.md](docs/TESTER_SHARE.md).
