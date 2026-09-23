@@ -1022,77 +1022,191 @@ class MainWindow(QMainWindow):
 
     def _refresh_ui(self) -> None:
         timestamps=list(self.controller_ts)[-5000:]
-        expected_ms=1000.0/max(self.expected_rate.value(),1.0)
-        self.current_timing=timing_metrics(timestamps,expected_interval_ms=expected_ms,late_factor=self.late_factor.value())
-        freqs=list(self.osc_freq)[-3000:]
+        interval_pairs=[(b,(b-a)/1e6) for a,b in zip(timestamps,timestamps[1:]) if b>a]
+        interval_times=[item[0] for item in interval_pairs]
+        intervals=[item[1] for item in interval_pairs]
+        expected_override=self._timing_reference_ms(intervals)
+        reference_ms=expected_override if expected_override is not None else self._median(intervals)
+        self.current_timing=timing_metrics(
+            timestamps,
+            expected_interval_ms=expected_override,
+            late_factor=self.late_factor.value(),
+        )
+
+        osc_times_all=list(self.osc_ts)
+        osc_freq_all=list(self.osc_freq)
+        osc_count=min(3000,len(osc_times_all),len(osc_freq_all))
+        osc_times=osc_times_all[-osc_count:] if osc_count else []
+        freqs=osc_freq_all[-osc_count:] if osc_count else []
         nominal=self.nominal_freq.value()
         self.current_osc=oscillator_metrics(freqs,nominal,outlier_sigma=self.outlier_sigma.value())
-        self.current_corr=self._aligned_correlation(timestamps,list(self.osc_ts),freqs,nominal)
+        self.current_corr=self._aligned_correlation(timestamps,osc_times,freqs,nominal)
         t,o=self.current_timing,self.current_osc
 
-        self.cards["rate"].set_value(f"{t.effective_rate_hz:,.1f} Hz","Measured from observed timestamps")
-        self.cards["interval"].set_value(f"{t.mean_interval_ms:.4f} ms",f"min {t.min_interval_ms:.4f} • max {t.max_interval_ms:.4f}")
-        self.cards["jitter"].set_value(f"{t.rms_deviation_ms:.4f} ms",f"p2p {t.peak_to_peak_jitter_ms:.4f}")
-        self.cards["osc"].set_value(f"{o.mean_frequency_hz/1e6:.6f} MHz" if o.sample_count else "—","Source capability determines precision")
-        self.cards["ppm"].set_value(f"{o.frequency_error_ppm:+.3f} ppm" if o.sample_count else "—",f"{o.frequency_error_hz:+.3f} Hz" if o.sample_count else "")
-        self.cards["clock_jitter"].set_value(f"{o.rms_period_jitter_s*1e12:.3f} ps" if o.sample_count else "—","Calculated from sampled frequency/period")
-        self.cards["late"].set_value(str(t.late_reports),f"missing estimate {t.missing_reports_estimate}")
+        reference_name="configured" if expected_override is not None else "measured median"
+        osc_source="SIMULATED" if self.simulation_mode and self.measurement_instrument is None else "MEASURED"
 
-        try: output=self.instrument.output_enabled()
-        except Exception: output=False
-        self.cards["stimulus"].set_value("ON" if output else "OFF",f"{self.stim_freq.value():g} Hz • {self.stim_amp.value():g} Vpp")
+        self.cards["rate"].set_value(
+            f"{t.effective_rate_hz:,.2f} Hz",
+            f"{t.sample_count:,} observed report timestamps",
+            source="MEASURED" if not self.simulation_mode else "SIMULATED",
+        )
+        self.cards["interval"].set_value(
+            f"{t.mean_interval_ms:.3f} ms",
+            f"min {t.min_interval_ms:.3f} • max {t.max_interval_ms:.3f}",
+            source="MEASURED" if not self.simulation_mode else "SIMULATED",
+        )
+        self.cards["jitter"].set_value(
+            f"{t.rms_deviation_ms:.3f} ms",
+            f"RMS vs {reference_name} {reference_ms:.3f} ms • p2p {t.peak_to_peak_jitter_ms:.3f}",
+            source="CALCULATED",
+        )
+        self.cards["osc"].set_value(
+            f"{o.mean_frequency_hz/1e6:.6f} MHz" if o.sample_count else "Unavailable",
+            f"{o.sample_count:,} frequency samples • source-limited precision" if o.sample_count else "No compatible frequency samples",
+            source=osc_source,
+        )
+        self.cards["ppm"].set_value(
+            f"{o.frequency_error_ppm:+.4f} ppm" if o.sample_count else "Unavailable",
+            f"{o.frequency_error_hz:+.3f} Hz vs nominal" if o.sample_count else "Requires measured frequency + nominal reference",
+            source="CALCULATED",
+        )
+        self.cards["clock_jitter"].set_value(
+            f"{o.rms_period_jitter_s*1e12:.3f} ps" if o.sample_count else "Unavailable",
+            "Derived from reciprocal frequency samples; not direct phase jitter",
+            source="CALCULATED",
+        )
+        self.cards["late"].set_value(
+            str(t.late_reports),
+            f"missing estimate {t.missing_reports_estimate} • raw duplicates {self.duplicate_raw_reports}",
+            source="CALCULATED",
+        )
+
+        try:
+            output=self.instrument.output_enabled()
+        except Exception:
+            output=False
+        self.cards["stimulus"].set_value(
+            "ON" if output else "OFF",
+            f"{self.stim_freq.value():g} Hz • {self.stim_amp.value():g} Vpp",
+            source="STATE",
+        )
         generator_name=self.generator_id.text().removeprefix("Generator: ").split(" • ")[0] if hasattr(self,"generator_id") else self.instrument.identify()
         self.interference_status.setText(f"{generator_name} • OUTPUT {'ON' if output else 'OFF'}")
         if hasattr(self,"generator_id"):
             self.generator_id.setText(f"Generator: {generator_name} • OUTPUT {'ON' if output else 'OFF'}")
-        self.output_button.setChecked(output); self.output_button.setText("Disable Output" if output else "Enable Output")
+        self.output_button.setChecked(output)
+        self.output_button.setText("Disable Output" if output else "Enable Output")
 
-        intervals=[(b-a)/1e6 for a,b in zip(timestamps,timestamps[1:]) if b>a]
-        deviations=[v-expected_ms for v in intervals]
+        deviations=[value-reference_ms for value in intervals] if intervals else []
         ppm_values=[(f-nominal)/nominal*1e6 for f in freqs] if nominal>0 else []
-        self.dashboard_timing_chart.set_series([("interval",intervals[-500:],"#6AA2FF")])
-        self.dashboard_osc_chart.set_series([("ppm",ppm_values[-500:],"#6DE0B1")])
+        interval_elapsed=self._elapsed_seconds(interval_times,timestamps[0] if timestamps else None)
+        osc_elapsed=self._elapsed_seconds(osc_times,osc_times[0] if osc_times else None)
+
+        self.dashboard_timing_chart.set_series(
+            [("interval ms",intervals[-500:],"#6AA2FF")],
+            x_values=interval_elapsed[-500:],
+            x_label="Elapsed controller capture time (s)",
+        )
+        self.dashboard_osc_chart.set_series(
+            [("error ppm",ppm_values[-500:],"#6DE0B1")],
+            x_values=osc_elapsed[-500:],
+            x_label="Elapsed oscillator capture time (s)",
+        )
+
         samples=list(self.controller_samples)[-800:]
+        sample_ts=list(self.controller_ts)[-len(samples):] if samples else []
+        sample_elapsed=self._elapsed_seconds(sample_ts,sample_ts[0] if sample_ts else None)
+        hist_x,hist_y=self._histogram_xy(intervals[-3000:],32)
+
         if not self.visualization_paused:
             smooth=max(1,self.smoothing_window.value()) if hasattr(self,"smoothing_window") else 1
             smooth_fn=lambda values: self._moving_average(values,smooth)
-            self.live_interval_chart.set_series([("interval",smooth_fn(intervals[-800:]),"#6AA2FF")])
-            self.live_jitter_chart.set_series([("deviation",smooth_fn(deviations[-800:]),"#F0B862")])
-            self.live_hist_chart.set_series([("count",self._histogram(intervals[-3000:],32),"#A989FF")])
-            self.live_latency_chart.set_series([])
-            self.live_analog_chart.set_series([
-                ("LX",smooth_fn([float(item.get("lx",0)) for item in samples]),"#6AA2FF"),
-                ("LY",smooth_fn([float(item.get("ly",0)) for item in samples]),"#6DE0B1")
-            ])
-            self.live_osc_chart.set_series([("frequency",smooth_fn(freqs[-800:]),"#6DE0B1")])
-            self.live_osc_jitter_chart.set_series([("ppm",smooth_fn(ppm_values[-800:]),"#F0B862")])
-        self.osc_stability_chart.set_series([("frequency",freqs[-1200:],"#6DE0B1")])
-        self.osc_period_chart.set_series([("period ns",[(1/f)*1e9 for f in freqs[-1200:] if f>0],"#6AA2FF")])
+            self.live_interval_chart.set_series(
+                [("interval ms",smooth_fn(intervals[-800:]),"#6AA2FF")],
+                x_values=interval_elapsed[-800:],
+                x_label="Elapsed time (s)",
+            )
+            self.live_jitter_chart.set_series(
+                [("deviation ms",smooth_fn(deviations[-800:]),"#F0B862")],
+                x_values=interval_elapsed[-800:],
+                x_label="Elapsed time (s)",
+            )
+            self.live_hist_chart.set_series(
+                [("count",hist_y,"#A989FF")],
+                x_values=hist_x,
+                x_label="Report interval (ms)",
+            )
+            self.live_latency_chart.set_series([],x_values=[],x_label="Latency (ms)")
+            self.live_analog_chart.set_series(
+                [
+                    ("LX",smooth_fn([float(item.get("lx",0)) for item in samples]),"#6AA2FF"),
+                    ("LY",smooth_fn([float(item.get("ly",0)) for item in samples]),"#6DE0B1"),
+                ],
+                x_values=sample_elapsed,
+                x_label="Elapsed time (s)",
+            )
+            self.live_osc_chart.set_series(
+                [("frequency Hz",smooth_fn(freqs[-800:]),"#6DE0B1")],
+                x_values=osc_elapsed[-800:],
+                x_label="Elapsed time (s)",
+            )
+            self.live_osc_jitter_chart.set_series(
+                [("error ppm",smooth_fn(ppm_values[-800:]),"#F0B862")],
+                x_values=osc_elapsed[-800:],
+                x_label="Elapsed time (s)",
+            )
 
-        self.osc_labels["mean"].set_value(f"{o.mean_frequency_hz:,.6f} Hz" if o.sample_count else "—","Measured / source-limited")
-        self.osc_labels["stdev"].set_value(f"{o.frequency_stdev_hz:.6f} Hz" if o.sample_count else "—","Calculated")
-        self.osc_labels["error_hz"].set_value(f"{o.frequency_error_hz:+.6f} Hz" if o.sample_count else "—","Calculated from nominal")
-        self.osc_labels["error_ppm"].set_value(f"{o.frequency_error_ppm:+.6f} ppm" if o.sample_count else "—","Calculated")
-        self.osc_labels["drift"].set_value(f"{o.frequency_drift_ppm:+.6f} ppm" if o.sample_count else "—",f"{o.frequency_drift_hz:+.6f} Hz first/last window" if o.sample_count else "")
-        self.osc_labels["outliers"].set_value(str(o.outlier_count) if o.sample_count else "—",f">{self.outlier_sigma.value():.2f} σ from mean")
-        self.osc_labels["period"].set_value(f"{o.mean_period_s*1e9:.6f} ns" if o.sample_count else "—","Calculated from frequency")
-        self.osc_labels["rms"].set_value(f"{o.rms_period_jitter_s*1e12:.3f} ps" if o.sample_count else "—")
-        self.osc_labels["p2p"].set_value(f"{o.peak_to_peak_period_jitter_s*1e12:.3f} ps" if o.sample_count else "—")
-        self.osc_labels["ctc"].set_value(f"{o.cycle_to_cycle_rms_s*1e12:.3f} ps" if o.sample_count else "—")
-        self.osc_labels["allan"].set_value(f"{o.allan_deviation_tau1:.3e}" if o.allan_deviation_tau1 is not None else "Unavailable")
+        self.osc_stability_chart.set_series(
+            [("frequency Hz",freqs[-1200:],"#6DE0B1")],
+            x_values=osc_elapsed[-1200:],
+            x_label="Elapsed time (s)",
+        )
+        period_pairs=[(ts,(1/f)*1e9) for ts,f in zip(osc_times,freqs) if f>0][-1200:]
+        period_times=[pair[0] for pair in period_pairs]
+        period_values=[pair[1] for pair in period_pairs]
+        period_elapsed=self._elapsed_seconds(period_times,period_times[0] if period_times else None)
+        self.osc_period_chart.set_series(
+            [("derived period ns",period_values,"#6AA2FF")],
+            x_values=period_elapsed,
+            x_label="Elapsed time (s)",
+        )
+
+        self.osc_labels["mean"].set_value(
+            f"{o.mean_frequency_hz:,.3f} Hz" if o.sample_count else "Unavailable",
+            "Observed frequency-sample mean; accuracy is instrument/source limited",
+            source=osc_source,
+        )
+        self.osc_labels["stdev"].set_value(f"{o.frequency_stdev_hz:.3f} Hz" if o.sample_count else "Unavailable","Population standard deviation",source="CALCULATED")
+        self.osc_labels["error_hz"].set_value(f"{o.frequency_error_hz:+.3f} Hz" if o.sample_count else "Unavailable","Mean measured frequency − nominal",source="CALCULATED")
+        self.osc_labels["error_ppm"].set_value(f"{o.frequency_error_ppm:+.4f} ppm" if o.sample_count else "Unavailable","Normalized frequency error",source="CALCULATED")
+        self.osc_labels["drift"].set_value(
+            f"{o.frequency_drift_ppm:+.4f} ppm" if o.sample_count else "Unavailable",
+            f"{o.frequency_drift_hz:+.3f} Hz first/last analysis window" if o.sample_count else "Requires multiple samples",
+            source="CALCULATED",
+        )
+        self.osc_labels["outliers"].set_value(str(o.outlier_count) if o.sample_count else "Unavailable",f">{self.outlier_sigma.value():.2f} σ from sample mean",source="CALCULATED")
+        self.osc_labels["period"].set_value(f"{o.mean_period_s*1e9:.6f} ns" if o.sample_count else "Unavailable","Mean reciprocal-frequency period",source="CALCULATED")
+        self.osc_labels["rms"].set_value(f"{o.rms_period_jitter_s*1e12:.3f} ps" if o.sample_count else "Unavailable","RMS reciprocal-period deviation",source="CALCULATED")
+        self.osc_labels["p2p"].set_value(f"{o.peak_to_peak_period_jitter_s*1e12:.3f} ps" if o.sample_count else "Unavailable","Peak-to-peak reciprocal-period deviation",source="CALCULATED")
+        self.osc_labels["ctc"].set_value(f"{o.cycle_to_cycle_rms_s*1e12:.3f} ps" if o.sample_count else "Unavailable","Successive sampled-period difference; see hover definition",source="CALCULATED")
+        self.osc_labels["allan"].set_value(f"{o.allan_deviation_tau1:.3e}" if o.allan_deviation_tau1 is not None else "Unavailable","τ = one sample interval",source="CALCULATED")
 
         if samples:
             last=samples[-1]
-            self.left_stick.set_position(last.get("lx",0),last.get("ly",0)); self.right_stick.set_position(last.get("rx",0),last.get("ry",0))
-            self.lt_bar.setValue(int(float(last.get("lt",0))*1000)); self.rt_bar.setValue(int(float(last.get("rt",0))*1000))
+            self.left_stick.set_position(last.get("lx",0),last.get("ly",0))
+            self.right_stick.set_position(last.get("rx",0),last.get("ry",0))
+            self.lt_bar.setValue(int(float(last.get("lt",0))*1000))
+            self.rt_bar.setValue(int(float(last.get("rt",0))*1000))
             rolling=samples[-250:]
             chunks=[]
             for axis in ("lx","ly","rx","ry"):
-                vals=[float(s.get(axis,0)) for s in rolling]
+                vals=[float(item.get(axis,0)) for item in rolling]
                 mean=sum(vals)/len(vals)
-                rms=math.sqrt(sum((v-mean)**2 for v in vals)/len(vals))
+                rms=math.sqrt(sum((value-mean)**2 for value in vals)/len(vals))
                 chunks.append(f"{axis.upper()} {rms:.5f}")
             self.axis_noise.setText("Stationary-window RMS: "+" • ".join(chunks))
+            self.axis_noise.setToolTip(METRIC_HELP["analog_noise"])
             if "buttons" in last:
                 parts=[f"Buttons mask: 0x{int(last.get('buttons',0)):04X}"]
                 if "dpad_x" in last or "dpad_y" in last:
@@ -1103,10 +1217,11 @@ class MainWindow(QMainWindow):
                 self.button_capability.setText(" • ".join(parts))
             else:
                 self.button_capability.setText("Buttons / D-pad: unavailable from the active decoded backend")
+
         if self.controller_sources:
             source,quality=self.controller_sources[-1]
             meta=self.controller_metadata
-            fields=[f"{source}",f"Timing source quality: {quality}"]
+            fields=[source,f"Timing source quality: {quality}"]
             name=meta.get("controller_name")
             if name and name not in source: fields.append(f"Controller: {name}")
             vid,pid=meta.get("vid"),meta.get("pid")
@@ -1115,41 +1230,46 @@ class MainWindow(QMainWindow):
             if meta.get("usb_path"): fields.append(f"USB path: {meta['usb_path']}")
             if meta.get("hid_interface") is not None: fields.append(f"HID interface: {meta['hid_interface']}")
             self.controller_meta.setText("\n".join(fields))
-            optional=[]
-            optional.append(f"Firmware: {meta.get('firmware_release','Unavailable')}")
-            optional.append(f"Battery: {meta.get('battery_status','Unavailable')}")
-            optional.append(f"Connection: {meta.get('connection_method','Unavailable')}")
+            optional=[
+                f"Firmware: {meta.get('firmware_release','Unavailable')}",
+                f"Battery: {meta.get('battery_status','Unavailable')}",
+                f"Connection: {meta.get('connection_method','Unavailable')}",
+            ]
             self.controller_capability.setText(" • ".join(optional))
 
-        self.corr_card.set_value(f"{self.current_corr:+.4f}" if self.current_corr is not None else "Unavailable","Nearest-time aligned samples; correlation does not establish causation.")
-        corr_pairs=[((a+b)//2,(b-a)/1e6-expected_ms) for a,b in zip(timestamps,timestamps[1:]) if b>a][-600:]
+        self.corr_card.set_value(
+            f"{self.current_corr:+.4f}" if self.current_corr is not None else "Unavailable",
+            "Nearest-time aligned samples; descriptive only",
+            source="CALCULATED",
+        )
+        corr_pairs=[((ta+tb)//2,(tb-ta)/1e6-reference_ms) for ta,tb in zip(timestamps,timestamps[1:]) if tb>ta][-600:]
         self.corr_time_axis=[item[0] for item in corr_pairs]
         corr_game=[item[1] for item in corr_pairs]
-        osc_times=list(self.osc_ts)
-        osc_values=list(self.osc_freq)
+        corr_elapsed=self._elapsed_seconds(self.corr_time_axis,self.corr_time_axis[0] if self.corr_time_axis else None)
         corr_ppm=[]
         for ts in self.corr_time_axis:
             idx=bisect_left(osc_times,ts)
             candidates=[i for i in (idx-1,idx) if 0<=i<len(osc_times)]
             if candidates:
                 nearest=min(candidates,key=lambda i:abs(osc_times[i]-ts))
-                corr_ppm.append((osc_values[nearest]-nominal)/nominal*1e6 if nominal>0 else float("nan"))
+                corr_ppm.append((freqs[nearest]-nominal)/nominal*1e6 if nominal>0 else float("nan"))
             else:
                 corr_ppm.append(float("nan"))
         corr_stimulus=[self.stim_freq.value() if output else 0.0]*len(self.corr_time_axis)
-        self.corr_osc_chart.set_series([("osc ppm",corr_ppm,"#6DE0B1")])
-        self.corr_gamepad_chart.set_series([("gamepad dev",corr_game,"#6AA2FF")])
-        self.corr_stimulus_chart.set_series([("stimulus",corr_stimulus,"#F0B862")])
+        self.corr_osc_chart.set_series([("osc error ppm",corr_ppm,"#6DE0B1")],x_values=corr_elapsed,x_label="Elapsed correlated time (s)")
+        self.corr_gamepad_chart.set_series([("report deviation ms",corr_game,"#6AA2FF")],x_values=corr_elapsed,x_label="Elapsed correlated time (s)")
+        self.corr_stimulus_chart.set_series([("stimulus Hz",corr_stimulus,"#F0B862")],x_values=corr_elapsed,x_label="Elapsed correlated time (s)")
 
         timing_source=self.controller_sources[-1][1] if self.controller_sources else "none"
         self.quality_label.setText(
-            f"Samples: {t.sample_count:,} • capture duration: {t.duration_s:.3f} s • timing source: {timing_source} • "
-            f"effective rate: {t.effective_rate_hz:.2f} Hz • consecutive identical raw HID payloads: {self.duplicate_raw_reports}. "
-            "Host timestamps include OS/USB scheduling unless dedicated timing hardware supplies timestamps."
+            f"Controller samples {t.sample_count:,} • duration {t.duration_s:.3f} s • timing source {timing_source} • "
+            f"host monotonic timer resolution {self.host_timer_resolution_ns:.0f} ns • reference {reference_name} • "
+            f"effective rate {t.effective_rate_hz:.2f} Hz • consecutive identical raw HID payloads {self.duplicate_raw_reports}.\n"
+            "Host-arrival timestamps include Windows/USB scheduling unless dedicated on-wire timing hardware supplies the timestamp."
         )
         self.safety_label.setText(
-            f"Configured limits: {self.safety_limits.max_frequency_hz:g} Hz • {self.safety_limits.max_amplitude_vpp:g} Vpp • "
-            f"±{self.safety_limits.max_abs_offset_v:g} V. Output defaults OFF."
+            f"Configured safety limits • {self.safety_limits.max_frequency_hz:g} Hz • {self.safety_limits.max_amplitude_vpp:g} Vpp • "
+            f"±{self.safety_limits.max_abs_offset_v:g} V • generator output defaults OFF."
         )
 
         if self.baseline_active:
@@ -1158,6 +1278,7 @@ class MainWindow(QMainWindow):
             self.baseline_progress.setValue(int((1-remaining/max(1,duration))*1000))
             self.baseline_state.setText(f"Baseline capture running • {remaining:.1f}s remaining")
         self.db.flush()
+
 
     def _timing_reference_ms(self, intervals_ms:list[float]) -> float | None:
         if hasattr(self,"timing_reference_mode") and self.timing_reference_mode.currentData()=="configured":
