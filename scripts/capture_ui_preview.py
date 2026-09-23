@@ -1,4 +1,4 @@
-"""Capture readable native-Windows screenshots of the real Gamepad Signal Lab UI."""
+"""Capture readable native-Windows screenshots of the real RcmTool UI."""
 from __future__ import annotations
 
 from pathlib import Path
