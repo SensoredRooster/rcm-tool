@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from . import __version__
 from .analysis import oscillator_metrics, pearson_correlation, timing_metrics
 from .controller import ControllerAcquisition, ControllerMeasurement
-from .instruments import SafetyLimits, SimulatedInstrument, VisaScpiInstrument, list_visa_resources
+from .instruments import SafetyLimits, SimulatedInstrument, VisaScpiGenerator, VisaScpiMeasurementInstrument, list_visa_resources
 from .reporting import write_html_report
 from .simulation import GamepadSimulator, OscillatorSimulator
 from .storage import LabDatabase
@@ -137,6 +137,7 @@ class MainWindow(QMainWindow):
         self.osc_queue: queue.Queue = queue.Queue()
 
         self.instrument = SimulatedInstrument()
+        self.measurement_instrument = None
         self.instrument_lock = threading.Lock()
         self.instrument_poller_stop = threading.Event()
         self.instrument_poller: InstrumentPoller | None = None
@@ -528,18 +529,20 @@ class MainWindow(QMainWindow):
         return w
 
     def _instruments_page(self) -> QWidget:
-        w, layout = page("Instruments", "VISA/SCPI discovery plus capability reporting. Unsupported measurements stay explicitly unavailable.")
+        w, layout = page("Instruments", "VISA/SCPI discovery with separate read-only measurement and signal-generator roles. Unsupported measurements stay explicitly unavailable.")
         d, dl=card("DISCOVERY")
         row=QHBoxLayout()
         self.visa_combo=QComboBox()
         refresh=QPushButton("Refresh VISA"); refresh.clicked.connect(self._refresh_visa)
-        connect=QPushButton("Connect"); connect.clicked.connect(self._connect_visa)
-        disconnect=QPushButton("Disconnect / Output Off"); disconnect.clicked.connect(self._disconnect_instrument)
-        row.addWidget(self.visa_combo,1); row.addWidget(refresh); row.addWidget(connect); row.addWidget(disconnect)
+        measure=QPushButton("Connect as Measurement"); measure.clicked.connect(self._connect_measurement_instrument)
+        generator=QPushButton("Connect as Generator"); generator.clicked.connect(self._connect_generator_instrument)
+        disconnect=QPushButton("Disconnect All / Output Off"); disconnect.clicked.connect(self._disconnect_instrument)
+        row.addWidget(self.visa_combo,1); row.addWidget(refresh); row.addWidget(measure); row.addWidget(generator); row.addWidget(disconnect)
         dl.addLayout(row)
-        self.instrument_id=QLabel("Simulation Instrument"); self.instrument_id.setWordWrap(True); dl.addWidget(self.instrument_id)
+        self.measurement_id=QLabel("Measurement: not connected"); self.measurement_id.setWordWrap(True); dl.addWidget(self.measurement_id)
+        self.generator_id=QLabel("Generator: Simulation Instrument • OUTPUT OFF"); self.generator_id.setWordWrap(True); dl.addWidget(self.generator_id)
         layout.addWidget(d)
-        self.cap_table=QTableWidget(0,2); self.cap_table.setHorizontalHeaderLabels(["Capability","Status"]); layout.addWidget(self.cap_table)
+        self.cap_table=QTableWidget(0,3); self.cap_table.setHorizontalHeaderLabels(["Role","Capability","Status"]); layout.addWidget(self.cap_table)
         off=QPushButton("EMERGENCY OUTPUT OFF"); off.setObjectName("Danger"); off.clicked.connect(self._emergency_off); layout.addWidget(off,alignment=Qt.AlignmentFlag.AlignRight)
         return w
 
@@ -645,7 +648,8 @@ class MainWindow(QMainWindow):
                     self.interference_status.setText(f"Instrument communication error: {item[1]}")
                     self._add_event("instrument_error",{"message":item[1]})
                 else:
-                    self._accept_oscillator(int(item[0]),float(item[1]),self.instrument_id.text(),str(item[2]))
+                    source=self.measurement_id.text().removeprefix("Measurement: ").strip() if hasattr(self,"measurement_id") else "Measurement instrument"
+                    self._accept_oscillator(int(item[0]),float(item[1]),source,str(item[2]))
         if self.baseline_active and time.monotonic()>=self.baseline_deadline:
             self._finish_baseline()
 
@@ -684,7 +688,10 @@ class MainWindow(QMainWindow):
         try: output=self.instrument.output_enabled()
         except Exception: output=False
         self.cards["stimulus"].set_value("ON" if output else "OFF",f"{self.stim_freq.value():g} Hz • {self.stim_amp.value():g} Vpp")
-        self.interference_status.setText(f"{self.instrument_id.text()} • OUTPUT {'ON' if output else 'OFF'}")
+        generator_name=self.generator_id.text().removeprefix("Generator: ").split(" • ")[0] if hasattr(self,"generator_id") else self.instrument.identify()
+        self.interference_status.setText(f"{generator_name} • OUTPUT {'ON' if output else 'OFF'}")
+        if hasattr(self,"generator_id"):
+            self.generator_id.setText(f"Generator: {generator_name} • OUTPUT {'ON' if output else 'OFF'}")
         self.output_button.setChecked(output); self.output_button.setText("Disable Output" if output else "Enable Output")
 
         intervals=[(b-a)/1e6 for a,b in zip(timestamps,timestamps[1:]) if b>a]
@@ -816,35 +823,78 @@ class MainWindow(QMainWindow):
         resources=list_visa_resources()
         self.visa_combo.addItems(resources or ["No VISA resources found"])
 
-    def _connect_visa(self) -> None:
+    def _selected_visa_resource(self) -> str | None:
         resource=self.visa_combo.currentText().strip()
         if not resource or resource.startswith("No VISA"):
-            QMessageBox.information(self,"VISA","No VISA resource is selected."); return
+            QMessageBox.information(self,"VISA","No VISA resource is selected.")
+            return None
+        return resource
+
+    def _connect_measurement_instrument(self) -> None:
+        resource=self._selected_visa_resource()
+        if not resource: return
+        self._stop_instrument_poller()
+        if self.measurement_instrument is not None:
+            try: self.measurement_instrument.close()
+            except Exception: pass
+            self.measurement_instrument=None
         try:
-            self._disconnect_instrument(quiet=True)
-            instrument=VisaScpiInstrument(resource)
+            instrument=VisaScpiMeasurementInstrument(resource)
             identity=instrument.identify()
-            self.instrument=instrument; self.instrument_id.setText(identity); self.interference_status.setText(identity+" • OUTPUT OFF")
-            self._start_instrument_poller(); self._add_event("instrument_connected",{"resource":resource,"identity":identity}); self._refresh_capabilities()
+            self.measurement_instrument=instrument
+            self.measurement_id.setText("Measurement: "+identity)
+            self._start_instrument_poller()
+            self._add_event("measurement_instrument_connected",{"resource":resource,"identity":identity})
+            self._refresh_capabilities()
         except Exception as exc:
-            QMessageBox.critical(self,"Instrument connection",str(exc))
+            self.measurement_instrument=None
+            self.measurement_id.setText("Measurement: connection failed")
+            QMessageBox.critical(self,"Measurement instrument connection",str(exc))
+
+    def _connect_generator_instrument(self) -> None:
+        resource=self._selected_visa_resource()
+        if not resource: return
+        self._emergency_off()
+        if not isinstance(self.instrument,SimulatedInstrument):
+            try: self.instrument.close()
+            except Exception: pass
+        try:
+            generator=VisaScpiGenerator(resource)
+            identity=generator.identify()
+            self.instrument=generator
+            self.generator_id.setText("Generator: "+identity+" • OUTPUT OFF")
+            self.interference_status.setText(identity+" • OUTPUT OFF")
+            self._add_event("generator_connected",{"resource":resource,"identity":identity})
+            self._refresh_capabilities()
+        except Exception as exc:
+            self.instrument=SimulatedInstrument()
+            self.generator_id.setText("Generator: connection failed • simulation source restored")
+            QMessageBox.critical(self,"Generator connection",str(exc))
 
     def _disconnect_instrument(self,quiet:bool=False) -> None:
         self._stop_instrument_poller()
+        if self.measurement_instrument is not None:
+            try: self.measurement_instrument.close()
+            except Exception as exc:
+                if not quiet: QMessageBox.warning(self,"Measurement instrument",f"Disconnect warning: {exc}")
+            self.measurement_instrument=None
         try:
             with self.instrument_lock:
                 self.instrument.set_output(False); self.instrument.close()
         except Exception as exc:
-            if not quiet: QMessageBox.warning(self,"Instrument",f"Disconnect warning: {exc}")
+            if not quiet: QMessageBox.warning(self,"Generator",f"Disconnect warning: {exc}")
         self.instrument=SimulatedInstrument()
-        if hasattr(self,"instrument_id"): self.instrument_id.setText("Simulation Instrument" if self.simulation_mode else "No external instrument connected")
+        if hasattr(self,"measurement_id"): self.measurement_id.setText("Measurement: not connected")
+        if hasattr(self,"generator_id"): self.generator_id.setText("Generator: Simulation Instrument • OUTPUT OFF")
         if hasattr(self,"output_button"): self.output_button.setChecked(False); self.output_button.setText("Enable Output")
+        if hasattr(self,"interference_status"): self.interference_status.setText("Simulation Instrument • OUTPUT OFF")
+        self._refresh_capabilities()
 
     def _start_instrument_poller(self) -> None:
         self._stop_instrument_poller()
-        if isinstance(self.instrument,SimulatedInstrument): return
+        if self.measurement_instrument is None: return
         self.instrument_poller_stop=threading.Event()
-        self.instrument_poller=InstrumentPoller(self.instrument,self.instrument_lock,self.osc_queue,self.instrument_poller_stop)
+        self.instrument_poller=InstrumentPoller(self.measurement_instrument,self.instrument_lock,self.osc_queue,self.instrument_poller_stop)
         self.instrument_poller.start()
 
     def _stop_instrument_poller(self) -> None:
@@ -892,17 +942,22 @@ class MainWindow(QMainWindow):
         self._add_event("emergency_output_off",{})
 
     def _refresh_capabilities(self) -> None:
-        caps=getattr(self.instrument,"capabilities",None)
+        measurement_caps=getattr(self.measurement_instrument,"capabilities",None)
+        generator_caps=getattr(self.instrument,"capabilities",None)
         rows=[
-            ("Frequency measurement",getattr(caps,"frequency",False)),("Period measurement",getattr(caps,"period",False)),
-            ("Duty cycle",getattr(caps,"duty_cycle",False)),("Waveform capture",getattr(caps,"waveform_capture",False)),
-            ("Phase noise",getattr(caps,"phase_noise",False)),("Generator output",getattr(caps,"generator_output",False)),
-            ("High-resolution timestamps",getattr(caps,"high_resolution_timestamps",False))
+            ("Measurement","Frequency",getattr(measurement_caps,"frequency",False)),
+            ("Measurement","Period",getattr(measurement_caps,"period",False)),
+            ("Measurement","Duty cycle",getattr(measurement_caps,"duty_cycle",False)),
+            ("Measurement","Waveform capture",getattr(measurement_caps,"waveform_capture",False)),
+            ("Measurement","Phase noise",getattr(measurement_caps,"phase_noise",False)),
+            ("Measurement","High-resolution timestamps",getattr(measurement_caps,"high_resolution_timestamps",False)),
+            ("Generator","Controlled output",getattr(generator_caps,"generator_output",False)),
         ]
         self.cap_table.setRowCount(len(rows))
-        for r,(name,available) in enumerate(rows):
-            self.cap_table.setItem(r,0,QTableWidgetItem(name))
-            self.cap_table.setItem(r,1,QTableWidgetItem("AVAILABLE" if available else "UNAVAILABLE / REQUIRES COMPATIBLE HARDWARE"))
+        for r,(role,name,available) in enumerate(rows):
+            self.cap_table.setItem(r,0,QTableWidgetItem(role))
+            self.cap_table.setItem(r,1,QTableWidgetItem(name))
+            self.cap_table.setItem(r,2,QTableWidgetItem("AVAILABLE" if available else "UNAVAILABLE / REQUIRES COMPATIBLE HARDWARE"))
 
     def _update_sweep_estimate(self) -> None:
         count=self.sweep_steps.value()*self.amp_steps.value()*self.sweep_reps.value()
@@ -1080,9 +1135,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self,event:QCloseEvent) -> None:
         self._emergency_off()
         if self.controller_acquisition: self.controller_acquisition.stop()
-        self._stop_instrument_poller()
-        try: self.instrument.close()
-        except Exception: pass
+        self._disconnect_instrument(quiet=True)
         self.db.close(); event.accept()
 
 
