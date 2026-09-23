@@ -486,6 +486,15 @@ class MainWindow(QMainWindow):
         stop=QPushButton("Stop Sweep"); stop.clicked.connect(self._stop_sweep)
         actions.addWidget(self.sweep_estimate,1); actions.addWidget(start); actions.addWidget(stop)
         cl.addLayout(actions); layout.addWidget(cfg)
+        heatbar=QHBoxLayout()
+        heatbar.addWidget(QLabel("Heatmap metric"))
+        self.sweep_heatmap_metric=QComboBox()
+        self.sweep_heatmap_metric.addItem("Gamepad RMS timing deviation (ms)","gamepad")
+        self.sweep_heatmap_metric.addItem("Oscillator clock error (ppm)","clock")
+        self.sweep_heatmap_metric.currentIndexChanged.connect(self._refresh_sweep_heatmap)
+        heatbar.addWidget(self.sweep_heatmap_metric)
+        heatbar.addStretch(1)
+        layout.addLayout(heatbar)
         self.sweep_heatmap=HeatMapWidget("Frequency / amplitude response • gamepad RMS timing deviation")
         layout.addWidget(self.sweep_heatmap)
         self.sweep_table=QTableWidget(0,6)
@@ -1160,6 +1169,18 @@ class MainWindow(QMainWindow):
         self.sweep_phase="dwell"
         self.sweep_timer.start(self.dwell_ms.value())
 
+    def _refresh_sweep_heatmap(self) -> None:
+        if not hasattr(self,"sweep_heatmap"):
+            return
+        metric=self.sweep_heatmap_metric.currentData() if hasattr(self,"sweep_heatmap_metric") else "gamepad"
+        if metric=="clock":
+            self.sweep_heatmap.title="Frequency / amplitude response • oscillator clock error (ppm)"
+            points=[(f,a,ppm) for f,a,_,ppm in self.sweep_results if ppm is not None]
+        else:
+            self.sweep_heatmap.title="Frequency / amplitude response • gamepad RMS timing deviation (ms)"
+            points=[(f,a,gp) for f,a,gp,_ in self.sweep_results if gp is not None]
+        self.sweep_heatmap.set_points(points)
+
     def _sweep_record_and_advance(self) -> None:
         if not self.sweep_active or self.sweep_index>=len(self.sweep_plan):
             return
@@ -1186,9 +1207,7 @@ class MainWindow(QMainWindow):
         for col,val in enumerate(vals):
             self.sweep_table.setItem(row,col,QTableWidgetItem(str(val)))
 
-        self.sweep_heatmap.set_points([
-            (f,a,g) for f,a,g,_ in self.sweep_results if g is not None
-        ])
+        self._refresh_sweep_heatmap()
         self._add_event("sweep_result",{
             "index":self.sweep_index+1,
             "frequency_hz":freq,
