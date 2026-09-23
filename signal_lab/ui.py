@@ -420,7 +420,7 @@ class MainWindow(QMainWindow):
         osc_refresh = QPushButton("Refresh VISA")
         osc_refresh.clicked.connect(self._refresh_osc_visa)
         osc_connect = QPushButton("Connect Measurement Instrument")
-        osc_connect.clicked.connect(self._connect_measurement_instrument)
+        osc_connect.clicked.connect(self._connect_osc_measurement_instrument)
         osc_disconnect = QPushButton("Disconnect")
         osc_disconnect.clicked.connect(self._disconnect_measurement_instrument)
         instrument_row.addWidget(self.osc_visa_combo, 1)
@@ -607,6 +607,8 @@ class MainWindow(QMainWindow):
             self.hardware_status.setObjectName("Warn")
             self.controller_acquisition=ControllerAcquisition(self.controller_queue.put, lambda name, payload: self.controller_event_queue.put((name, payload)))
             self.controller_acquisition.start()
+            if hasattr(self,"osc_instrument_status"):
+                self.osc_instrument_status.setText("No measurement instrument connected")
             self._add_event("hardware_mode_enabled",{})
         else:
             self.simulation_mode=True
@@ -869,9 +871,18 @@ class MainWindow(QMainWindow):
         self._refresh_compare()
 
     def _refresh_visa(self) -> None:
-        self.visa_combo.clear()
         resources=list_visa_resources()
-        self.visa_combo.addItems(resources or ["No VISA resources found"])
+        if hasattr(self,"visa_combo"):
+            self.visa_combo.clear()
+            self.visa_combo.addItems(resources or ["No VISA resources found"])
+        if hasattr(self,"osc_visa_combo"):
+            self.osc_visa_combo.clear()
+            self.osc_visa_combo.addItems(resources or ["No VISA resources found"])
+
+    def _refresh_osc_visa(self) -> None:
+        resources=list_visa_resources()
+        self.osc_visa_combo.clear()
+        self.osc_visa_combo.addItems(resources or ["No VISA resources found"])
 
     def _selected_visa_resource(self) -> str | None:
         resource=self.visa_combo.currentText().strip()
@@ -880,26 +891,61 @@ class MainWindow(QMainWindow):
             return None
         return resource
 
+    def _set_measurement_instrument(self, resource: str) -> None:
+        self._disconnect_measurement_instrument(quiet=True)
+        instrument=VisaScpiMeasurementInstrument(resource)
+        identity=instrument.identify()
+        self.measurement_instrument=instrument
+        if hasattr(self,"measurement_id"):
+            self.measurement_id.setText("Measurement: "+identity)
+        if hasattr(self,"osc_instrument_status"):
+            self.osc_instrument_status.setText(identity+" • READ-ONLY MEASUREMENT ROLE")
+        self.osc_acquisition=OscillatorAcquisition(instrument,self.osc_queue.put,sample_period_s=0.10)
+        self.osc_acquisition.start()
+        self._add_event("measurement_instrument_connected",{"resource":resource,"identity":identity})
+        if hasattr(self,"cap_table"):
+            self._refresh_capabilities()
+
     def _connect_measurement_instrument(self) -> None:
         resource=self._selected_visa_resource()
         if not resource: return
-        self._stop_instrument_poller()
-        if self.measurement_instrument is not None:
-            try: self.measurement_instrument.close()
-            except Exception: pass
-            self.measurement_instrument=None
         try:
-            instrument=VisaScpiMeasurementInstrument(resource)
-            identity=instrument.identify()
-            self.measurement_instrument=instrument
-            self.measurement_id.setText("Measurement: "+identity)
-            self._start_instrument_poller()
-            self._add_event("measurement_instrument_connected",{"resource":resource,"identity":identity})
-            self._refresh_capabilities()
+            self._set_measurement_instrument(resource)
         except Exception as exc:
             self.measurement_instrument=None
-            self.measurement_id.setText("Measurement: connection failed")
+            if hasattr(self,"measurement_id"):
+                self.measurement_id.setText("Measurement: connection failed")
             QMessageBox.critical(self,"Measurement instrument connection",str(exc))
+
+    def _connect_osc_measurement_instrument(self) -> None:
+        resource=self.osc_visa_combo.currentText().strip()
+        if not resource or resource.startswith("No VISA"):
+            QMessageBox.information(self,"Oscillator instrument","No VISA resource is selected.")
+            return
+        try:
+            self._set_measurement_instrument(resource)
+        except Exception as exc:
+            self.measurement_instrument=None
+            self.osc_instrument_status.setText("Measurement instrument connection failed")
+            QMessageBox.critical(self,"Oscillator instrument connection",str(exc))
+
+    def _disconnect_measurement_instrument(self,quiet:bool=False) -> None:
+        if self.osc_acquisition is not None:
+            self.osc_acquisition.stop()
+            self.osc_acquisition=None
+        if self.measurement_instrument is not None:
+            try:
+                self.measurement_instrument.close()
+            except Exception as exc:
+                if not quiet:
+                    QMessageBox.warning(self,"Measurement instrument",f"Disconnect warning: {exc}")
+        self.measurement_instrument=None
+        if hasattr(self,"measurement_id"):
+            self.measurement_id.setText("Measurement: not connected")
+        if hasattr(self,"osc_instrument_status"):
+            self.osc_instrument_status.setText("Simulation oscillator" if self.simulation_mode else "No measurement instrument connected")
+        if hasattr(self,"cap_table"):
+            self._refresh_capabilities()
 
     def _connect_generator_instrument(self) -> None:
         resource=self._selected_visa_resource()
@@ -922,23 +968,24 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self,"Generator connection",str(exc))
 
     def _disconnect_instrument(self,quiet:bool=False) -> None:
-        self._stop_instrument_poller()
-        if self.measurement_instrument is not None:
-            try: self.measurement_instrument.close()
-            except Exception as exc:
-                if not quiet: QMessageBox.warning(self,"Measurement instrument",f"Disconnect warning: {exc}")
-            self.measurement_instrument=None
+        self._disconnect_measurement_instrument(quiet=quiet)
         try:
             with self.instrument_lock:
-                self.instrument.set_output(False); self.instrument.close()
+                self.instrument.set_output(False)
+                self.instrument.close()
         except Exception as exc:
-            if not quiet: QMessageBox.warning(self,"Generator",f"Disconnect warning: {exc}")
+            if not quiet:
+                QMessageBox.warning(self,"Generator",f"Disconnect warning: {exc}")
         self.instrument=SimulatedInstrument()
-        if hasattr(self,"measurement_id"): self.measurement_id.setText("Measurement: not connected")
-        if hasattr(self,"generator_id"): self.generator_id.setText("Generator: Simulation Instrument • OUTPUT OFF")
-        if hasattr(self,"output_button"): self.output_button.setChecked(False); self.output_button.setText("Enable Output")
-        if hasattr(self,"interference_status"): self.interference_status.setText("Simulation Instrument • OUTPUT OFF")
-        self._refresh_capabilities()
+        if hasattr(self,"generator_id"):
+            self.generator_id.setText("Generator: Simulation Instrument • OUTPUT OFF")
+        if hasattr(self,"output_button"):
+            self.output_button.setChecked(False)
+            self.output_button.setText("Enable Output")
+        if hasattr(self,"interference_status"):
+            self.interference_status.setText("Simulation Instrument • OUTPUT OFF")
+        if hasattr(self,"cap_table"):
+            self._refresh_capabilities()
 
     def _start_instrument_poller(self) -> None:
         self._stop_instrument_poller()
