@@ -8,6 +8,7 @@ import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
 from signal_lab.reporting import write_html_report
@@ -23,8 +24,8 @@ def pump(app: QApplication, seconds: float) -> None:
 
 def main() -> int:
     app = QApplication.instance() or QApplication([])
+    QSettings("SensoredRooster", "GamepadSignalLab").setValue("welcomed", True)
     window = MainWindow()
-    window.settings.setValue("welcomed", True)
     assert window.simulation_mode
     assert not window.instrument.output_enabled()
 
