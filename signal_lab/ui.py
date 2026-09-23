@@ -33,7 +33,7 @@ from .simulation import GamepadSimulator, OscillatorSimulator, stimulus_response
 from .storage import LabDatabase
 from .sweep import make_sweep
 from .theme import DARK, LIGHT
-from .widgets import HeatMapWidget, LineChart, MetricCard, StickView
+from .widgets import ControllerView, HeatMapWidget, LineChart, MetricCard, StickView
 from support import (
     SESSION_ID as SUPPORT_SESSION_ID,
     create_support_bundle,
@@ -233,22 +233,11 @@ class MainWindow(QMainWindow):
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(12, 14, 12, 14)
 
-        brand_block = QWidget()
-        brand_block.setStyleSheet("background: transparent;")
-        brand_layout = QVBoxLayout(brand_block)
-        brand_layout.setContentsMargins(0, 0, 0, 0)
-        brand_layout.setSpacing(0)
-        for brand_line in ("GAMEPAD", "SIGNAL", "LAB"):
-            brand = QLabel(brand_line)
-            brand.setObjectName("Brand")
-            brand.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            brand_layout.addWidget(brand)
-        side.addWidget(brand_block)
-        side.addSpacing(4)
-        byline = QLabel("Measurement workstation")
-        byline.setObjectName("Muted")
-        side.addWidget(byline)
-        side.addSpacing(12)
+        brand = QLabel("RcmTool")
+        brand.setObjectName("Brand")
+        brand.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        side.addWidget(brand)
+        side.addSpacing(14)
 
         self.nav_buttons: dict[str, QPushButton] = {}
         for index, name in enumerate(NAV):
@@ -465,37 +454,56 @@ class MainWindow(QMainWindow):
         return self._scroll(w)
 
     def _controller_page(self) -> QWidget:
-        w, layout = page("Controller Lab", "Controller discovery, live axes/triggers, timing source, and stationary analog noise.")
-        meta, ml = card("CONTROLLER")
-        self.controller_meta = QLabel("Simulation controller")
-        self.controller_meta.setWordWrap(True)
-        ml.addWidget(self.controller_meta,0,Qt.AlignmentFlag.AlignTop)
-        layout.addWidget(meta)
+        w, layout = page(
+            "Controller Lab",
+            "Live controller state first; backend and measurement diagnostics stay separate so unavailable data is never implied.",
+        )
 
-        row = QHBoxLayout()
-        self.left_stick = StickView("LEFT STICK")
-        self.right_stick = StickView("RIGHT STICK")
-        row.addWidget(self.left_stick)
-        row.addWidget(self.right_stick)
-        trg, tl = card("TRIGGERS / CAPABILITIES")
-        self.lt_bar = QProgressBar(); self.lt_bar.setRange(0,1000)
-        self.rt_bar = QProgressBar(); self.rt_bar.setRange(0,1000)
-        tl.addWidget(QLabel("LT")); tl.addWidget(self.lt_bar)
-        tl.addWidget(QLabel("RT")); tl.addWidget(self.rt_bar)
+        identity, il = card("CONNECTED CONTROLLER")
+        self.controller_meta = QLabel("Simulation controller")
+        self.controller_meta.setObjectName("Good")
+        self.controller_meta.setWordWrap(True)
+        il.addWidget(self.controller_meta)
+        layout.addWidget(identity)
+
+        visual, vl = card("LIVE CONTROLLER STATE")
+        self.controller_view = ControllerView()
+        vl.addWidget(self.controller_view)
+        self.controller_axes_readout = QLabel("LX +0.0000  •  LY +0.0000  •  RX +0.0000  •  RY +0.0000  •  LT 0.0%  •  RT 0.0%")
+        self.controller_axes_readout.setObjectName("Muted")
+        self.controller_axes_readout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.controller_axes_readout.setWordWrap(True)
+        vl.addWidget(self.controller_axes_readout)
+        layout.addWidget(visual)
+
+        diagnostics = QGridLayout()
+        diagnostics.setHorizontalSpacing(14)
+        diagnostics.setVerticalSpacing(14)
+
+        input_card, input_layout = card("BUTTONS / D-PAD")
+        self.button_capability = QLabel("Waiting for a decoded input sample")
+        self.button_capability.setObjectName("Muted")
+        self.button_capability.setWordWrap(True)
+        input_layout.addWidget(self.button_capability)
+        diagnostics.addWidget(input_card,0,0)
+
+        signal_card, signal_layout = card("ANALOG SIGNAL")
         self.axis_noise = QLabel("Stationary noise: waiting for samples")
         self.axis_noise.setObjectName("Muted")
         self.axis_noise.setWordWrap(True)
-        tl.addWidget(self.axis_noise)
-        self.button_capability = QLabel("Buttons / D-pad: waiting for an input sample")
-        self.button_capability.setObjectName("Muted")
-        self.button_capability.setWordWrap(True)
-        tl.addWidget(self.button_capability)
+        signal_layout.addWidget(self.axis_noise)
+        diagnostics.addWidget(signal_card,0,1)
+
+        device_card, device_layout = card("BACKEND / DEVICE DETAILS")
         self.controller_capability = QLabel("Firmware / battery / USB path: shown only when the active backend can report them.")
         self.controller_capability.setObjectName("Muted")
         self.controller_capability.setWordWrap(True)
-        tl.addWidget(self.controller_capability)
-        row.addWidget(trg,2)
-        layout.addLayout(row)
+        device_layout.addWidget(self.controller_capability)
+        diagnostics.addWidget(device_card,1,0,1,2)
+
+        diagnostics.setColumnStretch(0,1)
+        diagnostics.setColumnStretch(1,1)
+        layout.addLayout(diagnostics)
         layout.addStretch(1)
         return self._scroll(w)
 
