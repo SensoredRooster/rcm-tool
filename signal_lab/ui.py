@@ -40,25 +40,6 @@ NAV = [
 ]
 
 
-class InstrumentPoller(threading.Thread):
-    def __init__(self, instrument, lock: threading.Lock, output: queue.Queue, stop_event: threading.Event) -> None:
-        super().__init__(daemon=True, name="oscillator-instrument-poller")
-        self.instrument = instrument
-        self.lock = lock
-        self.output = output
-        self.stop_event = stop_event
-
-    def run(self) -> None:
-        while not self.stop_event.is_set():
-            try:
-                with self.lock:
-                    frequency = self.instrument.measure_frequency_hz()
-                if frequency and frequency > 0:
-                    self.output.put((time.perf_counter_ns(), float(frequency), "measured"))
-            except Exception as exc:
-                self.output.put(("error", str(exc), "error"))
-            self.stop_event.wait(0.05)
-
 
 def card(title: str) -> tuple[QFrame, QVBoxLayout]:
     frame = QFrame()
@@ -141,10 +122,7 @@ class MainWindow(QMainWindow):
         self.instrument = SimulatedInstrument()
         self.measurement_instrument = None
         self.osc_acquisition: OscillatorAcquisition | None = None
-        self.measurement_instrument = None
         self.instrument_lock = threading.Lock()
-        self.instrument_poller_stop = threading.Event()
-        self.instrument_poller: InstrumentPoller | None = None
         self.safety_limits = SafetyLimits()
 
         self.gamepad_sim = GamepadSimulator()
@@ -175,10 +153,13 @@ class MainWindow(QMainWindow):
         self.sweep_active = False
         self.sweep_plan: list[tuple[float, float, int]] = []
         self.sweep_index = 0
-        self.sweep_results: list[tuple[float, float, float, float]] = []
+        self.sweep_results: list[tuple[float, float, float | None, float | None]] = []
+        self.sweep_step_controller_ts: list[int] = []
+        self.sweep_step_osc_freq: list[float] = []
+        self.sweep_phase = "idle"
         self.sweep_timer = QTimer(self)
         self.sweep_timer.setSingleShot(True)
-        self.sweep_timer.timeout.connect(self._sweep_record_and_advance)
+        self.sweep_timer.timeout.connect(self._sweep_timer_tick)
 
         self.current_timing = timing_metrics([])
         self.current_osc = oscillator_metrics([], 12_000_000.0)
@@ -652,7 +633,7 @@ class MainWindow(QMainWindow):
                 sim_output = self.instrument.output_enabled()
             except Exception:
                 sim_output = False
-            if sim_output:
+            if sim_output and isinstance(self.instrument,SimulatedInstrument):
                 response = stimulus_response(self.instrument.frequency_hz, self.instrument.amplitude_vpp)
                 self.gamepad_sim.config.jitter_ms = self.sim_base_jitter_ms + response.gamepad_extra_jitter_ms
                 self.osc_sim.config.ppm_offset = self.sim_base_osc_ppm + response.oscillator_extra_ppm
@@ -661,6 +642,7 @@ class MainWindow(QMainWindow):
                 self.gamepad_sim.config.jitter_ms = self.sim_base_jitter_ms
                 self.osc_sim.config.ppm_offset = self.sim_base_osc_ppm
                 self.sim_analog_extra = 0.0
+
             rate=max(1.0,self.gamepad_sim.config.rate_hz)
             self.sim_sample_accum += elapsed*rate
             count=min(400,int(self.sim_sample_accum)); self.sim_sample_accum -= count
@@ -672,10 +654,15 @@ class MainWindow(QMainWindow):
                     for axis in ("lx","ly","rx","ry"):
                         sample[axis]=max(-1.0,min(1.0,float(sample.get(axis,0.0))+extra))
                 self._accept_controller(self.sim_epoch_ns+rel,sample,"Simulation controller","simulated")
-            self.osc_sample_accum += elapsed/0.05
-            oc=min(10,int(self.osc_sample_accum)); self.osc_sample_accum -= oc
-            for _ in range(oc):
-                self._accept_oscillator(now,self.osc_sim.next_frequency_hz(0.05),"Simulation oscillator","simulated")
+
+            # A physical clock instrument can be used while the controller side
+            # remains simulated. Only synthesize oscillator samples when no
+            # physical measurement source is attached.
+            if self.measurement_instrument is None:
+                self.osc_sample_accum += elapsed/0.05
+                oc=min(10,int(self.osc_sample_accum)); self.osc_sample_accum -= oc
+                for _ in range(oc):
+                    self._accept_oscillator(now,self.osc_sim.next_frequency_hz(0.05),"Simulation oscillator","simulated")
         else:
             while True:
                 try:
@@ -689,17 +676,29 @@ class MainWindow(QMainWindow):
                 except queue.Empty:
                     break
                 self._accept_controller(m.timestamp_ns,m.sample,m.source,m.timing_quality,m.raw_report_hex,m.duplicate_raw_report)
-            while True:
-                try:
-                    item=self.osc_queue.get_nowait()
-                except queue.Empty:
-                    break
-                if item[0]=="error":
-                    self.interference_status.setText(f"Instrument communication error: {item[1]}")
-                    self._add_event("instrument_error",{"message":item[1]})
-                else:
-                    source=self.measurement_id.text().removeprefix("Measurement: ").strip() if hasattr(self,"measurement_id") else "Measurement instrument"
-                    self._accept_oscillator(int(item[0]),float(item[1]),source,str(item[2]))
+
+        # Oscillator acquisition is independent of controller acquisition mode.
+        # OscillatorAcquisition emits OscillatorMeasurement objects; tuple support
+        # remains for compatibility with older queued poller data.
+        while True:
+            try:
+                item=self.osc_queue.get_nowait()
+            except queue.Empty:
+                break
+            if isinstance(item,OscillatorMeasurement):
+                self._accept_oscillator(
+                    item.timestamp_ns,item.frequency_hz,item.source,"measured",
+                    item.duty_cycle_percent,
+                )
+            elif isinstance(item,tuple) and item and item[0]=="error":
+                message=str(item[1]) if len(item)>1 else "unknown measurement error"
+                if hasattr(self,"osc_instrument_status"):
+                    self.osc_instrument_status.setText("Measurement error: "+message)
+                self._add_event("instrument_error",{"message":message,"role":"measurement"})
+            elif isinstance(item,tuple) and len(item)>=3:
+                source=self.measurement_id.text().removeprefix("Measurement: ").strip() if hasattr(self,"measurement_id") else "Measurement instrument"
+                self._accept_oscillator(int(item[0]),float(item[1]),source,str(item[2]))
+
         if self.baseline_active and time.monotonic()>=self.baseline_deadline:
             self._finish_baseline()
 
@@ -710,12 +709,16 @@ class MainWindow(QMainWindow):
         if duplicate_raw:
             self.duplicate_raw_reports += 1
         if self.baseline_active: self.baseline_controller_ts.append(int(timestamp_ns))
+        if self.sweep_active and self.sweep_phase=="dwell":
+            self.sweep_step_controller_ts.append(int(timestamp_ns))
         if self.capture_active and self.session_id:
             self.db.add_controller_sample(self.session_id,timestamp_ns,sample,source=f"{source} [{quality}]",raw_report_hex=raw_hex)
 
     def _accept_oscillator(self,timestamp_ns:int,frequency_hz:float,source:str,quality:str,duty_cycle_percent:float|None=None) -> None:
         self.osc_ts.append(int(timestamp_ns)); self.osc_freq.append(float(frequency_hz))
         if self.baseline_active: self.baseline_osc_freq.append(float(frequency_hz))
+        if self.sweep_active and self.sweep_phase=="dwell":
+            self.sweep_step_osc_freq.append(float(frequency_hz))
         if self.capture_active and self.session_id:
             self.db.add_oscillator_sample(self.session_id,timestamp_ns,frequency_hz,source=source,duty_cycle_percent=duty_cycle_percent,quality=quality)
 
@@ -987,17 +990,6 @@ class MainWindow(QMainWindow):
         if hasattr(self,"cap_table"):
             self._refresh_capabilities()
 
-    def _start_instrument_poller(self) -> None:
-        self._stop_instrument_poller()
-        if self.measurement_instrument is None: return
-        self.instrument_poller_stop=threading.Event()
-        self.instrument_poller=InstrumentPoller(self.measurement_instrument,self.instrument_lock,self.osc_queue,self.instrument_poller_stop)
-        self.instrument_poller.start()
-
-    def _stop_instrument_poller(self) -> None:
-        self.instrument_poller_stop.set()
-        if self.instrument_poller and self.instrument_poller.is_alive(): self.instrument_poller.join(timeout=.8)
-        self.instrument_poller=None
 
     def _apply_stimulus_settings(self) -> bool:
         self._sync_safety_limits()
@@ -1062,61 +1054,168 @@ class MainWindow(QMainWindow):
         self.sweep_estimate.setText(f"Estimated duration: {count*per:.1f}s • {count} points")
 
     def _start_sweep(self) -> None:
-        if self.sweep_active: return
+        if self.sweep_active:
+            return
         self._sync_safety_limits()
         try:
-            base=make_sweep(self.sweep_start.value(),self.sweep_stop.value(),self.sweep_steps.value(),logarithmic=self.sweep_log.isChecked(),repetitions=self.sweep_reps.value(),randomized=False)
-            amps=[self.amp_start.value()] if self.amp_steps.value()==1 else [self.amp_start.value()+(self.amp_stop.value()-self.amp_start.value())*i/(self.amp_steps.value()-1) for i in range(self.amp_steps.value())]
-            plan=[(step.frequency_hz,amp,step.repetition) for step in base for amp in amps]
-            if self.sweep_random.isChecked():
-                import random
-                random.Random(2026).shuffle(plan)
-            for freq,amp,_ in plan: self.safety_limits.validate(frequency_hz=freq,amplitude_vpp=amp,offset_v=self.stim_offset.value())
+            steps=make_sweep(
+                self.sweep_start.value(),
+                self.sweep_stop.value(),
+                self.sweep_steps.value(),
+                logarithmic=self.sweep_log.isChecked(),
+                repetitions=self.sweep_reps.value(),
+                randomized=self.sweep_random.isChecked(),
+                amplitude_start_vpp=self.amp_start.value(),
+                amplitude_stop_vpp=self.amp_stop.value(),
+                amplitude_steps=self.amp_steps.value(),
+            )
+            plan=[(step.frequency_hz,step.amplitude_vpp,step.repetition) for step in steps]
+            for freq,amp,_ in plan:
+                self.safety_limits.validate(
+                    frequency_hz=freq,
+                    amplitude_vpp=amp,
+                    offset_v=self.stim_offset.value(),
+                )
         except Exception as exc:
-            QMessageBox.critical(self,"Sweep plan rejected",str(exc)); return
+            QMessageBox.critical(self,"Sweep plan rejected",str(exc))
+            return
 
         if self.sweep_enable_output.isChecked():
-            answer=QMessageBox.question(self,"Authorize sweep output?","This sweep is configured to enable instrument output. Continue?",QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)
-            if answer!=QMessageBox.StandardButton.Yes: return
+            answer=QMessageBox.question(
+                self,
+                "Authorize sweep output?",
+                "This sweep is configured to enable instrument output. Continue?",
+                QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer!=QMessageBox.StandardButton.Yes:
+                return
 
-        if not self.capture_active: self._start_capture()
-        self.sweep_plan=plan; self.sweep_results=[]; self.sweep_index=0; self.sweep_table.setRowCount(0); self.sweep_heatmap.set_points([]); self.sweep_active=True
-        self._add_event("sweep_started",{"points":len(plan)})
-        if self.sweep_enable_output.isChecked():
-            try:
-                with self.instrument_lock: self.instrument.set_output(True)
-            except Exception as exc:
-                self.sweep_active=False; QMessageBox.critical(self,"Sweep output",str(exc)); return
+        if not self.capture_active:
+            self._start_capture()
+        self.sweep_plan=plan
+        self.sweep_results=[]
+        self.sweep_index=0
+        self.sweep_phase="idle"
+        self.sweep_step_controller_ts=[]
+        self.sweep_step_osc_freq=[]
+        self.sweep_table.setRowCount(0)
+        self.sweep_heatmap.set_points([])
+        self.sweep_active=True
+        self._add_event("sweep_started",{
+            "points":len(plan),
+            "settling_ms":self.settle_ms.value(),
+            "dwell_ms":self.dwell_ms.value(),
+            "randomized":self.sweep_random.isChecked(),
+        })
         self._sweep_apply_next()
 
     def _sweep_apply_next(self) -> None:
         if not self.sweep_active or self.sweep_index>=len(self.sweep_plan):
-            self._stop_sweep(); return
+            self._stop_sweep()
+            return
+
         freq,amp,rep=self.sweep_plan[self.sweep_index]
-        self.stim_freq.setValue(freq); self.stim_amp.setValue(amp)
+        self.stim_freq.setValue(freq)
+        self.stim_amp.setValue(amp)
+
+        # Configure the next safe point before enabling output. This avoids a
+        # transient where the source is on with settings from the prior point.
         if not self._apply_stimulus_settings():
-            self._stop_sweep(); return
-        self._add_event("sweep_step",{"index":self.sweep_index+1,"frequency_hz":freq,"amplitude_vpp":amp,"repetition":rep})
-        self.sweep_timer.start(self.settle_ms.value()+self.dwell_ms.value())
+            self._stop_sweep()
+            return
+
+        if self.sweep_enable_output.isChecked():
+            try:
+                with self.instrument_lock:
+                    self.instrument.set_output(True)
+            except Exception as exc:
+                QMessageBox.critical(self,"Sweep output",str(exc))
+                self._stop_sweep()
+                return
+
+        self._add_event("sweep_step",{
+            "index":self.sweep_index+1,
+            "frequency_hz":freq,
+            "amplitude_vpp":amp,
+            "repetition":rep,
+        })
+        self.sweep_phase="settling"
+        if self.settle_ms.value()>0:
+            self.sweep_timer.start(self.settle_ms.value())
+        else:
+            self._begin_sweep_dwell()
+
+    def _sweep_timer_tick(self) -> None:
+        if not self.sweep_active:
+            return
+        if self.sweep_phase=="settling":
+            self._begin_sweep_dwell()
+        elif self.sweep_phase=="dwell":
+            self._sweep_record_and_advance()
+
+    def _begin_sweep_dwell(self) -> None:
+        self.sweep_step_controller_ts=[]
+        self.sweep_step_osc_freq=[]
+        self.sweep_phase="dwell"
+        self.sweep_timer.start(self.dwell_ms.value())
 
     def _sweep_record_and_advance(self) -> None:
-        if not self.sweep_active or self.sweep_index>=len(self.sweep_plan): return
+        if not self.sweep_active or self.sweep_index>=len(self.sweep_plan):
+            return
+
         freq,amp,rep=self.sweep_plan[self.sweep_index]
-        gp=self.current_timing.rms_deviation_ms; ppm=self.current_osc.frequency_error_ppm
+        step_timing=timing_metrics(
+            self.sweep_step_controller_ts,
+            expected_interval_ms=1000.0/max(self.expected_rate.value(),1.0),
+        )
+        step_osc=oscillator_metrics(
+            self.sweep_step_osc_freq,
+            self.nominal_freq.value(),
+        )
+        gp=step_timing.rms_deviation_ms if step_timing.sample_count>=2 else None
+        ppm=step_osc.frequency_error_ppm if step_osc.sample_count else None
         self.sweep_results.append((freq,amp,gp,ppm))
-        row=self.sweep_table.rowCount(); self.sweep_table.insertRow(row)
-        vals=[row+1,f"{freq:.8g}",f"{amp:.6g}",f"{gp:.6g}",f"{ppm:+.6g}","Captured"]
-        for col,val in enumerate(vals): self.sweep_table.setItem(row,col,QTableWidgetItem(str(val)))
-        self.sweep_heatmap.set_points([(f,a,g) for f,a,g,_ in self.sweep_results])
-        self.sweep_index+=1; self._sweep_apply_next()
+
+        row=self.sweep_table.rowCount()
+        self.sweep_table.insertRow(row)
+        gp_text=f"{gp:.6g}" if gp is not None else "Unavailable"
+        ppm_text=f"{ppm:+.6g}" if ppm is not None else "Unavailable"
+        status="Captured" if gp is not None else "Insufficient controller samples"
+        vals=[row+1,f"{freq:.8g}",f"{amp:.6g}",gp_text,ppm_text,status]
+        for col,val in enumerate(vals):
+            self.sweep_table.setItem(row,col,QTableWidgetItem(str(val)))
+
+        self.sweep_heatmap.set_points([
+            (f,a,g) for f,a,g,_ in self.sweep_results if g is not None
+        ])
+        self._add_event("sweep_result",{
+            "index":self.sweep_index+1,
+            "frequency_hz":freq,
+            "amplitude_vpp":amp,
+            "repetition":rep,
+            "gamepad_rms_ms":gp,
+            "clock_ppm":ppm,
+            "controller_samples":step_timing.sample_count,
+            "oscillator_samples":step_osc.sample_count,
+        })
+        self.sweep_index+=1
+        self.sweep_phase="idle"
+        self._sweep_apply_next()
 
     def _stop_sweep(self,output_off:bool=True) -> None:
-        was=self.sweep_active; self.sweep_active=False; self.sweep_timer.stop()
+        was=self.sweep_active
+        self.sweep_active=False
+        self.sweep_phase="idle"
+        self.sweep_timer.stop()
         if output_off:
             try:
-                with self.instrument_lock: self.instrument.set_output(False)
-            except Exception: pass
-        if was: self._add_event("sweep_stopped",{"captured_points":len(self.sweep_results)})
+                with self.instrument_lock:
+                    self.instrument.set_output(False)
+            except Exception:
+                pass
+        if was:
+            self._add_event("sweep_stopped",{"captured_points":len(self.sweep_results)})
 
     def _add_event(self,event_type:str,payload:dict) -> None:
         ts=time.perf_counter_ns(); self.events.append((ts,event_type,dict(payload)))
