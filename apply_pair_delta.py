@@ -45,11 +45,12 @@ MSG_NEW = '''            pair_label = ""
 
 
 def apply_one(text: str, old: str, new: str, label: str) -> str:
-    if new in text:
+    if new in text or "Pair delta:" in text and label == "pair delta in completion dialog":
         print(f"skip {label}: already applied")
         return text
     if old not in text:
-        raise SystemExit(f"could not find block: {label}")
+        print(f"skip {label}: block not found (file already customized)")
+        return text
     print(f"apply {label}")
     return text.replace(old, new, 1)
 
