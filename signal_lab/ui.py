@@ -1175,9 +1175,43 @@ class MainWindow(QMainWindow):
         if not self._ensure_session(): return
         path,_=QFileDialog.getSaveFileName(self,"Engineering Report",str(self.data_root/"GamepadSignalLab_Report.html"),"HTML (*.html)")
         if not path: return
+        timestamps=list(self.controller_ts)[-5000:]
+        expected_ms=1000.0/max(self.expected_rate.value(),1.0)
+        intervals=[(b-a)/1e6 for a,b in zip(timestamps,timestamps[1:]) if b>a]
+        deviations=[value-expected_ms for value in intervals]
+        freqs=list(self.osc_freq)[-3000:]
+        nominal=self.nominal_freq.value()
+        ppm=[(value-nominal)/nominal*1e6 for value in freqs] if nominal>0 else []
+        timeline=self.db.list_events(self.session_id,limit=250)
         write_html_report(
-            path,title="Gamepad Signal Lab Engineering Report",controller_metrics=asdict(self.current_timing),oscillator_metrics=asdict(self.current_osc),
-            metadata={"session_id":self.session_id,"mode":"simulation" if self.simulation_mode else "hardware","correlation":self.current_corr,"app_version":__version__},
+            path,title="Gamepad Signal Lab Engineering Report",
+            controller_metrics=asdict(self.current_timing),
+            oscillator_metrics=asdict(self.current_osc),
+            metadata={
+                "session_id":self.session_id,
+                "mode":"simulation" if self.simulation_mode else "hardware",
+                "correlation":self.current_corr,
+                "app_version":__version__,
+                "nominal_frequency_hz":self.nominal_freq.value(),
+                "expected_polling_rate_hz":self.expected_rate.value(),
+                "baseline_reference":self.reference_baseline,
+                "stimulus":{
+                    "waveform":self.waveform_combo.currentText(),
+                    "frequency_hz":self.stim_freq.value(),
+                    "amplitude_vpp":self.stim_amp.value(),
+                    "offset_v":self.stim_offset.value(),
+                    "output_enabled":bool(self.instrument.output_enabled()),
+                },
+                "sweep_points":len(self.sweep_results),
+            },
+            plots={
+                "Report interval vs sample (ms)":intervals[-1200:],
+                "Gamepad timing deviation (ms)":deviations[-1200:],
+                "Oscillator frequency (Hz)":freqs[-1200:],
+                "Oscillator error (ppm)":ppm[-1200:],
+            },
+            sweep_points=self.sweep_results,
+            timeline=timeline,
             limitations=[
                 "Host-side gamepad timestamps include USB/OS scheduling unless dedicated analyzer hardware supplies bus-level timestamps.",
                 "Oscillator precision cannot exceed the connected measurement instrument and sampling method.",
