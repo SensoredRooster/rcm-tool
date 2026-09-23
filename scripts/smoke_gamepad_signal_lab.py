@@ -31,6 +31,14 @@ def main() -> int:
     app = QApplication.instance() or QApplication([])
     QSettings("SensoredRooster", "GamepadSignalLab").setValue("welcomed", True)
     window = MainWindow()
+    # GitHub's offscreen Qt backend may not expose Segoe glyphs. Use Arial
+    # for preview captures only; this does not alter the packaged application.
+    window.setStyleSheet(
+        window.styleSheet().replace(
+            'font-family: "Segoe UI Variable", "Segoe UI";',
+            'font-family: "Arial";',
+        )
+    )
     window.resize(1440, 900)
     window.show()
     pump(app, 0.15)
