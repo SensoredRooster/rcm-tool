@@ -1,6 +1,6 @@
-"""RCM Tool application entry point."""
+"""RCM Tool application entry point. Desktop window."""
 
-from controller_integrity import main
+from desk_bench import main
 
 
 if __name__ == "__main__":
