@@ -14,16 +14,27 @@ class ControllerMeasurement:
     source: str
     timing_quality: str
     raw_report_hex: str | None = None
+    duplicate_raw_report: bool = False
 
 
 class ControllerAcquisition:
-    def __init__(self, callback: Callable[[ControllerMeasurement], None], poll_sleep_s: float = 0.001) -> None:
+    def __init__(
+        self,
+        callback: Callable[[ControllerMeasurement], None],
+        event_callback: Callable[[str, dict], None] | None = None,
+        poll_sleep_s: float = 0.001,
+    ) -> None:
         self.callback = callback
+        self.event_callback = event_callback
         self.poll_sleep_s = max(0.00025, float(poll_sleep_s))
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.backend = None
         self.error: str | None = None
+
+    def _event(self, name: str, payload: dict | None = None) -> None:
+        if self.event_callback:
+            self.event_callback(name, payload or {})
 
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
@@ -43,23 +54,56 @@ class ControllerAcquisition:
             self.backend = AutomaticControllerBackend()
         except Exception as exc:
             self.error = f"Controller backend initialization failed: {exc}"
+            self._event("controller_backend_error", {"message": self.error})
             return
+
         last_host_sample_ns = 0
+        last_seen = 0.0
+        connected = False
+        last_buttons: int | None = None
+        last_raw_hex: str | None = None
+        last_error: str | None = None
+
         while not self.stop_event.is_set():
             try:
                 sample = self.backend.read()
                 now = time.perf_counter_ns()
                 active = getattr(self.backend, "active", None)
+                source = (
+                    getattr(active, "status", lambda: getattr(active, "name", "Controller"))()
+                    if active is not None else "Controller"
+                )
+
+                if sample is not None:
+                    last_seen = time.monotonic()
+                    if not connected:
+                        connected = True
+                        self._event("controller_connected", {"source": source})
+                    if "buttons" in sample:
+                        buttons = int(sample.get("buttons", 0))
+                        if last_buttons is not None and buttons != last_buttons:
+                            changed = buttons ^ last_buttons
+                            self._event("button_transition", {
+                                "previous_mask": last_buttons,
+                                "current_mask": buttons,
+                                "changed_mask": changed,
+                            })
+                        last_buttons = buttons
+
                 if active is not None and active.__class__.__name__ == "HIDGamepad":
                     drain = getattr(active, "drain_raw_reports", None)
                     reports = drain() if callable(drain) else []
                     for report in reports:
+                        raw_hex = bytes(report).hex()
+                        duplicate = last_raw_hex == raw_hex
+                        last_raw_hex = raw_hex
                         self.callback(ControllerMeasurement(
                             timestamp_ns=now,
                             sample=dict(sample or {}),
-                            source=getattr(active, "status", lambda: "Raw HID")(),
+                            source=source,
                             timing_quality="measured-at-host-read",
-                            raw_report_hex=bytes(report).hex(),
+                            raw_report_hex=raw_hex,
+                            duplicate_raw_report=duplicate,
                         ))
                 elif sample is not None and now - last_host_sample_ns >= int(self.poll_sleep_s * 1e9):
                     last_host_sample_ns = now
@@ -69,6 +113,16 @@ class ControllerAcquisition:
                         source=getattr(active, "name", "Host controller API") if active is not None else "Host controller API",
                         timing_quality="host-poll-estimate",
                     ))
+
+                if connected and sample is None and time.monotonic() - last_seen >= 0.5:
+                    connected = False
+                    last_buttons = None
+                    self._event("controller_disconnected", {})
+
+                last_error = None
             except Exception as exc:
                 self.error = str(exc)
+                if self.error != last_error:
+                    self._event("controller_backend_error", {"message": self.error})
+                    last_error = self.error
             time.sleep(self.poll_sleep_s)

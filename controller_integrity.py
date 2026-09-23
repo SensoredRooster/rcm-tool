@@ -122,6 +122,7 @@ class XInputGamepad:
             "ry": self._normalize(pad.thumb_ry, 32768.0),
             "lt": pad.left_trigger / 255.0,
             "rt": pad.right_trigger / 255.0,
+            "buttons": int(pad.buttons),
         }
 
     def status(self) -> str:
@@ -195,6 +196,8 @@ class WinMMJoystick:
                     "ry": -self._normalize(info.u),
                     "lt": info.z / 65535.0,
                     "rt": info.v / 65535.0,
+                    "buttons": int(info.buttons),
+                    "dpad_pov": int(info.pov),
                 }
         self.device_id = None
         return None
@@ -286,6 +289,16 @@ class SDLJoystick:
             ly = -self._axis(self.joystick, 1)
             rx = self._axis(self.joystick, 2)
             ry = -self._axis(self.joystick, 3)
+            buttons = 0
+            dpad_x, dpad_y = 0, 0
+            try:
+                for button_index in range(self.joystick.get_numbuttons()):
+                    if self.joystick.get_button(button_index):
+                        buttons |= 1 << button_index
+                if self.joystick.get_numhats() > 0:
+                    dpad_x, dpad_y = self.joystick.get_hat(0)
+            except Exception:
+                pass
             return {
                 "lx": lx,
                 "ly": ly,
@@ -293,6 +306,9 @@ class SDLJoystick:
                 "ry": ry,
                 "lt": self._trigger(self._axis(self.joystick, 4)),
                 "rt": self._trigger(self._axis(self.joystick, 5)),
+                "buttons": buttons,
+                "dpad_x": float(dpad_x),
+                "dpad_y": float(dpad_y),
             }
         self.joystick = None
         self.active_index = None

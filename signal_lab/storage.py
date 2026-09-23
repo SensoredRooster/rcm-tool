@@ -134,24 +134,6 @@ class LabDatabase:
             writer.writerows(rows)
         return destination
 
-    def list_sessions(self, limit: int = 200) -> list[dict]:
-        rows = self.conn.execute(
-            """SELECT s.id,s.created_utc,s.name,s.mode,s.app_version,
-                      (SELECT COUNT(*) FROM controller_samples c WHERE c.session_id=s.id),
-                      (SELECT COUNT(*) FROM oscillator_samples o WHERE o.session_id=s.id),
-                      (SELECT COUNT(*) FROM events e WHERE e.session_id=s.id)
-               FROM sessions s ORDER BY s.created_utc DESC LIMIT ?""",
-            (max(1, int(limit)),),
-        )
-        return [
-            {
-                "id": row[0], "created_utc": row[1], "name": row[2], "mode": row[3],
-                "app_version": row[4], "controller_samples": row[5],
-                "oscillator_samples": row[6], "events": row[7],
-            }
-            for row in rows
-        ]
-
     def recent_events(self, session_id: str, limit: int = 100) -> list[dict]:
         rows = self.conn.execute(
             """SELECT timestamp_ns,event_type,payload_json

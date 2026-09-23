@@ -25,8 +25,9 @@ from . import __version__
 from .analysis import oscillator_metrics, pearson_correlation, timing_metrics
 from .controller import ControllerAcquisition, ControllerMeasurement
 from .instruments import SafetyLimits, SimulatedInstrument, VisaScpiGenerator, VisaScpiMeasurementInstrument, list_visa_resources
+from .oscillator import OscillatorAcquisition, OscillatorMeasurement
 from .reporting import write_html_report
-from .simulation import GamepadSimulator, OscillatorSimulator
+from .simulation import GamepadSimulator, OscillatorSimulator, stimulus_response
 from .storage import LabDatabase
 from .sweep import make_sweep
 from .theme import DARK, LIGHT
@@ -134,9 +135,12 @@ class MainWindow(QMainWindow):
         self.session_id: str | None = None
         self.controller_acquisition: ControllerAcquisition | None = None
         self.controller_queue: queue.Queue[ControllerMeasurement] = queue.Queue()
+        self.controller_event_queue: queue.Queue = queue.Queue()
         self.osc_queue: queue.Queue = queue.Queue()
 
         self.instrument = SimulatedInstrument()
+        self.measurement_instrument = None
+        self.osc_acquisition: OscillatorAcquisition | None = None
         self.measurement_instrument = None
         self.instrument_lock = threading.Lock()
         self.instrument_poller_stop = threading.Event()
@@ -145,6 +149,10 @@ class MainWindow(QMainWindow):
 
         self.gamepad_sim = GamepadSimulator()
         self.osc_sim = OscillatorSimulator()
+        self.sim_base_jitter_ms = self.gamepad_sim.config.jitter_ms
+        self.sim_base_osc_ppm = self.osc_sim.config.ppm_offset
+        self.sim_analog_extra = 0.0
+        self.duplicate_raw_reports = 0
         self.sim_epoch_ns = time.perf_counter_ns()
         self.last_sim_wall_ns = time.perf_counter_ns()
         self.sim_sample_accum = 0.0
@@ -185,7 +193,7 @@ class MainWindow(QMainWindow):
 
         self.ui_timer = QTimer(self)
         self.ui_timer.timeout.connect(self._refresh_ui)
-        self.ui_timer.start(100)
+        self.ui_timer.start(self.graph_refresh.value())
 
         if not bool(self.settings.value("welcomed", False, type=bool)):
             QTimer.singleShot(150, self._first_run)
@@ -407,6 +415,22 @@ class MainWindow(QMainWindow):
         self.nominal_freq.setSuffix(" Hz")
         form.addRow("Nominal frequency", self.nominal_freq)
         rl.addLayout(form)
+        instrument_row = QHBoxLayout()
+        self.osc_visa_combo = QComboBox()
+        osc_refresh = QPushButton("Refresh VISA")
+        osc_refresh.clicked.connect(self._refresh_osc_visa)
+        osc_connect = QPushButton("Connect Measurement Instrument")
+        osc_connect.clicked.connect(self._connect_measurement_instrument)
+        osc_disconnect = QPushButton("Disconnect")
+        osc_disconnect.clicked.connect(self._disconnect_measurement_instrument)
+        instrument_row.addWidget(self.osc_visa_combo, 1)
+        instrument_row.addWidget(osc_refresh)
+        instrument_row.addWidget(osc_connect)
+        instrument_row.addWidget(osc_disconnect)
+        rl.addLayout(instrument_row)
+        self.osc_instrument_status = QLabel("Simulation oscillator")
+        self.osc_instrument_status.setObjectName("Muted")
+        rl.addWidget(self.osc_instrument_status)
         layout.addWidget(ref)
 
         grid = QGridLayout()
@@ -581,7 +605,7 @@ class MainWindow(QMainWindow):
             self.mode_button.setText("Hardware Mode")
             self.hardware_status.setText("HARDWARE • controller discovery active")
             self.hardware_status.setObjectName("Warn")
-            self.controller_acquisition=ControllerAcquisition(self.controller_queue.put)
+            self.controller_acquisition=ControllerAcquisition(self.controller_queue.put, lambda name, payload: self.controller_event_queue.put((name, payload)))
             self.controller_acquisition.start()
             self._add_event("hardware_mode_enabled",{})
         else:
@@ -622,23 +646,47 @@ class MainWindow(QMainWindow):
         if self.simulation_mode:
             elapsed=max(0,(now-self.last_sim_wall_ns)/1e9)
             self.last_sim_wall_ns=now
+            try:
+                sim_output = self.instrument.output_enabled()
+            except Exception:
+                sim_output = False
+            if sim_output:
+                response = stimulus_response(self.instrument.frequency_hz, self.instrument.amplitude_vpp)
+                self.gamepad_sim.config.jitter_ms = self.sim_base_jitter_ms + response.gamepad_extra_jitter_ms
+                self.osc_sim.config.ppm_offset = self.sim_base_osc_ppm + response.oscillator_extra_ppm
+                self.sim_analog_extra = response.analog_noise_extra
+            else:
+                self.gamepad_sim.config.jitter_ms = self.sim_base_jitter_ms
+                self.osc_sim.config.ppm_offset = self.sim_base_osc_ppm
+                self.sim_analog_extra = 0.0
             rate=max(1.0,self.gamepad_sim.config.rate_hz)
             self.sim_sample_accum += elapsed*rate
             count=min(400,int(self.sim_sample_accum)); self.sim_sample_accum -= count
             for _ in range(count):
                 rel=self.gamepad_sim.next_timestamp_ns()
-                self._accept_controller(self.sim_epoch_ns+rel,self.gamepad_sim.sample(),"Simulation controller","simulated")
+                sample=self.gamepad_sim.sample()
+                if self.sim_analog_extra:
+                    extra=self.sim_analog_extra*math.sin(2*math.pi*997.0*(rel/1e9))
+                    for axis in ("lx","ly","rx","ry"):
+                        sample[axis]=max(-1.0,min(1.0,float(sample.get(axis,0.0))+extra))
+                self._accept_controller(self.sim_epoch_ns+rel,sample,"Simulation controller","simulated")
             self.osc_sample_accum += elapsed/0.05
             oc=min(10,int(self.osc_sample_accum)); self.osc_sample_accum -= oc
             for _ in range(oc):
                 self._accept_oscillator(now,self.osc_sim.next_frequency_hz(0.05),"Simulation oscillator","simulated")
         else:
+            while True:
+                try:
+                    event_name,event_payload=self.controller_event_queue.get_nowait()
+                except queue.Empty:
+                    break
+                self._add_event(event_name,event_payload)
             for _ in range(1000):
                 try:
                     m=self.controller_queue.get_nowait()
                 except queue.Empty:
                     break
-                self._accept_controller(m.timestamp_ns,m.sample,m.source,m.timing_quality,m.raw_report_hex)
+                self._accept_controller(m.timestamp_ns,m.sample,m.source,m.timing_quality,m.raw_report_hex,m.duplicate_raw_report)
             while True:
                 try:
                     item=self.osc_queue.get_nowait()
@@ -653,19 +701,21 @@ class MainWindow(QMainWindow):
         if self.baseline_active and time.monotonic()>=self.baseline_deadline:
             self._finish_baseline()
 
-    def _accept_controller(self,timestamp_ns:int,sample:dict,source:str,quality:str,raw_hex:str|None=None) -> None:
+    def _accept_controller(self,timestamp_ns:int,sample:dict,source:str,quality:str,raw_hex:str|None=None,duplicate_raw:bool=False) -> None:
         if not all(k in sample for k in ("lx","ly","rx","ry")):
             return
         self.controller_ts.append(int(timestamp_ns)); self.controller_samples.append(dict(sample)); self.controller_sources.append((source,quality))
+        if duplicate_raw:
+            self.duplicate_raw_reports += 1
         if self.baseline_active: self.baseline_controller_ts.append(int(timestamp_ns))
         if self.capture_active and self.session_id:
             self.db.add_controller_sample(self.session_id,timestamp_ns,sample,source=f"{source} [{quality}]",raw_report_hex=raw_hex)
 
-    def _accept_oscillator(self,timestamp_ns:int,frequency_hz:float,source:str,quality:str) -> None:
+    def _accept_oscillator(self,timestamp_ns:int,frequency_hz:float,source:str,quality:str,duty_cycle_percent:float|None=None) -> None:
         self.osc_ts.append(int(timestamp_ns)); self.osc_freq.append(float(frequency_hz))
         if self.baseline_active: self.baseline_osc_freq.append(float(frequency_hz))
         if self.capture_active and self.session_id:
-            self.db.add_oscillator_sample(self.session_id,timestamp_ns,frequency_hz,source=source,quality=quality)
+            self.db.add_oscillator_sample(self.session_id,timestamp_ns,frequency_hz,source=source,duty_cycle_percent=duty_cycle_percent,quality=quality)
 
     def _refresh_ui(self) -> None:
         timestamps=list(self.controller_ts)[-5000:]
@@ -745,7 +795,7 @@ class MainWindow(QMainWindow):
         timing_source=self.controller_sources[-1][1] if self.controller_sources else "none"
         self.quality_label.setText(
             f"Samples: {t.sample_count:,} • capture duration: {t.duration_s:.3f} s • timing source: {timing_source} • "
-            f"effective rate: {t.effective_rate_hz:.2f} Hz • buffer overruns: 0 observed. "
+            f"effective rate: {t.effective_rate_hz:.2f} Hz • consecutive identical raw HID payloads: {self.duplicate_raw_reports}. "
             "Host timestamps include OS/USB scheduling unless dedicated timing hardware supplies timestamps."
         )
         self.safety_label.setText(
