@@ -64,6 +64,10 @@ class OscillatorMetrics:
     min_frequency_hz: float = 0.0
     max_frequency_hz: float = 0.0
     frequency_stdev_hz: float = 0.0
+    frequency_span_hz: float = 0.0
+    frequency_drift_hz: float = 0.0
+    frequency_drift_ppm: float = 0.0
+    outlier_count: int = 0
     frequency_error_hz: float = 0.0
     frequency_error_ppm: float = 0.0
     mean_period_s: float = 0.0
@@ -145,6 +149,7 @@ def oscillator_metrics(
     nominal_frequency_hz: float,
     *,
     duty_cycles_percent: Sequence[float] | None = None,
+    outlier_sigma: float = 4.0,
 ) -> OscillatorMetrics:
     values = [float(v) for v in frequencies_hz if float(v) > 0]
     if not values:
@@ -156,6 +161,14 @@ def oscillator_metrics(
     cycle = [b - a for a, b in zip(periods, periods[1:])]
     error_hz = mean_frequency - nominal_frequency_hz if nominal_frequency_hz > 0 else 0.0
     ppm = error_hz / nominal_frequency_hz * 1_000_000.0 if nominal_frequency_hz > 0 else 0.0
+    window = max(1, min(len(values) // 5, 25))
+    start_mean = statistics.fmean(values[:window])
+    end_mean = statistics.fmean(values[-window:])
+    drift_hz = end_mean - start_mean
+    drift_ppm = drift_hz / nominal_frequency_hz * 1_000_000.0 if nominal_frequency_hz > 0 else 0.0
+    stdev_hz = statistics.pstdev(values) if len(values) > 1 else 0.0
+    threshold = max(0.1, float(outlier_sigma)) * stdev_hz
+    outliers = sum(abs(value - mean_frequency) > threshold for value in values) if threshold > 0 else 0
     duty = None
     if duty_cycles_percent:
         clean_duty = [float(x) for x in duty_cycles_percent]
@@ -165,7 +178,11 @@ def oscillator_metrics(
         mean_frequency_hz=mean_frequency,
         min_frequency_hz=min(values),
         max_frequency_hz=max(values),
-        frequency_stdev_hz=statistics.pstdev(values) if len(values) > 1 else 0.0,
+        frequency_stdev_hz=stdev_hz,
+        frequency_span_hz=max(values) - min(values),
+        frequency_drift_hz=drift_hz,
+        frequency_drift_ppm=drift_ppm,
+        outlier_count=outliers,
         frequency_error_hz=error_hz,
         frequency_error_ppm=ppm,
         mean_period_s=mean_period,
