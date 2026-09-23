@@ -377,10 +377,14 @@ class MainWindow(QMainWindow):
         self.axis_noise = QLabel("Stationary noise: waiting for samples")
         self.axis_noise.setObjectName("Muted")
         tl.addWidget(self.axis_noise)
-        self.button_capability = QLabel("Buttons / D-pad are shown as unavailable when the active backend does not expose decoded button states.")
+        self.button_capability = QLabel("Buttons / D-pad: waiting for an input sample")
         self.button_capability.setObjectName("Muted")
         self.button_capability.setWordWrap(True)
         tl.addWidget(self.button_capability)
+        self.controller_capability = QLabel("Firmware / battery / USB path: shown only when the active backend can report them.")
+        self.controller_capability.setObjectName("Muted")
+        self.controller_capability.setWordWrap(True)
+        tl.addWidget(self.controller_capability)
         row.addWidget(trg,1)
         layout.addLayout(row)
         return self._scroll(w)
@@ -797,6 +801,16 @@ class MainWindow(QMainWindow):
                 rms=math.sqrt(sum((v-mean)**2 for v in vals)/len(vals))
                 chunks.append(f"{axis.upper()} {rms:.5f}")
             self.axis_noise.setText("Stationary-window RMS: "+" • ".join(chunks))
+            if "buttons" in last:
+                parts=[f"Buttons mask: 0x{int(last.get('buttons',0)):04X}"]
+                if "dpad_x" in last or "dpad_y" in last:
+                    parts.append(f"D-pad: ({int(last.get('dpad_x',0))}, {int(last.get('dpad_y',0))})")
+                elif "dpad_pov" in last:
+                    pov=int(last.get("dpad_pov",65535))
+                    parts.append("D-pad POV: centered" if pov in (65535,4294967295) else f"D-pad POV: {pov/100:.1f}°")
+                self.button_capability.setText(" • ".join(parts))
+            else:
+                self.button_capability.setText("Buttons / D-pad: unavailable from the active decoded backend")
         if self.controller_sources:
             source,quality=self.controller_sources[-1]
             self.controller_meta.setText(f"{source}\nTiming source quality: {quality}")
