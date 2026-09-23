@@ -57,7 +57,7 @@ QLabel#PageTitle {
 }
 QLabel#Metric {
     color: #F8FAFF;
-    font-size: 20pt;
+    font-size: 18pt;
     font-weight: 760;
 }
 QLabel#Muted { color: #8FA1B8; }
@@ -189,7 +189,7 @@ QLabel#Brand { color: #132039; font-size: 16pt; font-weight: 750; }
 QLabel#Eyebrow { color: #2469C5; font-size: 8pt; font-weight: 750; }
 QLabel#Title { color: #132039; font-size: 22pt; font-weight: 750; }
 QLabel#PageTitle { color: #132039; font-size: 19pt; font-weight: 720; }
-QLabel#Metric { color: #111B2C; font-size: 20pt; font-weight: 760; }
+QLabel#Metric { color: #111B2C; font-size: 18pt; font-weight: 760; }
 QLabel#Muted { color: #66778D; }
 QLabel#Good { color: #08794D; font-weight: 650; }
 QLabel#Warn { color: #A15C00; font-weight: 650; }

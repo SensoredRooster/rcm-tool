@@ -402,7 +402,6 @@ class MainWindow(QMainWindow):
             "Acquisition remains raw and lossless. Pause and smoothing affect only the display layer.",
         )
         controls, controls_layout = card("DISPLAY CONTROLS")
-        bar = QHBoxLayout()
         self.pause_visualization = QCheckBox("Pause visualization")
         self.pause_visualization.setToolTip("Freezes graph repainting only. Acquisition and raw storage continue.")
         self.pause_visualization.toggled.connect(lambda checked: setattr(self, "visualization_paused", bool(checked)))
@@ -416,10 +415,20 @@ class MainWindow(QMainWindow):
         export = QPushButton("Export Graph"); export.clicked.connect(lambda: self.live_interval_chart.export_png(self))
         fullscreen = QPushButton("Fullscreen"); fullscreen.clicked.connect(lambda: self._show_chart_fullscreen(self.live_interval_chart))
         raw = QPushButton("Inspect Raw Data"); raw.clicked.connect(self._show_raw_data)
-        for widget in (self.pause_visualization,self.smoothing_window,reset,export,fullscreen,raw):
-            bar.addWidget(widget)
-        bar.addStretch(1)
-        controls_layout.addLayout(bar)
+
+        primary_controls = QHBoxLayout()
+        primary_controls.addWidget(self.pause_visualization)
+        primary_controls.addWidget(self.smoothing_window,1)
+        primary_controls.addWidget(reset)
+        primary_controls.addStretch(1)
+        controls_layout.addLayout(primary_controls)
+
+        secondary_controls = QHBoxLayout()
+        secondary_controls.addWidget(export)
+        secondary_controls.addWidget(fullscreen)
+        secondary_controls.addWidget(raw)
+        secondary_controls.addStretch(1)
+        controls_layout.addLayout(secondary_controls)
         layout.addWidget(controls)
 
         grid = QGridLayout()
@@ -446,7 +455,7 @@ class MainWindow(QMainWindow):
         meta, ml = card("CONTROLLER")
         self.controller_meta = QLabel("Simulation controller")
         self.controller_meta.setWordWrap(True)
-        ml.addWidget(self.controller_meta)
+        ml.addWidget(self.controller_meta,0,Qt.AlignmentFlag.AlignTop)
         layout.addWidget(meta)
 
         row = QHBoxLayout()
@@ -473,6 +482,7 @@ class MainWindow(QMainWindow):
         tl.addWidget(self.controller_capability)
         row.addWidget(trg,2)
         layout.addLayout(row)
+        layout.addStretch(1)
         return self._scroll(w)
 
     def _oscillator_page(self) -> QWidget:

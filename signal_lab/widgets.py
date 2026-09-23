@@ -223,7 +223,7 @@ class LineChart(QWidget):
         all_values = [v for _, values, _ in self.series for v in values if math.isfinite(v)]
         if not all_values:
             painter.setPen(text)
-            painter.drawText(area, Qt.AlignmentFlag.AlignCenter, "Unavailable / no compatible samples")
+            painter.drawText(area, Qt.AlignmentFlag.AlignCenter, "Unavailable")
             painter.drawText(
                 QRectF(area.left(), area.bottom() + 12, area.width(), 20),
                 Qt.AlignmentFlag.AlignHCenter,
