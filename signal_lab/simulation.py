@@ -46,7 +46,8 @@ class GamepadSimulator:
     def sample(self) -> dict:
         t = self.timestamp_ns / 1_000_000_000.0
         slow = 0.03 * math.sin(t * 2.2)
-        noise = lambda: self.random.uniform(-0.0025, 0.0025)
+        def noise() -> float:
+            return self.random.uniform(-0.0025, 0.0025)
         return {
             "lx": slow + noise(),
             "ly": -slow + noise(),

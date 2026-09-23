@@ -1,7 +1,6 @@
 """Reusable Qt widgets for the Gamepad Signal Lab desktop UI."""
 from __future__ import annotations
 
-from bisect import bisect_left
 import math
 from pathlib import Path
 from typing import Sequence

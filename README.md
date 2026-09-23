@@ -39,7 +39,7 @@ Generic VISA/SCPI measurement capability is probed at connection time. Directly 
 
 ## Install from source
 
-The supported build target is 64-bit Windows.
+The supported build target is 64-bit Windows with Python 3.12 through 3.14.
 
 ~~~powershell
 git clone https://github.com/SensoredRooster/rcm-tool.git
@@ -49,13 +49,15 @@ python -m unittest discover -v
 python gamepad_signal_lab.py
 ~~~
 
-The compatibility entry point also works:
+`gamepad_signal_lab.py` is the canonical supported desktop entry point. The compatibility entry point also works:
 
 ~~~powershell
 python rcm_tool.py
 ~~~
 
-If PySide6 is not installed, the compatibility entry point falls back to the original Tk RCM capture bench.
+If PySide6 is not installed, `rcm_tool.py` explicitly falls back to the original Tk RCM capture bench. That legacy bench is retained for compatibility only; new features and release packaging target the PySide6 application.
+
+Runtime dependencies are pinned in `requirements.txt` from the validated Windows environment. Development and release tooling is pinned in `requirements-dev.txt`; update both files together when intentionally upgrading the supported environment.
 
 ## First-run workflow
 
@@ -108,6 +110,7 @@ Measurement instruments and signal sources are separate roles.
 - A VISA resource is not accepted as a generator unless an OUTP OFF command succeeds.
 - Discovery never turns output on.
 - Frequency, amplitude, and offset are validated against configured software limits before enable or sweep.
+- The generator adapter retains the active limits and validates the configured state again at the output boundary, so callers cannot bypass the UI safety check.
 - When supported, generator state is read back after configuration and at sweep result points; requested values and instrument-reported values are recorded separately.
 - The UI exposes **EMERGENCY OUTPUT OFF**.
 - Sweep completion forces the source OFF.
@@ -145,6 +148,10 @@ Exports include:
 
 Raw samples/timestamps remain independent of the summary statistics.
 
+## Support data and privacy
+
+Runtime telemetry is local-only under `%LOCALAPPDATA%\\RCMTool\\logs` until the user chooses **Send Diagnostics to Developer**. The upload flow creates a redacted bundle first and shows its session and scope before asking for confirmation. The uploaded bundle contains the health manifest and redacted support logs; it intentionally excludes certification reports, raw controller samples, and raw HID captures. A local bundle can always be created and shared manually instead.
+
 ## Build the Windows app
 
 Local build:
@@ -171,7 +178,7 @@ Installer definition:
 installer\GamepadSignalLab.iss
 ~~~
 
-The GitHub Actions workflow at .github/workflows/build-windows.yml runs the unit tests, an offscreen Qt window smoke test, and a full no-hardware simulation workflow smoke covering capture, baseline, reference selection, sweep, correlation/timeline activity, SQLite persistence, CSV/JSON exports, HTML reporting, and emergency output-off. It then creates a portable folder build, a true one-file standalone RcmTool.exe, and the Inno Setup installer, and uploads all three as workflow artifacts.
+The GitHub Actions workflow at `.github/workflows/test.yml` runs compilation, Ruff, Pyright, and the unit tests. The release build script targets only the canonical PySide6 entry point; the legacy Tk bench is not bundled into release artifacts.
 
 ## Tests
 
@@ -179,7 +186,7 @@ The GitHub Actions workflow at .github/workflows/build-windows.yml runs the unit
 python -m unittest discover -v
 ~~~
 
-The suite covers the legacy RCM measurement code plus timing calculations, configurable late-report detection, ppm/period/jitter calculations, oscillator drift/outlier statistics, deterministic simulation, controller metadata extraction, correlation, SCPI readback and output safety, sweep construction, report generation, saved-session retrieval, and SQLite/CSV/JSON persistence. Windows CI also performs both the offscreen Qt launch smoke and the full simulated laboratory workflow before packaging.
+The suite covers timing calculations, ppm/period/jitter calculations, oscillator drift/outlier statistics, deterministic simulation, controller metadata extraction, correlation, SCPI readback and output safety, sweep construction, report generation, saved-session retrieval, and SQLite/CSV/JSON persistence. The legacy compatibility bench remains covered by its existing tests but is not the release product.
 
 ## Project layout
 
@@ -202,7 +209,7 @@ scripts/build_windows.ps1
 
 ## Legacy RCM Tool components
 
-The original controller integrity functionality remains in the repository, including its controller backends, RC-filter analysis, before/after pair comparisons, tester-share/support integration, and prior report format.
+The original controller integrity functionality remains in the repository, including its controller backends, RC-filter analysis, before/after pair comparisons, tester-share/support integration, and prior report format. It is a compatibility/experimental surface, not the canonical RcmTool product boundary.
 
 ## Important limitations
 
@@ -242,7 +249,7 @@ The original Cloudflare workflows remain alongside the Windows application build
 
 ## High-rate controller support
 
-RcmTool does not use 1 kHz as a measurement ceiling. The configured-reference and simulation controls accept **1 Hz through 100 kHz**, covering 8 kHz and higher-rate controllers. Effective polling rate is still calculated from observed report timestamps; selecting a reference value never makes the application report that rate unless the captured timing supports it.
+RcmTool does not use 1 kHz as a measurement ceiling in simulation or configured-reference analysis. Those controls accept **1 Hz through 100 kHz**, covering 8 kHz and higher-rate controllers. Physical hardware validation is backend- and device-dependent; only Raw HID arrival timing is treated as a measured host-observed stream, while XInput, SDL, and WinMM remain host-poll estimates. Hardware-specific rate claims should be reported only for devices validated in `HARDWARE_MEASUREMENTS.md`.
 
 At very high physical rates, usable fidelity still depends on the controller, USB transport, backend, Windows scheduling, and timing source. Raw-HID arrival timing is preferred when available; host-poll backends remain labeled as estimates.
 

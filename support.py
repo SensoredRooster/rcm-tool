@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import logging
 import os
 import platform
 import re
@@ -16,12 +17,14 @@ import sys
 import tempfile
 import threading
 import time
+from typing import cast
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 import webbrowser
 import zipfile
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,6 +38,7 @@ MAX_LOG_BYTES = 8 * 1024 * 1024
 MAX_BACKUPS = 6
 _LOCK = threading.Lock()
 _HEARTBEAT_THREAD: threading.Thread | None = None
+LOGGER = logging.getLogger(__name__)
 
 
 def support_root() -> Path:
@@ -92,13 +96,16 @@ def _redact(value):
 
 
 def log_event(event: str, *, level: str = "INFO", **fields) -> None:
-    record = {
+    redacted_fields = _redact(fields)
+    if not isinstance(redacted_fields, dict):
+        raise TypeError("Redacted event fields must remain a mapping")
+    record: dict[str, object] = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "session_id": SESSION_ID,
         "level": level,
         "event": event,
-        **_redact(fields),
     }
+    record.update(cast(Mapping[str, object], redacted_fields))
     target = error_log_path() if level in {"ERROR", "CRITICAL"} else log_path()
     line = json.dumps(record, ensure_ascii=False, default=str)
     with _LOCK:
@@ -123,6 +130,8 @@ def health_snapshot() -> dict:
         "hid_available": _module_available("hid"),
         "report_directory": str((Path(__file__).resolve().parent / "reports").resolve()),
         "upload_configured": bool(os.environ.get("RCM_SUPPORT_UPLOAD_URL", "").strip() or DEFAULT_UPLOAD_URL),
+        "upload_requires_explicit_confirmation": True,
+        "support_bundle_scope": "redacted logs and health manifest only; no raw controller or HID captures",
         "repository": REPOSITORY_URL,
     }
 
@@ -168,11 +177,21 @@ def create_support_bundle() -> Path:
     return destination
 
 
-def upload_support_bundle(url: str | None = None, token: str | None = None) -> dict:
+def support_bundle_preview(bundle: Path) -> dict:
+    """Return the redacted manifest shown to the user before an upload."""
+    with zipfile.ZipFile(bundle) as archive:
+        return json.loads(archive.read("diagnostics/manifest.json"))
+
+
+def upload_support_bundle(
+    url: str | None = None,
+    token: str | None = None,
+    bundle_path: Path | None = None,
+) -> dict:
     endpoint = (url or os.environ.get("RCM_SUPPORT_UPLOAD_URL", "").strip() or DEFAULT_UPLOAD_URL).strip()
     if not endpoint:
         raise RuntimeError("RCM support upload endpoint is not configured.")
-    bundle = create_support_bundle()
+    bundle = bundle_path or create_support_bundle()
     request = urllib.request.Request(endpoint, data=bundle.read_bytes(), method="POST")
     request.add_header("Content-Type", "application/zip")
     request.add_header("Accept", "application/json")
@@ -254,7 +273,7 @@ def start_heartbeat(interval: float = 1.0) -> None:
             try:
                 log_event("heartbeat")
             except Exception:
-                pass
+                LOGGER.exception("Support heartbeat logging failed")
             time.sleep(max(1.0, interval))
 
     _HEARTBEAT_THREAD = threading.Thread(target=worker, name="RCMSupportHeartbeat", daemon=True)
@@ -265,7 +284,7 @@ def _log_shutdown() -> None:
     try:
         log_event("app_stop")
     except Exception:
-        pass
+        LOGGER.exception("Support shutdown logging failed")
 
 
 install_exception_hooks()

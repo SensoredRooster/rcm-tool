@@ -5,7 +5,7 @@ import tkinter as tk
 import webbrowser
 from tkinter import messagebox, ttk
 
-from rcm_theme import ACCENT, BG, CARD, LINE, MUTED, TEXT, apply_rcm_theme
+from rcm_theme import BG, CARD, LINE, TEXT, apply_rcm_theme
 from support import (
     SESSION_ID,
     create_support_bundle,
@@ -13,6 +13,7 @@ from support import (
     open_logs_folder,
     open_repository,
     report_issue,
+    support_bundle_preview,
     upload_support_bundle,
 )
 
@@ -70,15 +71,24 @@ def open_support_center(parent: tk.Misc) -> None:
             messagebox.showerror("Support bundle failed", str(exc), parent=window)
 
     def send_bundle() -> None:
+        try:
+            bundle = create_support_bundle()
+            preview = support_bundle_preview(bundle)
+        except Exception as exc:
+            messagebox.showerror("Support bundle failed", str(exc), parent=window)
+            return
         if not messagebox.askyesno(
             "Send diagnostics?",
-            "Create and send a redacted diagnostic bundle to the RCM Tool developer now?\n\n"
+            "Send this redacted diagnostic bundle to the RCM Tool developer now?\n\n"
+            f"Local bundle: {bundle}\n"
+            f"Session: {preview.get('session_id', SESSION_ID)}\n"
+            f"Scope: {preview.get('support_bundle_scope', 'redacted logs and health manifest only')}\n\n"
             "No upload occurs unless you confirm this action.",
             parent=window,
         ):
             return
         try:
-            result = upload_support_bundle()
+            result = upload_support_bundle(bundle_path=bundle)
             messagebox.showinfo(
                 "Diagnostics sent",
                 f"Upload completed successfully.\nHTTP status: {result.get('status')}",

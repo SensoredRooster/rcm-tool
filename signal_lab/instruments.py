@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
+import math
 
 try:
     import pyvisa  # type: ignore
 except Exception:
     pyvisa = None
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -28,6 +32,9 @@ class SafetyLimits:
     max_duration_s: float = 600.0
 
     def validate(self, *, frequency_hz: float, amplitude_vpp: float, offset_v: float) -> None:
+        values = (frequency_hz, amplitude_vpp, offset_v)
+        if not all(math.isfinite(float(value)) for value in values):
+            raise ValueError("Frequency, amplitude, and offset must be finite numbers")
         if not (0.0 <= frequency_hz <= self.max_frequency_hz):
             raise ValueError(f"Frequency {frequency_hz:g} Hz exceeds configured safety limit")
         if not (0.0 <= amplitude_vpp <= self.max_amplitude_vpp):
@@ -39,6 +46,10 @@ class SafetyLimits:
 class InstrumentAdapter:
     name = "Instrument"
     capabilities = InstrumentCapabilities()
+
+    def set_safety_limits(self, limits: SafetyLimits) -> None:
+        """Set the limits used by generator-capable adapters before output is enabled."""
+        self._safety_limits = limits
 
     def identify(self) -> str:
         return self.name
@@ -77,13 +88,38 @@ class SimulatedInstrument(InstrumentAdapter):
     )
 
     def __init__(self) -> None:
+        self._safety_limits = SafetyLimits()
         self._output = False
         self.frequency_hz = 1000.0
         self.amplitude_vpp = 0.1
         self.offset_v = 0.0
         self.waveform = "SINE"
 
+    def configure_generator(
+        self, *, frequency_hz: float, amplitude_vpp: float, offset_v: float,
+        waveform: str, limits: SafetyLimits | None = None,
+    ) -> None:
+        active_limits = limits or self._safety_limits
+        active_limits.validate(
+            frequency_hz=frequency_hz,
+            amplitude_vpp=amplitude_vpp,
+            offset_v=offset_v,
+        )
+        wave = waveform.upper()
+        if wave not in {"SINE", "SQU", "RAMP", "PULS", "NOIS"}:
+            raise ValueError("Unsupported waveform")
+        self.frequency_hz = frequency_hz
+        self.amplitude_vpp = amplitude_vpp
+        self.offset_v = offset_v
+        self.waveform = wave
+
     def set_output(self, enabled: bool) -> None:
+        if enabled:
+            self._safety_limits.validate(
+                frequency_hz=self.frequency_hz,
+                amplitude_vpp=self.amplitude_vpp,
+                offset_v=self.offset_v,
+            )
         self._output = bool(enabled)
 
     def output_enabled(self) -> bool:
@@ -177,6 +213,10 @@ class VisaScpiGenerator(_VisaBase):
 
     def __init__(self, resource_name: str, timeout_ms: int = 1500) -> None:
         super().__init__(resource_name, timeout_ms)
+        self._safety_limits = SafetyLimits()
+        self._configured_frequency_hz = 0.0
+        self._configured_amplitude_vpp = 0.0
+        self._configured_offset_v = 0.0
         self._output = False
         try:
             self.set_output(False)
@@ -186,6 +226,12 @@ class VisaScpiGenerator(_VisaBase):
 
     def set_output(self, enabled: bool) -> None:
         requested = bool(enabled)
+        if requested:
+            self._safety_limits.validate(
+                frequency_hz=self._configured_frequency_hz,
+                amplitude_vpp=self._configured_amplitude_vpp,
+                offset_v=self._configured_offset_v,
+            )
         self.resource.write("OUTP ON" if requested else "OUTP OFF")
         self._output = requested
         verified: bool | None = None
@@ -242,6 +288,7 @@ class VisaScpiGenerator(_VisaBase):
         self, *, frequency_hz: float, amplitude_vpp: float, offset_v: float,
         waveform: str, limits: SafetyLimits,
     ) -> None:
+        self.set_safety_limits(limits)
         limits.validate(
             frequency_hz=frequency_hz,
             amplitude_vpp=amplitude_vpp,
@@ -254,12 +301,15 @@ class VisaScpiGenerator(_VisaBase):
         self.resource.write(f"FREQ {frequency_hz:.12g}")
         self.resource.write(f"VOLT {amplitude_vpp:.12g}")
         self.resource.write(f"VOLT:OFFS {offset_v:.12g}")
+        self._configured_frequency_hz = frequency_hz
+        self._configured_amplitude_vpp = amplitude_vpp
+        self._configured_offset_v = offset_v
 
     def close(self) -> None:
         try:
             self.set_output(False)
         except Exception:
-            pass
+            LOGGER.exception("Failed to force generator output off during close")
         super().close()
 
 

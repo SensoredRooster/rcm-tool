@@ -22,6 +22,24 @@ RCM Tool does not generate noise or alter the controller signal in either phase.
 
 RCM Tool records normalized samples and, when the Raw HID source is selected, timestamped HID reports in the exported JSON. The HID report stream is useful for checking report cadence, report IDs, raw byte changes, and the relationship between analog movement and USB output.
 
+## Validation matrix
+
+Use this matrix when making hardware-specific performance claims. A simulated or
+configured-reference result is useful for exercising the analysis pipeline, but
+it is not evidence that a physical controller achieves the same rate.
+
+| Measurement path | Evidence class | What can be claimed | Required record |
+|---|---|---|---|
+| Deterministic simulation | Simulation-proven | Analysis and sweep behavior for the configured synthetic rate | Simulator configuration, seed, software version |
+| Raw HID | Measured host-observed | Arrival cadence for the named device, USB path, and Windows host | Controller model, VID/PID, firmware, HID backend, host, capture/export |
+| XInput / SDL / WinMM | Host-poll estimate | API-observed timing only; not controller bus timing | API/backend, polling configuration, host, capture/export |
+| VISA counter/scope/analyzer | Instrument-measured | Values reported by the connected instrument and its command dialect | Instrument model, resource, identity, timeout, command set |
+| Generator stimulus response | Experiment-specific | Observed response under the recorded source settings and safety limits | Generator identity, waveform, frequency/amplitude/offset, readback, DUT setup |
+
+The application should label reports with the evidence class above. Do not
+generalize a single-device Raw HID result into a controller-family or USB-host
+guarantee without additional captures.
+
 Guided movement estimates high-frequency jitter as the residual after a first-order RC low-pass (`tau = 0.05 s`, `alpha = 1 - exp(-dt / tau)`). The comparison report records Before-to-After `highFreqRmsDelta` as well as the older `jitterRmsDelta` field (now the same RC residual).
 
 ## Oscilloscope capture

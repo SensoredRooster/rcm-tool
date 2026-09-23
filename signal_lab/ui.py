@@ -5,6 +5,7 @@ from bisect import bisect_left
 from collections import deque
 from dataclasses import asdict
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -33,7 +34,7 @@ from .simulation import GamepadSimulator, OscillatorSimulator, stimulus_response
 from .storage import LabDatabase
 from .sweep import make_sweep
 from .theme import DARK, LIGHT
-from .widgets import ControllerView, HeatMapWidget, LineChart, MetricCard, StickView
+from .widgets import ControllerView, HeatMapWidget, LineChart, MetricCard
 from support import (
     SESSION_ID as SUPPORT_SESSION_ID,
     create_support_bundle,
@@ -43,8 +44,11 @@ from support import (
     open_repository,
     report_issue,
     start_heartbeat,
+    support_bundle_preview,
     upload_support_bundle,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 NAV = [
     "Dashboard", "Live Capture", "Controller Lab", "Oscillator Lab",
@@ -85,9 +89,13 @@ class SupportUploadWorker(QThread):
     completed = Signal(dict)
     failed = Signal(str)
 
+    def __init__(self, bundle_path: Path, parent=None) -> None:
+        super().__init__(parent)
+        self.bundle_path = bundle_path
+
     def run(self) -> None:
         try:
-            self.completed.emit(upload_support_bundle())
+            self.completed.emit(upload_support_bundle(bundle_path=self.bundle_path))
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -256,6 +264,11 @@ class MainWindow(QMainWindow):
         self.database_status = QLabel(f"DB • {self.db.path.name}")
         self.database_status.setObjectName("Muted")
         side.addWidget(self.database_status)
+        self.error_banner = QLabel()
+        self.error_banner.setObjectName("Warn")
+        self.error_banner.setWordWrap(True)
+        self.error_banner.hide()
+        side.addWidget(self.error_banner)
         version = QLabel(f"v{__version__}")
         version.setObjectName("Muted")
         side.addWidget(version)
@@ -834,14 +847,32 @@ class MainWindow(QMainWindow):
             self.support_status.setText(f"Redacted support bundle created locally: {path}")
             QMessageBox.information(self, "Support bundle created", f"Created locally:\n{path}")
         except Exception as exc:
+            self._report_error("Support bundle creation failed", exc)
             QMessageBox.critical(self, "Support bundle failed", str(exc))
 
+    def _report_error(self, context: str, exc: Exception) -> None:
+        message = f"{context}: {exc}"
+        LOGGER.exception(context)
+        support_log_event("ui_error", level="ERROR", context=context, error=str(exc))
+        if hasattr(self, "error_banner"):
+            self.error_banner.setText(message)
+            self.error_banner.show()
+
     def _send_support_bundle(self) -> None:
+        try:
+            bundle = create_support_bundle()
+            preview = support_bundle_preview(bundle)
+        except Exception as exc:
+            self._report_error("Support bundle creation failed", exc)
+            QMessageBox.critical(self, "Support bundle failed", str(exc))
+            return
         answer = QMessageBox.question(
             self,
             "Send diagnostics to developer?",
-            "Create and upload a redacted diagnostics bundle to the RCM Tool developer?\n\n"
-            "The bundle contains support logs and a health manifest. It intentionally excludes certification reports, raw controller samples, and raw HID captures.\n\n"
+            "Upload this redacted diagnostics bundle to the RCM Tool developer?\n\n"
+            f"Local bundle: {bundle}\n"
+            f"Session: {preview.get('session_id', SUPPORT_SESSION_ID)}\n"
+            f"Scope: {preview.get('support_bundle_scope', 'redacted logs and health manifest only')}\n\n"
             "Nothing is uploaded unless you choose Yes.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -852,7 +883,7 @@ class MainWindow(QMainWindow):
             return
         self.send_support_button.setEnabled(False)
         self.support_status.setText("Uploading redacted diagnostics…")
-        self.support_upload_worker = SupportUploadWorker(self)
+        self.support_upload_worker = SupportUploadWorker(bundle, self)
         self.support_upload_worker.completed.connect(self._support_upload_complete)
         self.support_upload_worker.failed.connect(self._support_upload_failed)
         self.support_upload_worker.start()
@@ -987,8 +1018,6 @@ class MainWindow(QMainWindow):
                 "configured_reference_rate_hz":self.expected_rate.value(),
                 "host_timer_resolution_ns":self.host_timer_resolution_ns,
                 "stationary_excursion_threshold":self.stationary_excursion.value(),
-                "late_factor":self.late_factor.value(),
-                "oscillator_outlier_sigma":self.outlier_sigma.value(),
                 "late_factor":self.late_factor.value(),
                 "oscillator_outlier_sigma":self.outlier_sigma.value(),
             },
@@ -1241,7 +1270,8 @@ class MainWindow(QMainWindow):
 
         if current_page == "Live Capture" and not self.visualization_paused:
             smooth=max(1,self.smoothing_window.value()) if hasattr(self,"smoothing_window") else 1
-            smooth_fn=lambda values: self._moving_average(values,smooth)
+            def smooth_fn(values):
+                return self._moving_average(values, smooth)
             self.live_interval_chart.set_series(
                 [("interval ms",smooth_fn(intervals[-800:]),"#6AA2FF")],
                 x_values=interval_elapsed[-800:],
@@ -1689,6 +1719,7 @@ class MainWindow(QMainWindow):
             self.measurement_instrument=None
             if hasattr(self,"measurement_id"):
                 self.measurement_id.setText("Measurement: connection failed")
+            self._report_error("Measurement instrument connection failed", exc)
             QMessageBox.critical(self,"Measurement instrument connection",str(exc))
 
     def _connect_osc_measurement_instrument(self) -> None:
@@ -1701,6 +1732,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.measurement_instrument=None
             self.osc_instrument_status.setText("Measurement instrument connection failed")
+            self._report_error("Oscillator instrument connection failed", exc)
             QMessageBox.critical(self,"Oscillator instrument connection",str(exc))
 
     def _disconnect_measurement_instrument(self,quiet:bool=False) -> None:
@@ -1727,7 +1759,8 @@ class MainWindow(QMainWindow):
         self._emergency_off()
         if not isinstance(self.instrument,SimulatedInstrument):
             try: self.instrument.close()
-            except Exception: pass
+            except Exception:
+                LOGGER.exception("Failed to close the previous generator before reconnect")
         try:
             generator=VisaScpiGenerator(resource)
             identity=generator.identify()
@@ -1739,6 +1772,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.instrument=SimulatedInstrument()
             self.generator_id.setText("Generator: connection failed • simulation source restored")
+            self._report_error("Generator connection failed", exc)
             QMessageBox.critical(self,"Generator connection",str(exc))
 
     def _disconnect_instrument(self,quiet:bool=False) -> None:
@@ -1765,10 +1799,14 @@ class MainWindow(QMainWindow):
     def _apply_stimulus_settings(self) -> bool:
         self._sync_safety_limits()
         try:
+            self.instrument.set_safety_limits(self.safety_limits)
             self.safety_limits.validate(frequency_hz=self.stim_freq.value(),amplitude_vpp=self.stim_amp.value(),offset_v=self.stim_offset.value())
             if isinstance(self.instrument,SimulatedInstrument):
-                self.instrument.frequency_hz=self.stim_freq.value(); self.instrument.amplitude_vpp=self.stim_amp.value()
-                self.instrument.offset_v=self.stim_offset.value(); self.instrument.waveform=self.waveform_combo.currentText()
+                self.instrument.configure_generator(
+                    frequency_hz=self.stim_freq.value(), amplitude_vpp=self.stim_amp.value(),
+                    offset_v=self.stim_offset.value(), waveform=self.waveform_combo.currentText(),
+                    limits=self.safety_limits,
+                )
             elif hasattr(self.instrument,"configure_generator"):
                 with self.instrument_lock:
                     self.instrument.configure_generator(
@@ -1780,10 +1818,12 @@ class MainWindow(QMainWindow):
                 with self.instrument_lock:
                     reported=self.instrument.read_generator_state()
             except Exception:
+                LOGGER.warning("Generator readback unavailable after configuration", exc_info=True)
                 reported={"output_enabled":self.instrument.output_enabled(),"frequency_hz":None,"amplitude_vpp":None,"offset_v":None,"waveform":None}
             self._add_event("stimulus_configured",{"requested":requested,"instrument_reported":reported})
             return True
         except Exception as exc:
+            self._report_error("Stimulus settings rejected", exc)
             QMessageBox.critical(self,"Stimulus settings rejected",str(exc)); return False
 
     def _toggle_instrument_output(self,checked:bool) -> None:
@@ -1799,13 +1839,17 @@ class MainWindow(QMainWindow):
                 reported=self.instrument.read_generator_state()
             self._add_event("instrument_output",{"requested_enabled":bool(checked),"instrument_reported":reported})
         except Exception as exc:
-            self.output_button.setChecked(False); QMessageBox.critical(self,"Instrument output",str(exc))
+            self.output_button.setChecked(False)
+            self._report_error("Instrument output change failed", exc)
+            QMessageBox.critical(self,"Instrument output",str(exc))
 
     def _emergency_off(self) -> None:
         self._stop_sweep(output_off=False)
         try:
             with self.instrument_lock: self.instrument.set_output(False)
-        except Exception: pass
+        except Exception:
+            LOGGER.exception("Emergency output-off command failed")
+            support_log_event("emergency_output_off_failed", level="ERROR")
         if hasattr(self,"output_button"): self.output_button.setChecked(False); self.output_button.setText("Enable Output")
         self._add_event("emergency_output_off",{})
 
@@ -2046,7 +2090,7 @@ class MainWindow(QMainWindow):
                 with self.instrument_lock:
                     self.instrument.set_output(False)
             except Exception:
-                pass
+                LOGGER.exception("Failed to force output off when stopping sweep")
         if was:
             self._add_event("sweep_stopped",{"captured_points":len(self.sweep_results)})
 
@@ -2056,7 +2100,7 @@ class MainWindow(QMainWindow):
         try:
             support_log_event("signal_lab_event", event_type=event_type, details=payload)
         except Exception:
-            pass
+            LOGGER.exception("Failed to write signal-lab event to support telemetry")
         self._update_timeline()
 
     def _update_timeline(self) -> None:
@@ -2220,9 +2264,6 @@ class MainWindow(QMainWindow):
             return
         rt=timing_metrics([])
         ro=oscillator_metrics([],self.nominal_freq.value())
-        for key,value in self.reference_baseline["timing"].items():
-            if hasattr(rt,key):
-                pass
         from .analysis import TimingMetrics, OscillatorMetrics
         rt=TimingMetrics(**self.reference_baseline["timing"])
         ro=OscillatorMetrics(**self.reference_baseline["oscillator"])
@@ -2411,7 +2452,7 @@ class MainWindow(QMainWindow):
         try:
             support_log_event("gamepad_signal_lab_stop", version=__version__)
         except Exception:
-            pass
+            LOGGER.exception("Failed to write application shutdown event")
         if hasattr(self, "db_flush_timer"):
             self.db_flush_timer.stop()
         self.db.close(); event.accept()

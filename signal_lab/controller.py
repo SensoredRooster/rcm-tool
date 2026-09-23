@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import threading
 import time
 from typing import Callable
@@ -10,6 +11,7 @@ from typing import Callable
 SONY_VENDOR_ID = 0x054C
 MICROSOFT_VENDOR_ID = 0x045E
 DUALSENSE_PRODUCT_IDS = frozenset({0x0CE6, 0x0DF2})
+LOGGER = logging.getLogger(__name__)
 
 
 def _coerce_usb_id(value) -> int | None:
@@ -126,7 +128,7 @@ class ControllerAcquisition:
                         if value not in (None, ""):
                             meta[key] = str(value)
                     except Exception:
-                        pass
+                        LOGGER.warning("Controller metadata probe failed: %s", method, exc_info=True)
         return meta
 
     def start(self) -> None:

@@ -157,6 +157,18 @@ class SignalLabTests(unittest.TestCase):
         instrument = SimulatedInstrument()
         self.assertFalse(instrument.output_enabled())
 
+    def test_simulated_generator_rechecks_limits_at_output_boundary(self):
+        instrument = SimulatedInstrument()
+        instrument.set_safety_limits(SafetyLimits(max_frequency_hz=1000))
+        instrument.frequency_hz = 2000
+        with self.assertRaises(ValueError):
+            instrument.set_output(True)
+        self.assertFalse(instrument.output_enabled())
+
+    def test_safety_limits_reject_non_finite_offset(self):
+        with self.assertRaises(ValueError):
+            SafetyLimits().validate(frequency_hz=1000, amplitude_vpp=0.1, offset_v=float("nan"))
+
     def test_controller_metadata_extraction(self):
         from signal_lab.controller import ControllerAcquisition
         class FakeHID:

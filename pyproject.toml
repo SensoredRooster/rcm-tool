@@ -1,0 +1,25 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+extend-exclude = [
+  "controller_integrity.py",
+  "apply_*.py",
+  "ble_*.py",
+  "desk_bench.py",
+  "hid_signal.py",
+  "injection.py",
+  "pair_delta.py",
+  "rc_filter.py",
+  "scripts",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+ignore = ["E701", "E702", "E722"]
+
+[tool.pyright]
+include = ["signal_lab/analysis.py", "signal_lab/simulation.py", "signal_lab/sweep.py", "support.py"]
+exclude = ["**/__pycache__", "controller_integrity.py", "scripts"]
+pythonVersion = "3.14"
+typeCheckingMode = "basic"
+reportMissingImports = false
