@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS controller_samples (
     source TEXT NOT NULL,
     lx REAL, ly REAL, rx REAL, ry REAL, lt REAL, rt REAL,
     raw_report_hex TEXT,
+    extra_json TEXT NOT NULL DEFAULT '{}',
     FOREIGN KEY(session_id) REFERENCES sessions(id)
 );
 CREATE INDEX IF NOT EXISTS ix_controller_session_time ON controller_samples(session_id, timestamp_ns);
@@ -58,6 +59,9 @@ class LabDatabase:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.executescript(SCHEMA)
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(controller_samples)")}
+        if "extra_json" not in columns:
+            self.conn.execute("ALTER TABLE controller_samples ADD COLUMN extra_json TEXT NOT NULL DEFAULT '{}'")
         self.conn.commit()
 
     def create_session(self, name: str, mode: str, app_version: str, metadata: dict | None = None) -> str:
@@ -70,10 +74,17 @@ class LabDatabase:
         return session_id
 
     def add_controller_sample(self, session_id: str, timestamp_ns: int, sample: dict, *, source: str, raw_report_hex: str | None = None) -> None:
+        standard = {"lx", "ly", "rx", "ry", "lt", "rt"}
+        extra = {key: value for key, value in sample.items() if key not in standard}
         self.conn.execute(
-            """INSERT INTO controller_samples(session_id,timestamp_ns,source,lx,ly,rx,ry,lt,rt,raw_report_hex)
-               VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            (session_id, int(timestamp_ns), source, sample.get("lx"), sample.get("ly"), sample.get("rx"), sample.get("ry"), sample.get("lt"), sample.get("rt"), raw_report_hex),
+            """INSERT INTO controller_samples(session_id,timestamp_ns,source,lx,ly,rx,ry,lt,rt,raw_report_hex,extra_json)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                session_id, int(timestamp_ns), source,
+                sample.get("lx"), sample.get("ly"), sample.get("rx"), sample.get("ry"),
+                sample.get("lt"), sample.get("rt"), raw_report_hex,
+                json.dumps(extra, separators=(",", ":")),
+            ),
         )
 
     def add_oscillator_sample(self, session_id: str, timestamp_ns: int, frequency_hz: float, *, source: str, duty_cycle_percent: float | None = None, quality: str = "measured") -> None:
@@ -108,10 +119,14 @@ class LabDatabase:
     def export_json(self, session_id: str, destination: str | Path) -> Path:
         destination = Path(destination)
         payload = {"session": self.session_summary(session_id)}
-        payload["controller_samples"] = [
-            dict(zip(["timestamp_ns","source","lx","ly","rx","ry","lt","rt","raw_report_hex"], row))
-            for row in self.conn.execute("SELECT timestamp_ns,source,lx,ly,rx,ry,lt,rt,raw_report_hex FROM controller_samples WHERE session_id=? ORDER BY timestamp_ns", (session_id,))
-        ]
+        payload["controller_samples"] = []
+        for row in self.conn.execute(
+            "SELECT timestamp_ns,source,lx,ly,rx,ry,lt,rt,raw_report_hex,extra_json FROM controller_samples WHERE session_id=? ORDER BY timestamp_ns",
+            (session_id,),
+        ):
+            item = dict(zip(["timestamp_ns","source","lx","ly","rx","ry","lt","rt","raw_report_hex","extra_json"], row))
+            item["extra"] = json.loads(item.pop("extra_json") or "{}")
+            payload["controller_samples"].append(item)
         payload["oscillator_samples"] = [
             dict(zip(["timestamp_ns","source","frequency_hz","duty_cycle_percent","period_s","quality"], row))
             for row in self.conn.execute("SELECT timestamp_ns,source,frequency_hz,duty_cycle_percent,period_s,quality FROM oscillator_samples WHERE session_id=? ORDER BY timestamp_ns", (session_id,))
@@ -127,10 +142,13 @@ class LabDatabase:
     def export_controller_csv(self, session_id: str, destination: str | Path) -> Path:
         destination = Path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        rows = self.conn.execute("SELECT timestamp_ns,source,lx,ly,rx,ry,lt,rt,raw_report_hex FROM controller_samples WHERE session_id=? ORDER BY timestamp_ns", (session_id,))
+        rows = self.conn.execute(
+            "SELECT timestamp_ns,source,lx,ly,rx,ry,lt,rt,raw_report_hex,extra_json FROM controller_samples WHERE session_id=? ORDER BY timestamp_ns",
+            (session_id,),
+        )
         with destination.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
-            writer.writerow(["timestamp_ns","source","lx","ly","rx","ry","lt","rt","raw_report_hex"])
+            writer.writerow(["timestamp_ns","source","lx","ly","rx","ry","lt","rt","raw_report_hex","extra_json"])
             writer.writerows(rows)
         return destination
 
