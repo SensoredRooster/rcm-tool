@@ -6,6 +6,7 @@ from signal_lab.analysis import align_nearest, oscillator_metrics, pearson_corre
 from signal_lab.instruments import SafetyLimits, SimulatedInstrument, VisaScpiMeasurementInstrument
 from signal_lab.simulation import GamepadSimulator, SimulatedGamepadConfig, OscillatorSimulator, SimulatedOscillatorConfig, stimulus_response
 from signal_lab.storage import LabDatabase
+from signal_lab.reporting import write_html_report
 from signal_lab.sweep import make_sweep
 
 
@@ -77,6 +78,25 @@ class SignalLabTests(unittest.TestCase):
         self.assertEqual(quiet.gamepad_extra_jitter_ms, 0.0)
         self.assertGreater(driven.gamepad_extra_jitter_ms, off_resonance.gamepad_extra_jitter_ms)
         self.assertGreater(driven.oscillator_extra_ppm, 0.0)
+
+    def test_engineering_report_contains_plots_sweep_and_timeline(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "report.html"
+            write_html_report(
+                target,
+                title="Lab Report",
+                controller_metrics={"rate_hz": 1000.0},
+                oscillator_metrics={"frequency_hz": 12_000_000.0},
+                metadata={"mode": "simulation"},
+                limitations=["host timing is not bus timing"],
+                plots={"Timing": [1.0, 1.1, 0.9]},
+                sweep_points=[(100.0, 0.1, 0.02, 1.5)],
+                timeline=[{"timestamp_ns": 1, "event_type": "capture_started", "payload": {}}],
+            )
+            html = target.read_text(encoding="utf-8")
+            self.assertIn("Sweep response", html)
+            self.assertIn("Experiment timeline", html)
+            self.assertIn("<svg", html)
 
     def test_sqlite_round_trip(self):
         with tempfile.TemporaryDirectory() as td:
