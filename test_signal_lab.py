@@ -5,6 +5,7 @@ import unittest
 from signal_lab.analysis import align_nearest, oscillator_metrics, pearson_correlation, timing_metrics
 from signal_lab.controller import detect_controller_family
 from signal_lab.instruments import InstrumentAdapter, SafetyLimits, VisaScpiMeasurementInstrument
+from signal_lab.noise_attribution import analyze_noise_capture
 from signal_lab.storage import LabDatabase
 from signal_lab.reporting import write_html_report
 from signal_lab.sweep import make_sweep
@@ -152,6 +153,28 @@ class SignalLabTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             instrument.set_output(True)
         self.assertFalse(instrument.output_enabled())
+
+    def test_noise_attribution_is_host_observed_and_uses_raw_reports(self):
+        timestamps = [i * 1_000_000 for i in range(5)]
+        samples = [
+            {"lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0},
+            {"lx": 0.01, "ly": 0.0, "rx": 0.0, "ry": 0.0},
+            {"lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0},
+            {"lx": 0.01, "ly": 0.0, "rx": 0.0, "ry": 0.0},
+            {"lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0},
+        ]
+        result = analyze_noise_capture(
+            timestamps_ns=timestamps,
+            samples=samples,
+            raw_report_hex=["00", "01", "01", "02", "02"],
+            capture_kind="neutral",
+        )
+        self.assertEqual(result["raw_hid_report_count"], 5)
+        self.assertEqual(result["consecutive_duplicate_raw_reports"], 2)
+        self.assertEqual(result["attribution"], "undetermined-from-raw-hid-alone")
+        self.assertEqual(len(result["records"]), len(samples))
+        self.assertEqual(result["records"][1]["raw_report_hex"], "01")
+        self.assertGreater(result["axes"]["lx"]["noise_rms"], 0.0)
 
     def test_safety_limits_reject_non_finite_offset(self):
         with self.assertRaises(ValueError):

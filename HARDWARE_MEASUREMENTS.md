@@ -22,6 +22,29 @@ RCM Tool does not generate noise or alter the controller signal in either phase.
 
 RCM Tool records normalized samples and, when the Raw HID source is selected, timestamped HID reports in the exported JSON. The HID report stream is useful for checking report cadence, report IDs, raw byte changes, and the relationship between analog movement and USB output.
 
+## Noise attribution evidence
+
+The modern Controller Lab provides two hardware-only evidence captures under
+**Noise Attribution Evidence**:
+
+1. **Neutral noise**: leave every stick untouched for 10 seconds. This reports
+   stationary RMS noise, peak-to-peak range, distinct output levels, adjacent
+   report changes, and consecutive duplicate Raw HID payloads.
+2. **Movement / settling**: move one stick center → full deflection → center,
+   then repeat with a quick reversal for 20 seconds. This reports the same
+   host-observed stream metrics plus the residual from a documented slow trend.
+
+The test forces display smoothing to one sample and uses stored acquisition
+samples. The display moving average and the slow-trend residual are analysis
+layers; neither is sent to the controller or applied to stored input.
+
+These captures cannot identify firmware filtering by themselves. Raw HID is
+already downstream of the controller firmware and USB stack. To attribute a
+low-pass response to firmware, capture the stick sensor/electrical signal with
+an oscilloscope or logic analyzer at the same time and compare its step response
+and noise spectrum with the exported Raw HID evidence. Without that upstream
+trace, report only a host-observed smoothing signature, not a firmware claim.
+
 ## Validation matrix
 
 Use this matrix when making hardware-specific performance claims. Configured

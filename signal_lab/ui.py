@@ -28,6 +28,7 @@ from .analysis import oscillator_metrics, pearson_correlation, timing_metrics
 from .controller import ControllerAcquisition, ControllerMeasurement, detect_controller_family
 from .instruments import SafetyLimits, UnavailableInstrument, VisaScpiGenerator, VisaScpiMeasurementInstrument, list_visa_resources
 from .metric_catalog import CHART_HELP, METRIC_HELP
+from .noise_attribution import analyze_noise_capture
 from .oscillator import OscillatorAcquisition, OscillatorMeasurement
 from .reporting import write_html_report
 from .storage import LabDatabase
@@ -161,6 +162,7 @@ class MainWindow(QMainWindow):
         self.controller_ts = deque(maxlen=60000)
         self.controller_samples = deque(maxlen=60000)
         self.controller_sources = deque(maxlen=60000)
+        self.controller_raw_report_hex = deque(maxlen=60000)
         self.controller_metadata: dict = {}
         self.osc_ts = deque(maxlen=12000)
         self.osc_freq = deque(maxlen=12000)
@@ -197,6 +199,13 @@ class MainWindow(QMainWindow):
         self.visualization_paused = False
         self.host_timer_resolution_ns = time.get_clock_info("perf_counter").resolution * 1_000_000_000.0
         self.support_upload_worker: SupportUploadWorker | None = None
+        self.noise_test_active = False
+        self.noise_test_kind = ""
+        self.noise_test_deadline = 0.0
+        self.noise_test_start_timestamp_ns = 0
+        self.noise_test_result: dict | None = None
+        self.noise_test_results: dict[str, dict] = {}
+        self.noise_wizard: dict | None = None
 
         start_heartbeat()
         support_log_event("gamepad_signal_lab_start", version=__version__)
@@ -545,6 +554,35 @@ class MainWindow(QMainWindow):
         self.controller_source_status.setWordWrap(True)
         source_layout.addWidget(self.controller_source_status)
         diagnostics.addWidget(source_card, 2, 0, 1, 2)
+
+        evidence_card, evidence_layout = card("NOISE ATTRIBUTION EVIDENCE")
+        evidence_help = QLabel(
+            "Raw HID only: the first test measures stationary output noise; the second measures movement/settling behavior. "
+            "Neither can prove firmware filtering without an oscilloscope or logic analyzer upstream of USB."
+        )
+        evidence_help.setObjectName("Muted")
+        evidence_help.setWordWrap(True)
+        evidence_layout.addWidget(evidence_help)
+        evidence_row = QHBoxLayout()
+        guided_test = QPushButton("Guided smoothing test")
+        guided_test.clicked.connect(self._run_noise_wizard)
+        neutral_test = QPushButton("Neutral noise • 10 s")
+        neutral_test.clicked.connect(lambda: self._start_noise_test("neutral"))
+        movement_test = QPushButton("Movement / settling • 20 s")
+        movement_test.clicked.connect(lambda: self._start_noise_test("movement"))
+        export_evidence = QPushButton("Export evidence")
+        export_evidence.clicked.connect(self._export_noise_evidence)
+        evidence_row.addWidget(guided_test)
+        evidence_row.addWidget(neutral_test)
+        evidence_row.addWidget(movement_test)
+        evidence_row.addWidget(export_evidence)
+        evidence_row.addStretch(1)
+        evidence_layout.addLayout(evidence_row)
+        self.noise_test_status = QLabel("No attribution capture has been run.")
+        self.noise_test_status.setObjectName("Muted")
+        self.noise_test_status.setWordWrap(True)
+        evidence_layout.addWidget(self.noise_test_status)
+        diagnostics.addWidget(evidence_card, 3, 0, 1, 2)
 
         diagnostics.setColumnStretch(0,1)
         diagnostics.setColumnStretch(1,1)
@@ -964,8 +1002,13 @@ class MainWindow(QMainWindow):
         self.controller_ts.clear()
         self.controller_samples.clear()
         self.controller_sources.clear()
+        self.controller_raw_report_hex.clear()
         self.controller_metadata = {}
         self.duplicate_raw_reports = 0
+        self.noise_test_result = None
+        self.noise_test_results.clear()
+        if hasattr(self, "noise_test_status"):
+            self.noise_test_status.setText("No attribution capture has been run.")
         while True:
             try:
                 self.controller_queue.get_nowait()
@@ -982,6 +1025,8 @@ class MainWindow(QMainWindow):
     def _start_controller_acquisition(self) -> None:
         if self.controller_acquisition:
             self.controller_acquisition.stop()
+        identity = self.controller_source_info.get("product_string") or self.controller_source_kind
+        self._clear_controller_state(str(identity))
         self.controller_acquisition = ControllerAcquisition(
             self.controller_queue.put,
             lambda name, payload: self.controller_event_queue.put((name, payload)),
@@ -1067,6 +1112,272 @@ class MainWindow(QMainWindow):
     def _toggle_capture(self) -> None:
         self._stop_capture() if self.capture_active else self._start_capture()
 
+    def _start_noise_test(self, capture_kind: str) -> None:
+        if self.controller_source_kind != "raw_hid" or not self.controller_source_path:
+            QMessageBox.information(
+                self,
+                "Raw HID required",
+                "Connect a controller, refresh devices, and select a named Raw HID device before running attribution evidence.",
+            )
+            return
+        if self.noise_test_active:
+            return
+        self.smoothing_window.setValue(1)
+        self.noise_test_active = True
+        self.noise_test_kind = capture_kind
+        self.noise_test_deadline = time.monotonic() + (10.0 if capture_kind == "neutral" else 20.0)
+        self.noise_test_start_timestamp_ns = time.perf_counter_ns()
+        if capture_kind == "neutral":
+            instruction = "Leave every stick untouched for 10 seconds."
+        else:
+            instruction = "Use one stick: center → full deflection → center, then repeat with a quick reversal."
+        self.noise_test_status.setText(f"RUNNING Raw HID {capture_kind} capture • {instruction}")
+        self._add_event("noise_attribution_started", {"capture_kind": capture_kind})
+
+    def _run_noise_wizard(self) -> None:
+        if self.controller_source_kind != "raw_hid" or not self.controller_source_path:
+            QMessageBox.information(
+                self,
+                "Raw HID required",
+                "Connect a controller, refresh devices, and select a named Raw HID device before running the guided test.",
+            )
+            return
+        if self.noise_test_active or self.noise_wizard is not None:
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Raw HID smoothing evidence wizard")
+        dialog.resize(720, 420)
+        layout = QVBoxLayout(dialog)
+        stack = QStackedWidget()
+        layout.addWidget(stack, 1)
+
+        intro = QWidget()
+        intro_layout = QVBoxLayout(intro)
+        intro_title = QLabel("Step 1 of 4 • Confirm the physical test")
+        intro_title.setObjectName("Eyebrow")
+        intro_layout.addWidget(intro_title)
+        intro_text = QLabel(
+            "This wizard runs only against the selected Raw HID device. It does not simulate input, inject noise, "
+            "or modify the controller.\n\n"
+            f"Selected source: {self.controller_source_combo.currentText()}\n"
+            "You will leave the sticks untouched for 10 seconds, then perform one repeatable movement for 20 seconds. "
+            "The export contains the paired host timestamps, normalized samples, and Raw HID report bytes."
+        )
+        intro_text.setWordWrap(True)
+        intro_layout.addWidget(intro_text)
+        intro_layout.addStretch(1)
+
+        neutral = QWidget()
+        neutral_layout = QVBoxLayout(neutral)
+        neutral_title = QLabel("Step 2 of 4 • Neutral noise capture")
+        neutral_title.setObjectName("Eyebrow")
+        neutral_layout.addWidget(neutral_title)
+        neutral_text = QLabel("Keep both sticks centered and untouched. Start the 10-second capture when ready.")
+        neutral_text.setWordWrap(True)
+        neutral_layout.addWidget(neutral_text)
+        neutral_status = QLabel("Not started")
+        neutral_status.setObjectName("Muted")
+        neutral_status.setWordWrap(True)
+        neutral_layout.addWidget(neutral_status)
+        neutral_start = QPushButton("Start neutral capture")
+        neutral_layout.addWidget(neutral_start, alignment=Qt.AlignmentFlag.AlignLeft)
+        neutral_layout.addStretch(1)
+
+        movement = QWidget()
+        movement_layout = QVBoxLayout(movement)
+        movement_title = QLabel("Step 3 of 4 • Movement and settling capture")
+        movement_title.setObjectName("Eyebrow")
+        movement_layout.addWidget(movement_title)
+        movement_text = QLabel(
+            "Use one stick only: center → full deflection → center, then repeat with one quick reversal. "
+            "Do not change the selected device or connection during the capture."
+        )
+        movement_text.setWordWrap(True)
+        movement_layout.addWidget(movement_text)
+        movement_status = QLabel("Complete the neutral capture first")
+        movement_status.setObjectName("Muted")
+        movement_status.setWordWrap(True)
+        movement_layout.addWidget(movement_status)
+        movement_start = QPushButton("Start movement capture")
+        movement_start.setEnabled(False)
+        movement_layout.addWidget(movement_start, alignment=Qt.AlignmentFlag.AlignLeft)
+        movement_layout.addStretch(1)
+
+        review = QWidget()
+        review_layout = QVBoxLayout(review)
+        review_title = QLabel("Step 4 of 4 • Review and export")
+        review_title.setObjectName("Eyebrow")
+        review_layout.addWidget(review_title)
+        review_status = QLabel("Run both captures to produce the evidence package.")
+        review_status.setWordWrap(True)
+        review_layout.addWidget(review_status)
+        limitation = QLabel(
+            "Interpretation boundary: Raw HID is downstream of firmware and USB. This package can show a "
+            "host-observed smoothing signature, but it cannot identify firmware as the cause without a synchronized "
+            "oscilloscope or logic-analyzer trace upstream of the USB report."
+        )
+        limitation.setObjectName("Muted")
+        limitation.setWordWrap(True)
+        review_layout.addWidget(limitation)
+        review_layout.addStretch(1)
+
+        for page_widget in (intro, neutral, movement, review):
+            stack.addWidget(page_widget)
+
+        buttons = QDialogButtonBox()
+        back = buttons.addButton("Back", QDialogButtonBox.ButtonRole.ActionRole)
+        next_button = buttons.addButton("Next", QDialogButtonBox.ButtonRole.AcceptRole)
+        cancel = buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
+        layout.addWidget(buttons)
+
+        state = {"neutral_done": False, "movement_done": False}
+        self.noise_wizard = {
+            "dialog": dialog,
+            "state": state,
+            "neutral_status": neutral_status,
+            "movement_status": movement_status,
+            "review_status": review_status,
+            "movement_start": movement_start,
+            "next": next_button,
+        }
+
+        def update_navigation() -> None:
+            index = stack.currentIndex()
+            back.setEnabled(index > 0)
+            if index == 0:
+                next_button.setText("Begin")
+                next_button.setEnabled(True)
+            elif index == 1:
+                next_button.setText("Next")
+                next_button.setEnabled(bool(state["neutral_done"]))
+            elif index == 2:
+                next_button.setText("Review")
+                next_button.setEnabled(bool(state["movement_done"]))
+            else:
+                next_button.setText("Close")
+                next_button.setEnabled(bool(state["neutral_done"] and state["movement_done"]))
+
+        def start_neutral() -> None:
+            if self.noise_test_active:
+                return
+            self._start_noise_test("neutral")
+            neutral_start.setEnabled(False)
+            next_button.setEnabled(False)
+            neutral_status.setText("RUNNING • keep the sticks untouched for 10 seconds…")
+
+        def start_movement() -> None:
+            if self.noise_test_active:
+                return
+            self._start_noise_test("movement")
+            movement_start.setEnabled(False)
+            next_button.setEnabled(False)
+            movement_status.setText("RUNNING • perform the instructed movement for 20 seconds…")
+
+        def navigate_next() -> None:
+            index = stack.currentIndex()
+            if index < 3:
+                stack.setCurrentIndex(index + 1)
+                update_navigation()
+            else:
+                dialog.accept()
+
+        def navigate_back() -> None:
+            if stack.currentIndex() > 0 and not self.noise_test_active:
+                stack.setCurrentIndex(stack.currentIndex() - 1)
+                update_navigation()
+
+        neutral_start.clicked.connect(start_neutral)
+        movement_start.clicked.connect(start_movement)
+        next_button.clicked.connect(navigate_next)
+        back.clicked.connect(navigate_back)
+        cancel.clicked.connect(dialog.reject)
+
+        def close_wizard() -> None:
+            if self.noise_test_active:
+                self.noise_test_active = False
+                self.noise_test_status.setText("Guided capture cancelled before completion.")
+            self.noise_wizard = None
+
+        dialog.finished.connect(lambda _result: close_wizard())
+        update_navigation()
+        dialog.exec()
+
+    def _finish_noise_test(self) -> None:
+        if not self.noise_test_active:
+            return
+        samples = list(self.controller_samples)
+        timestamps = list(self.controller_ts)
+        raw_reports = list(self.controller_raw_report_hex)
+        window = [
+            (timestamp, sample, raw_report)
+            for timestamp, sample, raw_report in zip(timestamps, samples, raw_reports)
+            if timestamp >= self.noise_test_start_timestamp_ns
+        ]
+        window_timestamps = [item[0] for item in window]
+        window_samples = [item[1] for item in window]
+        window_reports = [item[2] for item in window]
+        self.noise_test_active = False
+        if not window_samples:
+            self.noise_test_result = None
+            self.noise_test_status.setText(
+                "No Raw HID samples arrived. Connect the selected controller, refresh devices, and run the test again."
+            )
+            return
+        self.noise_test_result = analyze_noise_capture(
+            timestamps_ns=window_timestamps,
+            samples=window_samples,
+            raw_report_hex=window_reports,
+            capture_kind=self.noise_test_kind,
+            source_label=self.controller_source_combo.currentText(),
+            device_metadata=self.controller_metadata,
+        )
+        result = self.noise_test_result
+        self.noise_test_results[self.noise_test_kind] = result
+        self.noise_test_status.setText(
+            f"Complete • {result['sample_count']} Raw HID samples • "
+            f"{result['raw_hid_report_count']} reports • attribution remains undetermined without an electrical trace."
+        )
+        self._add_event("noise_attribution_completed", result)
+        if self.noise_wizard is not None:
+            state = self.noise_wizard["state"]
+            state[f"{self.noise_test_kind}_done"] = True
+            if self.noise_test_kind == "neutral":
+                self.noise_wizard["neutral_status"].setText(
+                    f"Complete • {result['sample_count']} samples • {result['raw_hid_report_count']} Raw HID reports."
+                )
+                self.noise_wizard["movement_start"].setEnabled(True)
+            else:
+                self.noise_wizard["movement_status"].setText(
+                    f"Complete • {result['sample_count']} samples • {result['raw_hid_report_count']} Raw HID reports."
+                )
+            self.noise_wizard["next"].setEnabled(True)
+            captures = self.noise_test_results
+            self.noise_wizard["review_status"].setText(
+                f"Evidence ready: {len(captures)} capture(s). Use Export evidence in Controller Lab to save the paired records."
+            )
+
+    def _export_noise_evidence(self) -> None:
+        if not self.noise_test_result:
+            QMessageBox.information(self, "Noise attribution", "Run a Raw HID neutral or movement capture first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Noise Attribution Evidence",
+            str(self.data_root / "noise_attribution_evidence.json"),
+            "JSON (*.json)",
+        )
+        if path:
+            payload = {
+                "evidence_class": "measured-host-observed-raw-hid",
+                "captures": self.noise_test_results or {"latest": self.noise_test_result},
+                "interpretation_boundary": (
+                    "Raw HID is downstream of firmware and USB. Firmware attribution requires a synchronized "
+                    "oscilloscope or logic-analyzer trace upstream of the USB report."
+                ),
+            }
+            Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
     def _start_capture(self) -> None:
         if self.capture_active:
             return
@@ -1122,6 +1433,8 @@ class MainWindow(QMainWindow):
             except queue.Empty:
                 break
             self._accept_controller(m.timestamp_ns,m.sample,m.source,m.timing_quality,m.raw_report_hex,m.duplicate_raw_report,m.metadata)
+        if self.noise_test_active and time.monotonic() >= self.noise_test_deadline:
+            self._finish_noise_test()
 
         # Oscillator acquisition is independent of controller acquisition mode.
         # OscillatorAcquisition emits OscillatorMeasurement objects; tuple support
@@ -1152,6 +1465,7 @@ class MainWindow(QMainWindow):
         if not all(k in sample for k in ("lx","ly","rx","ry")):
             return
         self.controller_ts.append(int(timestamp_ns)); self.controller_samples.append(dict(sample)); self.controller_sources.append((source,quality))
+        self.controller_raw_report_hex.append(raw_hex)
         if metadata and metadata != self.controller_metadata:
             self.controller_metadata=dict(metadata)
         if duplicate_raw:
@@ -1571,8 +1885,13 @@ class MainWindow(QMainWindow):
         editor.setReadOnly(True)
         payload={
             "controller":[
-                {"timestamp_ns":ts,"sample":sample,"source":source[0],"timing_quality":source[1]}
-                for ts,sample,source in zip(list(self.controller_ts)[-200:],list(self.controller_samples)[-200:],list(self.controller_sources)[-200:])
+                {"timestamp_ns":ts,"sample":sample,"source":source[0],"timing_quality":source[1],"raw_report_hex":raw_hex}
+                for ts,sample,source,raw_hex in zip(
+                    list(self.controller_ts)[-200:],
+                    list(self.controller_samples)[-200:],
+                    list(self.controller_sources)[-200:],
+                    list(self.controller_raw_report_hex)[-200:],
+                )
             ],
             "oscillator":[
                 {"timestamp_ns":ts,"frequency_hz":freq}
