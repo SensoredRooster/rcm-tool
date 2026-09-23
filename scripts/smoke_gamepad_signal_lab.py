@@ -115,7 +115,7 @@ def main() -> int:
         csv_path = window.db.export_controller_csv(window.session_id, root / "controller.csv")
         report_path = write_html_report(
             root / "report.html",
-            title="Gamepad Signal Lab Smoke Report",
+            title="RcmTool Smoke Report",
             controller_metrics=window.current_timing.to_dict(),
             oscillator_metrics=window.current_osc.to_dict(),
             metadata={"mode": "simulation", "session_id": window.session_id},
@@ -134,7 +134,7 @@ def main() -> int:
 
     window.close()
     app.processEvents()
-    print("Gamepad Signal Lab full simulation smoke OK")
+    print("RcmTool full simulation smoke OK")
     return 0
 
 
