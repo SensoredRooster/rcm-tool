@@ -38,7 +38,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          python -c "from PySide6.QtWidgets import QApplication; from signal_lab.ui import MainWindow; app=QApplication([]); w=MainWindow(); w.show(); app.processEvents(); w.close(); print('Gamepad Signal Lab UI smoke OK')"
+          python -c "from PySide6.QtWidgets import QApplication; from signal_lab.ui import MainWindow; app=QApplication([]); w=MainWindow(); w.show(); app.processEvents(); w.close(); print('RcmTool UI smoke OK')"
       - name: Run full simulation workflow smoke
         shell: powershell
         env:
@@ -47,7 +47,7 @@ jobs:
       - name: Upload UI preview
         uses: actions/upload-artifact@v4
         with:
-          name: GamepadSignalLab-ui-preview
+          name: RcmTool-ui-preview
           path: artifacts/ui-preview/*.png
       - name: Capture native Windows UI preview
         shell: powershell
@@ -55,16 +55,16 @@ jobs:
       - name: Upload native Windows UI preview
         uses: actions/upload-artifact@v4
         with:
-          name: GamepadSignalLab-ui-preview-native
+          name: RcmTool-ui-preview-native
           path: artifacts/ui-preview-native/*.png
       - name: Build portable application
         shell: powershell
         run: |
-          python -m PyInstaller --noconfirm --clean --windowed --name GamepadSignalLab --collect-all pyvisa_py gamepad_signal_lab.py
+          python -m PyInstaller --noconfirm --clean --windowed --name RcmTool --collect-all pyvisa_py gamepad_signal_lab.py
       - name: Build standalone executable
         shell: powershell
         run: |
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --distpath dist/standalone --workpath build/standalone --specpath build/standalone --name GamepadSignalLab --collect-all pyvisa_py gamepad_signal_lab.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --distpath dist/standalone --workpath build/standalone --specpath build/standalone --name RcmTool --collect-all pyvisa_py gamepad_signal_lab.py
       - name: Install Inno Setup
         shell: powershell
         run: choco install innosetup -y --no-progress
@@ -74,15 +74,15 @@ jobs:
       - name: Upload standalone executable
         uses: actions/upload-artifact@v4
         with:
-          name: GamepadSignalLab-standalone
-          path: dist/standalone/GamepadSignalLab.exe
+          name: RcmTool-standalone
+          path: dist/standalone/RcmTool.exe
       - name: Upload portable build
         uses: actions/upload-artifact@v4
         with:
-          name: GamepadSignalLab-portable
-          path: dist/GamepadSignalLab/**
+          name: RcmTool-portable
+          path: dist/RcmTool/**
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: GamepadSignalLab-installer
+          name: RcmTool-installer
           path: dist/installer/*.exe
