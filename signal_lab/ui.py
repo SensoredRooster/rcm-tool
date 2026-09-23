@@ -323,91 +323,119 @@ class MainWindow(QMainWindow):
         return scroll
 
     def _dashboard_page(self) -> QWidget:
-        w, layout = page("Dashboard", "Live timing, oscillator stability, measurement quality, and baseline state.")
+        w, layout = page(
+            "Dashboard",
+            "Live measured state first; calculated interpretation second. Hover any metric or graph for its definition and measurement caveat.",
+        )
         grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(12)
+        for column in range(4):
+            grid.setColumnStretch(column, 1)
         self.cards = {}
-        for i, (key, title) in enumerate([
-            ("rate","Gamepad rate"), ("interval","Report interval"), ("jitter","Gamepad jitter"),
-            ("osc","Oscillator"), ("ppm","Clock error"), ("clock_jitter","Clock jitter"),
-            ("late","Late reports"), ("stimulus","Test stimulus"),
-        ]):
-            c = MetricCard(title)
+        specs = [
+            ("rate","Gamepad rate","MEASURED"), ("interval","Report interval","MEASURED"),
+            ("jitter","Gamepad jitter","CALCULATED"), ("osc","Oscillator","MEASURED"),
+            ("ppm","Clock error","CALCULATED"), ("clock_jitter","Clock jitter","CALCULATED"),
+            ("late","Late reports","CALCULATED"), ("stimulus","Test stimulus","STATE"),
+        ]
+        for i, (key, title, source) in enumerate(specs):
+            c = MetricCard(title, help_text=METRIC_HELP[key], source=source)
             self.cards[key] = c
             grid.addWidget(c, i // 4, i % 4)
         layout.addLayout(grid)
 
-        baseline, bl = card("BASELINE ENGINE")
-        row = QHBoxLayout()
+        baseline, bl = card("BASELINE / REFERENCE")
+        state_row = QHBoxLayout()
         self.baseline_state = QLabel("No baseline captured")
         self.baseline_state.setObjectName("Muted")
+        self.baseline_state.setWordWrap(True)
         self.baseline_progress = QProgressBar()
         self.baseline_progress.setRange(0,1000)
-        save_baseline = QPushButton("Save Baseline")
-        save_baseline.clicked.connect(self._save_baseline)
-        set_ref = QPushButton("Set last baseline as reference")
-        set_ref.clicked.connect(self._set_reference_baseline)
-        row.addWidget(self.baseline_state,1)
-        row.addWidget(self.baseline_progress,2)
-        row.addWidget(save_baseline)
-        row.addWidget(set_ref)
-        bl.addLayout(row)
+        state_row.addWidget(self.baseline_state,2)
+        state_row.addWidget(self.baseline_progress,1)
+        bl.addLayout(state_row)
+        actions = QHBoxLayout()
+        hint = QLabel("Baseline uses the same timing-reference rule selected in Settings.")
+        hint.setObjectName("SectionHint")
+        hint.setWordWrap(True)
+        save_baseline = QPushButton("Save Baseline"); save_baseline.clicked.connect(self._save_baseline)
+        set_ref = QPushButton("Set Reference"); set_ref.clicked.connect(self._set_reference_baseline)
+        compare = QPushButton("Compare"); compare.clicked.connect(lambda: self._navigate(NAV.index("Compare")))
+        actions.addWidget(hint,1); actions.addWidget(save_baseline); actions.addWidget(set_ref); actions.addWidget(compare)
+        bl.addLayout(actions)
         layout.addWidget(baseline)
 
         charts = QGridLayout()
-        self.dashboard_timing_chart = LineChart("Report interval vs time (ms)")
-        self.dashboard_osc_chart = LineChart("Oscillator frequency error (ppm)")
+        charts.setHorizontalSpacing(14)
+        self.dashboard_timing_chart = LineChart(
+            "Controller report interval",
+            help_text=CHART_HELP["report_interval"],
+            x_label="Elapsed controller capture time (s)",
+        )
+        self.dashboard_osc_chart = LineChart(
+            "Oscillator frequency error",
+            help_text=CHART_HELP["osc_ppm"],
+            x_label="Elapsed oscillator capture time (s)",
+        )
         charts.addWidget(self.dashboard_timing_chart,0,0)
         charts.addWidget(self.dashboard_osc_chart,0,1)
+        charts.setColumnStretch(0,1); charts.setColumnStretch(1,1)
         layout.addLayout(charts)
 
-        q, ql = card("MEASUREMENT QUALITY")
+        q, ql = card("MEASUREMENT QUALITY / PROVENANCE")
         self.quality_label = QLabel("Waiting for samples")
         self.quality_label.setWordWrap(True)
+        self.quality_label.setToolTip(
+            "Timing source, host timer resolution, sample count, capture duration, duplicate/raw-report information, and instrument limitations."
+        )
         ql.addWidget(self.quality_label)
         layout.addWidget(q)
         layout.addStretch(1)
         return self._scroll(w)
 
     def _live_page(self) -> QWidget:
-        w, layout = page("Live Capture", "Raw observations are preserved. Display transformations affect graphs only and never overwrite stored samples.")
+        w, layout = page(
+            "Live Capture",
+            "Acquisition remains raw and lossless. Pause and smoothing affect only the display layer.",
+        )
+        controls, controls_layout = card("DISPLAY CONTROLS")
         bar = QHBoxLayout()
         self.pause_visualization = QCheckBox("Pause visualization")
+        self.pause_visualization.setToolTip("Freezes graph repainting only. Acquisition and raw storage continue.")
         self.pause_visualization.toggled.connect(lambda checked: setattr(self, "visualization_paused", bool(checked)))
         self.smoothing_window = QSpinBox()
         self.smoothing_window.setRange(1, 51)
         self.smoothing_window.setValue(1)
         self.smoothing_window.setPrefix("Display smoothing ")
         self.smoothing_window.setSuffix(" samples")
-        reset = QPushButton("Reset graph views")
-        reset.clicked.connect(self._reset_graphs)
-        export = QPushButton("Export timing graph PNG")
-        export.clicked.connect(lambda: self.live_interval_chart.export_png(self))
-        fullscreen = QPushButton("Fullscreen timing graph")
-        fullscreen.clicked.connect(lambda: self._show_chart_fullscreen(self.live_interval_chart))
-        raw = QPushButton("Raw data")
-        raw.clicked.connect(self._show_raw_data)
-        bar.addWidget(self.pause_visualization)
-        bar.addWidget(self.smoothing_window)
-        bar.addWidget(reset)
-        bar.addWidget(export)
-        bar.addWidget(fullscreen)
-        bar.addWidget(raw)
+        self.smoothing_window.setToolTip("Moving average applied to displayed traces only. Stored raw data is unchanged.")
+        reset = QPushButton("Reset Views"); reset.clicked.connect(self._reset_graphs)
+        export = QPushButton("Export Graph"); export.clicked.connect(lambda: self.live_interval_chart.export_png(self))
+        fullscreen = QPushButton("Fullscreen"); fullscreen.clicked.connect(lambda: self._show_chart_fullscreen(self.live_interval_chart))
+        raw = QPushButton("Inspect Raw Data"); raw.clicked.connect(self._show_raw_data)
+        for widget in (self.pause_visualization,self.smoothing_window,reset,export,fullscreen,raw):
+            bar.addWidget(widget)
         bar.addStretch(1)
-        layout.addLayout(bar)
+        controls_layout.addLayout(bar)
+        layout.addWidget(controls)
+
         grid = QGridLayout()
-        self.live_interval_chart = LineChart("Report interval vs time (ms)")
-        self.live_jitter_chart = LineChart("Timing deviation from expected interval (ms)")
-        self.live_hist_chart = LineChart("Report interval histogram")
-        self.live_latency_chart = LineChart("Input latency distribution (requires device-origin timestamp)")
-        self.live_analog_chart = LineChart("Analog stick stability (LX / LY)")
-        self.live_osc_chart = LineChart("Oscillator frequency vs time (Hz)")
-        self.live_osc_jitter_chart = LineChart("Oscillator frequency error (ppm)")
+        grid.setHorizontalSpacing(14); grid.setVerticalSpacing(14)
+        self.live_interval_chart = LineChart("Controller report interval", help_text=CHART_HELP["report_interval"], x_label="Elapsed time (s)")
+        self.live_jitter_chart = LineChart("Controller timing deviation", help_text=CHART_HELP["gamepad_deviation"], x_label="Elapsed time (s)")
+        self.live_hist_chart = LineChart("Report-interval distribution", help_text=CHART_HELP["interval_histogram"], x_label="Report interval (ms)")
+        self.live_latency_chart = LineChart("Input latency", help_text=CHART_HELP["latency"], x_label="Latency (ms)")
+        self.live_analog_chart = LineChart("Analog stick stability", help_text=CHART_HELP["analog_stability"], x_label="Elapsed time (s)")
+        self.live_osc_chart = LineChart("Oscillator frequency", help_text=CHART_HELP["osc_frequency"], x_label="Elapsed time (s)")
+        self.live_osc_jitter_chart = LineChart("Oscillator frequency error", help_text=CHART_HELP["osc_ppm"], x_label="Elapsed time (s)")
         charts = [
             self.live_interval_chart, self.live_jitter_chart, self.live_hist_chart,
             self.live_latency_chart, self.live_analog_chart, self.live_osc_chart, self.live_osc_jitter_chart
         ]
         for i, ch in enumerate(charts):
             grid.addWidget(ch, i//2, i%2)
+        grid.setColumnStretch(0,1); grid.setColumnStretch(1,1)
         layout.addLayout(grid)
         return self._scroll(w)
 
@@ -445,45 +473,62 @@ class MainWindow(QMainWindow):
         return self._scroll(w)
 
     def _oscillator_page(self) -> QWidget:
-        w, layout = page("Oscillator Lab", "Frequency, period, ppm error, cycle-to-cycle variation, RMS jitter, drift, and Allan deviation.")
-        ref, rl = card("REFERENCE")
+        w, layout = page(
+            "Oscillator Lab",
+            "Measured frequency samples and explicitly labeled calculations. Unsupported hardware values remain unavailable.",
+        )
+        ref, rl = card("REFERENCE / MEASUREMENT SOURCE")
         form = QFormLayout()
         self.nominal_freq = QDoubleSpinBox()
         self.nominal_freq.setRange(1, 10_000_000_000)
         self.nominal_freq.setDecimals(3)
         self.nominal_freq.setValue(12_000_000)
         self.nominal_freq.setSuffix(" Hz")
+        self.nominal_freq.setToolTip("Reference used for frequency-error and ppm calculations; it is not a measured value.")
         form.addRow("Nominal frequency", self.nominal_freq)
         rl.addLayout(form)
         instrument_row = QHBoxLayout()
         self.osc_visa_combo = QComboBox()
-        osc_refresh = QPushButton("Refresh VISA")
-        osc_refresh.clicked.connect(self._refresh_osc_visa)
-        osc_connect = QPushButton("Connect Measurement Instrument")
-        osc_connect.clicked.connect(self._connect_osc_measurement_instrument)
-        osc_disconnect = QPushButton("Disconnect")
-        osc_disconnect.clicked.connect(self._disconnect_measurement_instrument)
-        instrument_row.addWidget(self.osc_visa_combo, 1)
-        instrument_row.addWidget(osc_refresh)
-        instrument_row.addWidget(osc_connect)
-        instrument_row.addWidget(osc_disconnect)
+        osc_refresh = QPushButton("Refresh VISA"); osc_refresh.clicked.connect(self._refresh_osc_visa)
+        osc_connect = QPushButton("Connect Measurement Instrument"); osc_connect.clicked.connect(self._connect_osc_measurement_instrument)
+        osc_disconnect = QPushButton("Disconnect"); osc_disconnect.clicked.connect(self._disconnect_measurement_instrument)
+        instrument_row.addWidget(self.osc_visa_combo,1); instrument_row.addWidget(osc_refresh); instrument_row.addWidget(osc_connect); instrument_row.addWidget(osc_disconnect)
         rl.addLayout(instrument_row)
         self.osc_instrument_status = QLabel("Simulation oscillator")
         self.osc_instrument_status.setObjectName("Muted")
+        self.osc_instrument_status.setWordWrap(True)
         rl.addWidget(self.osc_instrument_status)
         layout.addWidget(ref)
 
         grid = QGridLayout()
+        grid.setHorizontalSpacing(12); grid.setVerticalSpacing(12)
+        for column in range(3): grid.setColumnStretch(column,1)
         self.osc_labels = {}
-        for i,(key,title) in enumerate([
-            ("mean","Measured frequency"),("stdev","Frequency stdev"),("error_hz","Frequency error"),("error_ppm","Error ppm"),
-            ("drift","Frequency drift"),("outliers","Outliers"),("period","Mean period"),("rms","RMS period jitter"),
-            ("p2p","Peak-to-peak jitter"),("ctc","Cycle-to-cycle RMS"),("allan","Allan deviation τ=1 sample")
-        ]):
-            c=MetricCard(title); self.osc_labels[key]=c; grid.addWidget(c,i//4,i%4)
+        specs = [
+            ("mean","Measured frequency","osc_mean","MEASURED"),
+            ("stdev","Frequency stdev","osc_stdev","CALCULATED"),
+            ("error_hz","Frequency error","osc_error_hz","CALCULATED"),
+            ("error_ppm","Frequency error ppm","osc_error_ppm","CALCULATED"),
+            ("drift","Window drift","osc_drift","CALCULATED"),
+            ("outliers","Frequency outliers","osc_outliers","CALCULATED"),
+            ("period","Mean derived period","osc_period","CALCULATED"),
+            ("rms","RMS derived period jitter","osc_rms","CALCULATED"),
+            ("p2p","P2P derived period jitter","osc_p2p","CALCULATED"),
+            ("ctc","Successive-period RMS","osc_ctc","CALCULATED"),
+            ("allan","Allan deviation","allan","CALCULATED"),
+        ]
+        for i,(key,title,help_key,source) in enumerate(specs):
+            c=MetricCard(title,help_text=METRIC_HELP[help_key],source=source)
+            self.osc_labels[key]=c
+            grid.addWidget(c,i//3,i%3)
         layout.addLayout(grid)
-        self.osc_stability_chart = LineChart("Frequency stability (Hz)")
-        self.osc_period_chart = LineChart("Period (ns)")
+
+        self.osc_stability_chart = LineChart("Oscillator frequency",help_text=CHART_HELP["osc_frequency"],x_label="Elapsed time (s)")
+        self.osc_period_chart = LineChart(
+            "Derived period",
+            help_text="Period = 1/f for each valid frequency sample. This trace is calculated unless the connected instrument directly supplies period samples.",
+            x_label="Elapsed time (s)",
+        )
         layout.addWidget(self.osc_stability_chart)
         layout.addWidget(self.osc_period_chart)
         return self._scroll(w)
