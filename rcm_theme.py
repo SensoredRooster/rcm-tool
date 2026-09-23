@@ -5,7 +5,6 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
-# Portal palette from rcm-tool-share login card
 BG = "#070B14"
 SURFACE = "#101628"
 CARD = "#161D30"
@@ -23,6 +22,11 @@ ON_ACCENT = "#F8FBFF"
 
 def apply_rcm_theme(root: tk.Tk) -> None:
     root.configure(bg=BG)
+    try:
+        root.title("RCMTool")
+        root.minsize(960, 640)
+    except tk.TclError:
+        pass
     root.option_add("*Font", "{Segoe UI} 10")
     root.option_add("*TCombobox*Listbox.background", CARD)
     root.option_add("*TCombobox*Listbox.foreground", TEXT)
