@@ -61,13 +61,29 @@ def _sweep_html(points: Sequence[Sequence[float]]) -> str:
     for item in points:
         if len(item) < 4:
             continue
-        freq, amp, gamepad_rms, clock_ppm = map(float, item[:4])
-        triples.append((freq, amp, gamepad_rms))
+        try:
+            freq = float(item[0])
+            amp = float(item[1])
+        except (TypeError, ValueError):
+            continue
+        gamepad_rms = None if item[2] is None else float(item[2])
+        clock_ppm = None if item[3] is None else float(item[3])
+        if gamepad_rms is not None and math.isfinite(gamepad_rms):
+            triples.append((freq, amp, gamepad_rms))
+        gamepad_text = "Unavailable" if gamepad_rms is None or not math.isfinite(gamepad_rms) else f"{gamepad_rms:.9g}"
+        clock_text = "Unavailable" if clock_ppm is None or not math.isfinite(clock_ppm) else f"{clock_ppm:+.9g}"
         rows.append(
-            f"<tr><td>{freq:.9g}</td><td>{amp:.9g}</td><td>{gamepad_rms:.9g}</td><td>{clock_ppm:+.9g}</td></tr>"
+            f"<tr><td>{freq:.9g}</td><td>{amp:.9g}</td><td>{gamepad_text}</td><td>{clock_text}</td></tr>"
         )
-    if not triples:
+    if not rows:
         return "<div class='card'><h2>Sweep response</h2><p class='small'>No valid sweep points.</p></div>"
+    if not triples:
+        return (
+            "<div class='card'><h2>Sweep response</h2>"
+            "<p class='small'>Sweep steps were recorded, but no gamepad timing metric was available for the response map.</p>"
+            "<table><thead><tr><th>Frequency Hz</th><th>Amplitude Vpp</th><th>Gamepad RMS ms</th><th>Clock ppm</th></tr></thead><tbody>"
+            + "".join(rows) + "</tbody></table></div>"
+        )
     values = [v for _, _, v in triples]
     vmin, vmax = min(values), max(values)
     if math.isclose(vmin, vmax):

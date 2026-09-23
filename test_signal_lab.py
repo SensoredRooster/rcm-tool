@@ -98,6 +98,25 @@ class SignalLabTests(unittest.TestCase):
             self.assertIn("Experiment timeline", html)
             self.assertIn("<svg", html)
 
+    def test_engineering_report_handles_unavailable_sweep_metrics(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "report_missing.html"
+            write_html_report(
+                target,
+                title="Incomplete Lab Report",
+                controller_metrics={},
+                oscillator_metrics={},
+                metadata={},
+                limitations=[],
+                sweep_points=[
+                    (100.0, 0.1, None, 1.5),
+                    (200.0, 0.1, 0.02, None),
+                ],
+            )
+            html = target.read_text(encoding="utf-8")
+            self.assertIn("Unavailable", html)
+            self.assertIn("200", html)
+
     def test_sqlite_round_trip(self):
         with tempfile.TemporaryDirectory() as td:
             db = LabDatabase(Path(td)/"lab.sqlite3")
