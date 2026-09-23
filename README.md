@@ -1,67 +1,200 @@
-# RCM Tool
+# Gamepad Signal Lab
 
-Windows controller integrity prototype. It **reads** stick axes and HID timing. It does **not** write to the controller, inject into a game, or flash firmware.
+Gamepad Signal Lab is the next-generation desktop application built on the original **RCM Tool** controller measurement code. It is a Windows laboratory workspace for measuring controller report timing, analog-input stability, oscillator/clock stability, controlled bench stimulus, sweep response, and synchronized timing relationships.
 
-Repository: https://github.com/SensoredRooster/rcm-tool
+The application is measurement-focused. It does not inject game inputs, modify controller firmware, or manufacture precision that the connected hardware cannot provide.
 
-## Honest Before / After
+## Current integrated capabilities
 
-Same PC, same protocol, same hands. Only the **hardware path** changes.
+- Modern PySide6/Qt desktop UI with rounded panels, dark/light modes, high-DPI scaling, dashboard cards, live plots, and dedicated lab pages.
+- Existing RCM controller acquisition through Windows XInput, SDL/pygame, Raw HID/hidapi, and WinMM fallback.
+- Controller timing analysis: effective report rate, interval statistics, RMS timing deviation, peak-to-peak jitter, successive interval variation, P50/P90/P95/P99/P99.9, late reports, and estimated missing reports.
+- Live stick visualization and analog stability inspection.
+- Oscillator Lab: frequency, error in Hz and ppm, period statistics, RMS period jitter, peak-to-peak jitter, cycle-to-cycle jitter, drift visualization, and one-sample-interval Allan deviation.
+- A dedicated read-only VISA/SCPI measurement role for counters, oscilloscopes, and analyzers.
+- A separate VISA/SCPI signal-generator role with output-off-by-default behavior.
+- Interference Lab with explicit output enable, configurable software limits, and an EMERGENCY OUTPUT OFF control.
+- Linear/logarithmic sweep planning with repetitions, dwell time, event logging, and forced output-off at completion.
+- Synchronized controller and oscillator storage with descriptive correlation.
+- SQLite/WAL session storage, JSON export, controller CSV export, and self-contained HTML engineering reports.
+- Deterministic gamepad/oscillator simulation so the workflow can be exercised without physical hardware.
+- Automated tests and Windows CI packaging for a portable app and Inno Setup installer.
 
-1. **Before** — pad straight to the PC. No pass-through box.
-2. Unplug. Put the suspected device in the cable path.
-3. **After** — same Neutral hold or same Guided moves.
+## Measurement integrity
 
-Pair-delta plus HID signal metrics compare rest HF RMS, sample rate, inter-sample jitter, and how many distinct axis levels showed up. That is a **change detector**, not a cheat verdict. An idle box can look identical at rest.
+Controller timestamps use Python's highest-resolution host monotonic clock available through time.perf_counter_ns. The meaning of those timestamps depends on the backend:
 
-**After noise** and **Injected** protocols are tool self-tests only. Files tagged `INJECTED_` are not a pad screen.
+- **Raw HID** reports are timestamped when the application receives/drains the HID report. This is still a host-observed timestamp.
+- **XInput, SDL, and WinMM** are host-polling APIs. Their timing includes operating-system scheduling and API buffering effects.
+- Dedicated oscilloscopes, counters, logic analyzers, USB analyzers, or timing instruments are required when direct electrical or bus-level timing is needed.
 
-## 1. Install once
+The application labels data as simulated, measured, calculated, estimated, or unavailable rather than inventing unsupported values.
 
-```powershell
+## Install from source
+
+The supported build target is 64-bit Windows.
+
+~~~powershell
 git clone https://github.com/SensoredRooster/rcm-tool.git
 cd rcm-tool
 python -m pip install -r requirements.txt
-python apply_all.py
 python -m unittest discover -v
+python gamepad_signal_lab.py
+~~~
+
+The compatibility entry point also works:
+
+~~~powershell
 python rcm_tool.py
-```
+~~~
 
-Later: **RCM Tool - Update and Start.bat**.
+If PySide6 is not installed, the compatibility entry point falls back to the original Tk RCM capture bench.
 
-If apply says `could not find block`:
+## First-run workflow
 
-```powershell
-git checkout -- controller_integrity.py
-python apply_all.py
-```
+1. Launch Gamepad Signal Lab.
+2. Leave Simulation selected initially.
+3. Start Capture and verify the timing and oscillator dashboard.
+4. Run a baseline.
+5. Review Controller Lab, Oscillator Lab, Correlation, Experiments, Compare, and Reports.
+6. For a physical gamepad, choose Real controller under Settings.
+7. For physical clock measurement, select a VISA resource in Oscillator Lab and connect it as a measurement instrument.
+8. For controlled stimulus, select a VISA resource in Interference Lab and explicitly connect it as a generator. Generator output remains OFF until the user enables it.
 
-## 2. UI
+## Oscillator and clock measurements
 
-Portal navy (`#070B14`) with cyan labels and blue primary (`#3B82F6`), same language as Tester Share. Theme is `rcm_theme.py`. ttk still owns native combo chrome.
+The generic measurement adapter is intentionally read-only. Connecting it does not send generator output commands.
 
-## 3. Session order
+It tries common SCPI frequency queries such as:
 
-1. Tool check: Injected HF sine / slow sine, thumbs off. `INJECTED_` files.
-2. Neutral Before + After with hardware out, then hardware in.
-3. Guided pair the same way.
+~~~text
+MEAS:FREQ?
+MEASure:FREQuency?
+FETCh:FREQuency?
+READ:FREQuency?
+~~~
 
-## 4. Pair delta
+It also tries common duty-cycle queries. Instrument command sets differ, so model-specific drivers can be added behind the same adapter interface without rewriting the analysis, database, or UI.
 
-`unchanged` / `increased_at_rest` / `increased_high_freq` / `unsupported`.
-Reports also include `hid_signal_metrics` and `hidSignalDelta` (rate, timing jitter, unique levels).
+Calculated oscillator metrics include:
 
-## 5. RC filter
+- mean, minimum, and maximum frequency
+- frequency standard deviation
+- error in Hz
+- error in ppm
+- mean period
+- period standard deviation
+- RMS period jitter
+- peak-to-peak period jitter
+- cycle-to-cycle RMS and peak
+- one-sample-interval Allan deviation when enough samples exist
 
-`tau = 0.05 s`. HF RMS = RMS(raw minus trend).
+Software calculations are only as accurate as the values and timing supplied by the physical measurement hardware.
 
-## 6. After a run
+## Controlled stimulus safety
 
-JSON writes itself. **Submit Reports.bat**, type YES. Do not submit `INJECTED_` files as a pad screen.
+Measurement instruments and signal sources are separate roles.
 
-## Support and Tester Share
+- Generator output defaults to **OFF**.
+- A VISA resource is not accepted as a generator unless an OUTP OFF command succeeds.
+- Discovery never turns output on.
+- Frequency, amplitude, and offset are validated against configured software limits before enable or sweep.
+- The UI exposes **EMERGENCY OUTPUT OFF**.
+- Sweep completion forces the source OFF.
+- Closing the application attempts to force output OFF and close the source.
 
-- Support worker: `https://rcm-tool-support.sensoredrooster-com.workers.dev`
-- Tester Share: `https://rcm-tool-share.sensoredrooster-com.workers.dev`
+Default software limits are conservative starting values; they are not electrical ratings for any particular controller, coupling network, scope, or generator. Use limits appropriate to the actual bench hardware.
 
-See [docs/SUPPORT.md](docs/SUPPORT.md) and [docs/TESTER_SHARE.md](docs/TESTER_SHARE.md).
+## Baselines, sweeps, and correlation
+
+A baseline captures the current controller timing and oscillator statistics as the reference for the active session.
+
+The sweep engine supports:
+
+- linear or logarithmic frequency spacing
+- repeated sweeps
+- configurable dwell
+- deterministic step ordering
+- timestamped experiment events
+
+Correlation is descriptive. A coefficient or visual time alignment can show that values moved together; it does not establish causation.
+
+## Data storage
+
+Gamepad Signal Lab uses SQLite with WAL journaling. Sessions contain controller samples, oscillator samples, and experiment events.
+
+Exports include:
+
+- session JSON
+- controller CSV
+- engineering HTML report
+
+Raw samples/timestamps remain independent of the summary statistics.
+
+## Build the Windows app
+
+Local build:
+
+~~~powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
+~~~
+
+Portable output:
+
+~~~text
+dist\GamepadSignalLab\GamepadSignalLab.exe
+~~~
+
+Installer definition:
+
+~~~text
+installer\GamepadSignalLab.iss
+~~~
+
+The GitHub Actions workflow at .github/workflows/build-windows.yml runs the tests on Windows, creates the PyInstaller application, builds the Inno Setup installer, and uploads both as workflow artifacts.
+
+## Tests
+
+~~~powershell
+python -m unittest discover -v
+~~~
+
+The suite covers the legacy RCM measurement code plus the new timing calculations, ppm calculations, deterministic simulation, correlation, instrument safety behavior, sweep construction, and SQLite persistence.
+
+## Project layout
+
+~~~text
+gamepad_signal_lab.py
+signal_lab/
+  analysis.py       timing, jitter, ppm, Allan deviation, correlation
+  controller.py     adapter over existing RCM controller backends
+  oscillator.py     background physical frequency acquisition
+  instruments.py    separate VISA/SCPI measurement and generator roles
+  simulation.py     deterministic virtual gamepad and oscillator
+  storage.py        SQLite and exports
+  sweep.py          reproducible sweep planning
+  reporting.py      engineering HTML reports
+  ui.py             PySide6 desktop application
+controller_integrity.py
+installer/GamepadSignalLab.iss
+scripts/build_windows.ps1
+~~~
+
+## Legacy RCM Tool components
+
+The original controller integrity functionality remains in the repository, including its controller backends, RC-filter analysis, before/after pair comparisons, tester-share/support integration, and prior report format.
+
+## Important limitations
+
+This software has not been electrically calibrated against every oscilloscope, counter, signal generator, controller, USB host controller, or VISA implementation. Generic SCPI commands are a compatibility layer, not a guarantee for every model. Add model-specific adapters and calibration metadata for laboratory claims requiring traceable accuracy.
+
+Host-side gamepad timing can contain USB scheduling, driver/API buffering, Windows scheduling latency, Python runtime effects, and measurement-loop delay. Reports should distinguish those effects from controller-generated timing variation.
+
+## Existing support infrastructure
+
+The existing RCM support and tester-share infrastructure remains in place. See:
+
+- docs/SUPPORT.md
+- docs/TESTER_SHARE.md
+
+The original Cloudflare workflows remain alongside the new Windows application build workflow.
