@@ -16,7 +16,7 @@ from PySide6.QtCore import QSettings, QTimer, Qt
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
-    QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QMainWindow,
+    QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QStackedWidget,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 )
@@ -139,6 +139,7 @@ class MainWindow(QMainWindow):
         self.controller_ts = deque(maxlen=60000)
         self.controller_samples = deque(maxlen=60000)
         self.controller_sources = deque(maxlen=60000)
+        self.controller_metadata: dict = {}
         self.osc_ts = deque(maxlen=12000)
         self.osc_freq = deque(maxlen=12000)
         self.events: list[tuple[int, str, dict]] = []
@@ -154,7 +155,9 @@ class MainWindow(QMainWindow):
         self.sweep_plan: list[tuple[float, float, int]] = []
         self.sweep_index = 0
         self.sweep_results: list[tuple[float, float, float | None, float | None]] = []
+        self.sweep_metric_rows: list[dict] = []
         self.sweep_step_controller_ts: list[int] = []
+        self.sweep_step_controller_samples: list[dict] = []
         self.sweep_step_osc_freq: list[float] = []
         self.sweep_phase = "idle"
         self.sweep_timer = QTimer(self)
@@ -164,6 +167,7 @@ class MainWindow(QMainWindow):
         self.current_timing = timing_metrics([])
         self.current_osc = oscillator_metrics([], 12_000_000.0)
         self.current_corr: float | None = None
+        self.corr_time_axis: list[int] = []
         self.visualization_paused = False
 
         self._build_ui()
@@ -275,6 +279,7 @@ class MainWindow(QMainWindow):
         if NAV[index] == "Experiments":
             self._refresh_experiments()
         elif NAV[index] == "Compare":
+            self._refresh_compare_sources()
             self._refresh_compare()
         elif NAV[index] == "Instruments":
             self._refresh_capabilities()
@@ -514,7 +519,11 @@ class MainWindow(QMainWindow):
         heatbar.addWidget(QLabel("Heatmap metric"))
         self.sweep_heatmap_metric=QComboBox()
         self.sweep_heatmap_metric.addItem("Gamepad RMS timing deviation (ms)","gamepad")
-        self.sweep_heatmap_metric.addItem("Oscillator clock error (ppm)","clock")
+        self.sweep_heatmap_metric.addItem("Oscillator RMS period jitter (ps)","osc_jitter")
+        self.sweep_heatmap_metric.addItem("Polling-rate deviation (Hz)","polling")
+        self.sweep_heatmap_metric.addItem("Clock frequency deviation (ppm)","clock")
+        self.sweep_heatmap_metric.addItem("Late reports","late")
+        self.sweep_heatmap_metric.addItem("Analog stationary noise RMS","analog")
         self.sweep_heatmap_metric.currentIndexChanged.connect(self._refresh_sweep_heatmap)
         heatbar.addWidget(self.sweep_heatmap_metric)
         heatbar.addStretch(1)
@@ -533,12 +542,28 @@ class MainWindow(QMainWindow):
 
     def _correlation_page(self) -> QWidget:
         w, layout = page("Correlation", "Signals share a common experiment timeline. Correlation is descriptive and is not treated as proof of causation.")
+        marker_row=QHBoxLayout()
+        self.marker_text=QLineEdit(); self.marker_text.setPlaceholderText("Marker label")
+        marker_button=QPushButton("Add User Marker"); marker_button.clicked.connect(self._add_user_marker)
+        marker_row.addWidget(self.marker_text,1); marker_row.addWidget(marker_button)
+        layout.addLayout(marker_row)
         self.corr_card=MetricCard("Aligned correlation coefficient","—","Gamepad interval deviation vs nearest oscillator ppm sample")
         layout.addWidget(self.corr_card)
         self.corr_stimulus_chart=LineChart("Stimulus frequency (Hz)")
         self.corr_osc_chart=LineChart("Oscillator error (ppm)")
         self.corr_gamepad_chart=LineChart("Gamepad report timing deviation (ms)")
+        self.corr_charts=[self.corr_stimulus_chart,self.corr_osc_chart,self.corr_gamepad_chart]
+        for chart in self.corr_charts:
+            chart.cursorRatioChanged.connect(lambda ratio, source=chart: self._sync_correlation_cursor(source,ratio))
+            chart.cursorCleared.connect(self._clear_correlation_cursor)
         layout.addWidget(self.corr_stimulus_chart); layout.addWidget(self.corr_osc_chart); layout.addWidget(self.corr_gamepad_chart)
+        self.corr_event_detail=QLabel("Select a timeline event to position the synchronized cursor.")
+        self.corr_event_detail.setObjectName("Muted"); self.corr_event_detail.setWordWrap(True)
+        layout.addWidget(self.corr_event_detail)
+        self.corr_events_table=QTableWidget(0,3)
+        self.corr_events_table.setHorizontalHeaderLabels(["Monotonic time","Event","Details"])
+        self.corr_events_table.cellClicked.connect(self._select_correlation_event)
+        layout.addWidget(self.corr_events_table)
         return self._scroll(w)
 
     def _experiments_page(self) -> QWidget:
@@ -551,9 +576,17 @@ class MainWindow(QMainWindow):
         return w
 
     def _compare_page(self) -> QWidget:
-        w, layout = page("Compare", "Compare the current capture against the selected baseline reference.")
-        self.compare_state=QLabel("No reference baseline selected."); self.compare_state.setObjectName("Muted"); layout.addWidget(self.compare_state)
-        self.compare_table=QTableWidget(0,5); self.compare_table.setHorizontalHeaderLabels(["Metric","Reference","Current","Difference","% Change"]); layout.addWidget(self.compare_table)
+        w, layout = page("Compare", "Compare either the active baseline against live data or any two saved experiment sessions.")
+        controls=QHBoxLayout()
+        self.compare_a=QComboBox(); self.compare_b=QComboBox()
+        saved=QPushButton("Compare Saved Sessions"); saved.clicked.connect(self._compare_saved_sessions)
+        live=QPushButton("Reference vs Live"); live.clicked.connect(self._refresh_compare)
+        controls.addWidget(QLabel("Reference")); controls.addWidget(self.compare_a,1)
+        controls.addWidget(QLabel("Test")); controls.addWidget(self.compare_b,1)
+        controls.addWidget(saved); controls.addWidget(live)
+        layout.addLayout(controls)
+        self.compare_state=QLabel("No comparison selected."); self.compare_state.setObjectName("Muted"); layout.addWidget(self.compare_state)
+        self.compare_table=QTableWidget(0,5); self.compare_table.setHorizontalHeaderLabels(["Metric","Reference","Test","Difference","% Change"]); layout.addWidget(self.compare_table)
         return w
 
     def _reports_page(self) -> QWidget:
@@ -711,7 +744,10 @@ class MainWindow(QMainWindow):
                     extra=self.sim_analog_extra*math.sin(2*math.pi*997.0*(rel/1e9))
                     for axis in ("lx","ly","rx","ry"):
                         sample[axis]=max(-1.0,min(1.0,float(sample.get(axis,0.0))+extra))
-                self._accept_controller(self.sim_epoch_ns+rel,sample,"Simulation controller","simulated")
+                self._accept_controller(
+                    self.sim_epoch_ns+rel,sample,"Simulation controller","simulated",
+                    metadata={"controller_name":"Simulation controller","connection_method":"Simulation","backend":"GamepadSimulator"},
+                )
 
             # A physical clock instrument can be used while the controller side
             # remains simulated. Only synthesize oscillator samples when no
@@ -733,7 +769,7 @@ class MainWindow(QMainWindow):
                     m=self.controller_queue.get_nowait()
                 except queue.Empty:
                     break
-                self._accept_controller(m.timestamp_ns,m.sample,m.source,m.timing_quality,m.raw_report_hex,m.duplicate_raw_report)
+                self._accept_controller(m.timestamp_ns,m.sample,m.source,m.timing_quality,m.raw_report_hex,m.duplicate_raw_report,m.metadata)
 
         # Oscillator acquisition is independent of controller acquisition mode.
         # OscillatorAcquisition emits OscillatorMeasurement objects; tuple support
@@ -760,15 +796,18 @@ class MainWindow(QMainWindow):
         if self.baseline_active and time.monotonic()>=self.baseline_deadline:
             self._finish_baseline()
 
-    def _accept_controller(self,timestamp_ns:int,sample:dict,source:str,quality:str,raw_hex:str|None=None,duplicate_raw:bool=False) -> None:
+    def _accept_controller(self,timestamp_ns:int,sample:dict,source:str,quality:str,raw_hex:str|None=None,duplicate_raw:bool=False,metadata:dict|None=None) -> None:
         if not all(k in sample for k in ("lx","ly","rx","ry")):
             return
         self.controller_ts.append(int(timestamp_ns)); self.controller_samples.append(dict(sample)); self.controller_sources.append((source,quality))
+        if metadata:
+            self.controller_metadata=dict(metadata)
         if duplicate_raw:
             self.duplicate_raw_reports += 1
         if self.baseline_active: self.baseline_controller_ts.append(int(timestamp_ns))
         if self.sweep_active and self.sweep_phase=="dwell":
             self.sweep_step_controller_ts.append(int(timestamp_ns))
+            self.sweep_step_controller_samples.append(dict(sample))
         if self.capture_active and self.session_id:
             self.db.add_controller_sample(self.session_id,timestamp_ns,sample,source=f"{source} [{quality}]",raw_report_hex=raw_hex)
 
@@ -865,12 +904,41 @@ class MainWindow(QMainWindow):
                 self.button_capability.setText("Buttons / D-pad: unavailable from the active decoded backend")
         if self.controller_sources:
             source,quality=self.controller_sources[-1]
-            self.controller_meta.setText(f"{source}\nTiming source quality: {quality}")
+            meta=self.controller_metadata
+            fields=[f"{source}",f"Timing source quality: {quality}"]
+            name=meta.get("controller_name")
+            if name and name not in source: fields.append(f"Controller: {name}")
+            vid,pid=meta.get("vid"),meta.get("pid")
+            if vid is not None: fields.append(f"VID: {int(vid):04X}")
+            if pid is not None: fields.append(f"PID: {int(pid):04X}")
+            if meta.get("usb_path"): fields.append(f"USB path: {meta['usb_path']}")
+            if meta.get("hid_interface") is not None: fields.append(f"HID interface: {meta['hid_interface']}")
+            self.controller_meta.setText("\n".join(fields))
+            optional=[]
+            optional.append(f"Firmware: {meta.get('firmware_release','Unavailable')}")
+            optional.append(f"Battery: {meta.get('battery_status','Unavailable')}")
+            optional.append(f"Connection: {meta.get('connection_method','Unavailable')}")
+            self.controller_capability.setText(" • ".join(optional))
 
         self.corr_card.set_value(f"{self.current_corr:+.4f}" if self.current_corr is not None else "Unavailable","Nearest-time aligned samples; correlation does not establish causation.")
-        self.corr_osc_chart.set_series([("osc ppm",ppm_values[-600:],"#6DE0B1")])
-        self.corr_gamepad_chart.set_series([("gamepad dev",deviations[-600:],"#6AA2FF")])
-        self.corr_stimulus_chart.set_series([("stimulus",[self.stim_freq.value() if output else 0.0]*min(600,max(len(ppm_values),len(deviations))),"#F0B862")])
+        corr_pairs=[((a+b)//2,(b-a)/1e6-expected_ms) for a,b in zip(timestamps,timestamps[1:]) if b>a][-600:]
+        self.corr_time_axis=[item[0] for item in corr_pairs]
+        corr_game=[item[1] for item in corr_pairs]
+        osc_times=list(self.osc_ts)
+        osc_values=list(self.osc_freq)
+        corr_ppm=[]
+        for ts in self.corr_time_axis:
+            idx=bisect_left(osc_times,ts)
+            candidates=[i for i in (idx-1,idx) if 0<=i<len(osc_times)]
+            if candidates:
+                nearest=min(candidates,key=lambda i:abs(osc_times[i]-ts))
+                corr_ppm.append((osc_values[nearest]-nominal)/nominal*1e6 if nominal>0 else float("nan"))
+            else:
+                corr_ppm.append(float("nan"))
+        corr_stimulus=[self.stim_freq.value() if output else 0.0]*len(self.corr_time_axis)
+        self.corr_osc_chart.set_series([("osc ppm",corr_ppm,"#6DE0B1")])
+        self.corr_gamepad_chart.set_series([("gamepad dev",corr_game,"#6AA2FF")])
+        self.corr_stimulus_chart.set_series([("stimulus",corr_stimulus,"#F0B862")])
 
         timing_source=self.controller_sources[-1][1] if self.controller_sources else "none"
         self.quality_label.setText(
@@ -957,6 +1025,17 @@ class MainWindow(QMainWindow):
         }
         Path(path).write_text(json.dumps(payload,indent=2),encoding="utf-8")
         self._add_event("baseline_saved",{"path":str(path)})
+
+    @staticmethod
+    def _analog_noise_rms(samples:list[dict]) -> float | None:
+        if len(samples)<2:
+            return None
+        rms_values=[]
+        for axis in ("lx","ly","rx","ry"):
+            values=[float(sample.get(axis,0.0)) for sample in samples]
+            mean=sum(values)/len(values)
+            rms_values.append(math.sqrt(sum((value-mean)**2 for value in values)/len(values)))
+        return sum(rms_values)/len(rms_values)
 
     @staticmethod
     def _histogram(values:list[float],bins:int) -> list[float]:
@@ -1246,9 +1325,11 @@ class MainWindow(QMainWindow):
             self._start_capture()
         self.sweep_plan=plan
         self.sweep_results=[]
+        self.sweep_metric_rows=[]
         self.sweep_index=0
         self.sweep_phase="idle"
         self.sweep_step_controller_ts=[]
+        self.sweep_step_controller_samples=[]
         self.sweep_step_osc_freq=[]
         self.sweep_table.setRowCount(0)
         self.sweep_heatmap.set_points([])
@@ -1307,6 +1388,7 @@ class MainWindow(QMainWindow):
 
     def _begin_sweep_dwell(self) -> None:
         self.sweep_step_controller_ts=[]
+        self.sweep_step_controller_samples=[]
         self.sweep_step_osc_freq=[]
         self.sweep_phase="dwell"
         self.sweep_timer.start(self.dwell_ms.value())
@@ -1315,12 +1397,21 @@ class MainWindow(QMainWindow):
         if not hasattr(self,"sweep_heatmap"):
             return
         metric=self.sweep_heatmap_metric.currentData() if hasattr(self,"sweep_heatmap_metric") else "gamepad"
-        if metric=="clock":
-            self.sweep_heatmap.title="Frequency / amplitude response • oscillator clock error (ppm)"
-            points=[(f,a,ppm) for f,a,_,ppm in self.sweep_results if ppm is not None]
-        else:
-            self.sweep_heatmap.title="Frequency / amplitude response • gamepad RMS timing deviation (ms)"
-            points=[(f,a,gp) for f,a,gp,_ in self.sweep_results if gp is not None]
+        specs={
+            "gamepad":("gamepad_rms_ms","Frequency / amplitude response • gamepad RMS timing deviation (ms)"),
+            "osc_jitter":("oscillator_jitter_ps","Frequency / amplitude response • oscillator RMS period jitter (ps)"),
+            "polling":("polling_deviation_hz","Frequency / amplitude response • polling-rate deviation (Hz)"),
+            "clock":("clock_ppm","Frequency / amplitude response • clock frequency deviation (ppm)"),
+            "late":("late_reports","Frequency / amplitude response • late reports"),
+            "analog":("analog_noise_rms","Frequency / amplitude response • analog stationary noise RMS"),
+        }
+        key,title=specs.get(metric,specs["gamepad"])
+        self.sweep_heatmap.title=title
+        points=[
+            (row["frequency_hz"],row["amplitude_vpp"],float(row[key]))
+            for row in self.sweep_metric_rows
+            if row.get(key) is not None
+        ]
         self.sweep_heatmap.set_points(points)
 
     def _sweep_record_and_advance(self) -> None:
@@ -1340,6 +1431,20 @@ class MainWindow(QMainWindow):
         )
         gp=step_timing.rms_deviation_ms if step_timing.sample_count>=2 else None
         ppm=step_osc.frequency_error_ppm if step_osc.sample_count else None
+        polling_dev=(step_timing.effective_rate_hz-self.expected_rate.value()) if step_timing.sample_count>=2 else None
+        osc_jitter_ps=(step_osc.rms_period_jitter_s*1e12) if step_osc.sample_count else None
+        analog_noise=self._analog_noise_rms(self.sweep_step_controller_samples)
+        metric_row={
+            "frequency_hz":freq,
+            "amplitude_vpp":amp,
+            "gamepad_rms_ms":gp,
+            "oscillator_jitter_ps":osc_jitter_ps,
+            "polling_deviation_hz":polling_dev,
+            "clock_ppm":ppm,
+            "late_reports":step_timing.late_reports if step_timing.sample_count>=2 else None,
+            "analog_noise_rms":analog_noise,
+        }
+        self.sweep_metric_rows.append(metric_row)
         self.sweep_results.append((freq,amp,gp,ppm))
 
         row=self.sweep_table.rowCount()
@@ -1363,7 +1468,11 @@ class MainWindow(QMainWindow):
             "instrument_reported":reported,
             "repetition":rep,
             "gamepad_rms_ms":gp,
+            "oscillator_jitter_ps":osc_jitter_ps,
+            "polling_deviation_hz":polling_dev,
             "clock_ppm":ppm,
+            "late_reports":metric_row["late_reports"],
+            "analog_noise_rms":analog_noise,
             "controller_samples":step_timing.sample_count,
             "oscillator_samples":step_osc.sample_count,
         })
@@ -1395,6 +1504,48 @@ class MainWindow(QMainWindow):
         rows=self.events[-300:]; self.timeline_table.setRowCount(len(rows))
         for r,(ts,event,payload) in enumerate(rows):
             self.timeline_table.setItem(r,0,QTableWidgetItem(str(ts))); self.timeline_table.setItem(r,1,QTableWidgetItem(event)); self.timeline_table.setItem(r,2,QTableWidgetItem(json.dumps(payload,separators=(",",":"))))
+        self._update_correlation_events()
+
+    def _update_correlation_events(self) -> None:
+        if not hasattr(self,"corr_events_table"):
+            return
+        rows=self.events[-120:]
+        self.corr_events_table.setRowCount(len(rows))
+        for r,(ts,event,payload) in enumerate(rows):
+            item=QTableWidgetItem(f"{ts/1e9:.6f} s")
+            item.setData(Qt.ItemDataRole.UserRole,int(ts))
+            self.corr_events_table.setItem(r,0,item)
+            self.corr_events_table.setItem(r,1,QTableWidgetItem(event))
+            self.corr_events_table.setItem(r,2,QTableWidgetItem(json.dumps(payload,separators=(",",":"))))
+
+    def _add_user_marker(self) -> None:
+        label=self.marker_text.text().strip() if hasattr(self,"marker_text") else ""
+        self._add_event("user_marker",{"label":label or "Marker"})
+        if hasattr(self,"marker_text"):
+            self.marker_text.clear()
+
+    def _sync_correlation_cursor(self,source:LineChart,ratio:float) -> None:
+        for chart in getattr(self,"corr_charts",[]):
+            chart.set_external_cursor_ratio(None if chart is source else ratio)
+
+    def _clear_correlation_cursor(self) -> None:
+        for chart in getattr(self,"corr_charts",[]):
+            chart.set_external_cursor_ratio(None)
+
+    def _select_correlation_event(self,row:int,column:int) -> None:
+        item=self.corr_events_table.item(row,0)
+        if item is None:
+            return
+        ts=item.data(Qt.ItemDataRole.UserRole)
+        if ts is None or not self.corr_time_axis:
+            return
+        idx=min(range(len(self.corr_time_axis)),key=lambda i:abs(self.corr_time_axis[i]-int(ts)))
+        ratio=idx/max(1,len(self.corr_time_axis)-1)
+        for chart in getattr(self,"corr_charts",[]):
+            chart.set_external_cursor_ratio(ratio)
+        event=self.corr_events_table.item(row,1).text() if self.corr_events_table.item(row,1) else ""
+        details=self.corr_events_table.item(row,2).text() if self.corr_events_table.item(row,2) else ""
+        self.corr_event_detail.setText(f"{event} • {details}")
 
     def _refresh_experiments(self) -> None:
         if not hasattr(self,"experiments_table"): return
@@ -1402,28 +1553,94 @@ class MainWindow(QMainWindow):
         for r,row in enumerate(rows):
             vals=[row["created_utc"],row["name"],row["mode"],row["controller_samples"],row["oscillator_samples"],row["events"],row["id"]]
             for c,val in enumerate(vals): self.experiments_table.setItem(r,c,QTableWidgetItem(str(val)))
+        self._refresh_compare_sources()
+
+    def _refresh_compare_sources(self) -> None:
+        if not hasattr(self,"compare_a"):
+            return
+        rows=self.db.list_sessions(limit=200)
+        current_a=self.compare_a.currentData()
+        current_b=self.compare_b.currentData()
+        for combo in (self.compare_a,self.compare_b):
+            combo.clear()
+            for row in rows:
+                label=f"{row['created_utc']} • {row['mode']} • {row['controller_samples']} pad / {row['oscillator_samples']} clock"
+                combo.addItem(label,row["id"])
+        if current_a:
+            index=self.compare_a.findData(current_a)
+            if index>=0: self.compare_a.setCurrentIndex(index)
+        if current_b:
+            index=self.compare_b.findData(current_b)
+            if index>=0: self.compare_b.setCurrentIndex(index)
+        if self.compare_b.count()>1 and self.compare_b.currentIndex()==self.compare_a.currentIndex():
+            self.compare_b.setCurrentIndex(1)
+
+    def _session_metrics(self,session_id:str):
+        data=self.db.session_series(session_id)
+        metadata=data["session"].get("metadata") or {}
+        expected_rate=float(metadata.get("expected_rate_hz") or self.expected_rate.value())
+        nominal=float(metadata.get("nominal_frequency_hz") or self.nominal_freq.value())
+        timing=timing_metrics(
+            data["controller_timestamps_ns"],
+            expected_interval_ms=1000.0/max(expected_rate,1.0),
+            late_factor=self.late_factor.value(),
+        )
+        oscillator=oscillator_metrics(
+            data["oscillator_frequencies_hz"],
+            nominal,
+            duty_cycles_percent=data["duty_cycles_percent"],
+            outlier_sigma=self.outlier_sigma.value(),
+        )
+        return timing,oscillator,data["session"]
+
+    def _populate_compare_table(self,reference_t,reference_o,test_t,test_o,label:str) -> None:
+        metrics=[
+            ("Effective rate Hz",reference_t.effective_rate_hz,test_t.effective_rate_hz),
+            ("Mean interval ms",reference_t.mean_interval_ms,test_t.mean_interval_ms),
+            ("RMS timing deviation ms",reference_t.rms_deviation_ms,test_t.rms_deviation_ms),
+            ("Peak-to-peak jitter ms",reference_t.peak_to_peak_jitter_ms,test_t.peak_to_peak_jitter_ms),
+            ("P99 ms",reference_t.p99_ms,test_t.p99_ms),("P99.9 ms",reference_t.p999_ms,test_t.p999_ms),
+            ("Late reports",reference_t.late_reports,test_t.late_reports),
+            ("Missing reports estimate",reference_t.missing_reports_estimate,test_t.missing_reports_estimate),
+            ("Clock frequency Hz",reference_o.mean_frequency_hz,test_o.mean_frequency_hz),
+            ("Clock error ppm",reference_o.frequency_error_ppm,test_o.frequency_error_ppm),
+            ("Oscillator RMS jitter s",reference_o.rms_period_jitter_s,test_o.rms_period_jitter_s),
+            ("Cycle-to-cycle RMS s",reference_o.cycle_to_cycle_rms_s,test_o.cycle_to_cycle_rms_s),
+            ("Duty cycle %",reference_o.duty_cycle_percent or 0.0,test_o.duty_cycle_percent or 0.0),
+        ]
+        self.compare_state.setText(label)
+        self.compare_table.setRowCount(len(metrics))
+        for r,(name,ref,cur) in enumerate(metrics):
+            ref=float(ref); cur=float(cur)
+            pct="Unavailable" if math.isclose(ref,0.0,abs_tol=1e-30) else f"{((cur-ref)/abs(ref))*100:+.3f}%"
+            for c,val in enumerate([name,f"{ref:.9g}",f"{cur:.9g}",f"{cur-ref:+.9g}",pct]):
+                self.compare_table.setItem(r,c,QTableWidgetItem(str(val)))
+
+    def _compare_saved_sessions(self) -> None:
+        a=self.compare_a.currentData() if hasattr(self,"compare_a") else None
+        b=self.compare_b.currentData() if hasattr(self,"compare_b") else None
+        if not a or not b:
+            QMessageBox.information(self,"Compare","Choose two saved sessions.")
+            return
+        ta,oa,sa=self._session_metrics(str(a))
+        tb,ob,sb=self._session_metrics(str(b))
+        self._populate_compare_table(ta,oa,tb,ob,f"Saved session comparison • {sa['created_utc']} → {sb['created_utc']}")
 
     def _refresh_compare(self) -> None:
         if not hasattr(self,"compare_table"): return
         if not self.reference_baseline:
-            self.compare_state.setText("No reference baseline selected. Run a baseline and set it as reference."); self.compare_table.setRowCount(0); return
-        rt=self.reference_baseline["timing"]; ro=self.reference_baseline["oscillator"]; ct=asdict(self.current_timing); co=asdict(self.current_osc)
-        metrics=[
-            ("Effective rate Hz",rt["effective_rate_hz"],ct["effective_rate_hz"]),
-            ("Mean interval ms",rt["mean_interval_ms"],ct["mean_interval_ms"]),
-            ("RMS timing deviation ms",rt["rms_deviation_ms"],ct["rms_deviation_ms"]),
-            ("P99 ms",rt["p99_ms"],ct["p99_ms"]),("P99.9 ms",rt["p999_ms"],ct["p999_ms"]),
-            ("Clock frequency Hz",ro["mean_frequency_hz"],co["mean_frequency_hz"]),
-            ("Clock error ppm",ro["frequency_error_ppm"],co["frequency_error_ppm"]),
-            ("Clock RMS period jitter s",ro["rms_period_jitter_s"],co["rms_period_jitter_s"]),
-            ("Cycle-to-cycle RMS s",ro["cycle_to_cycle_rms_s"],co["cycle_to_cycle_rms_s"])
-        ]
-        self.compare_state.setText("Reference baseline loaded. Differences are descriptive measurements, not causal conclusions.")
-        self.compare_table.setRowCount(len(metrics))
-        for r,(name,ref,cur) in enumerate(metrics):
-            pct="Unavailable" if math.isclose(float(ref),0.0,abs_tol=1e-30) else f"{((cur-ref)/abs(ref))*100:+.3f}%"
-            for c,val in enumerate([name,f"{ref:.9g}",f"{cur:.9g}",f"{cur-ref:+.9g}",pct]):
-                self.compare_table.setItem(r,c,QTableWidgetItem(str(val)))
+            self.compare_state.setText("No reference baseline selected. Run a baseline and set it as reference, or compare two saved sessions.")
+            self.compare_table.setRowCount(0)
+            return
+        rt=timing_metrics([])
+        ro=oscillator_metrics([],self.nominal_freq.value())
+        for key,value in self.reference_baseline["timing"].items():
+            if hasattr(rt,key):
+                pass
+        from .analysis import TimingMetrics, OscillatorMetrics
+        rt=TimingMetrics(**self.reference_baseline["timing"])
+        ro=OscillatorMetrics(**self.reference_baseline["oscillator"])
+        self._populate_compare_table(rt,ro,self.current_timing,self.current_osc,"Reference baseline vs live measurement")
 
     def _ensure_session(self) -> bool:
         if not self.session_id:

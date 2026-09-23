@@ -65,6 +65,25 @@ class SignalLabTests(unittest.TestCase):
         instrument = SimulatedInstrument()
         self.assertFalse(instrument.output_enabled())
 
+    def test_controller_metadata_extraction(self):
+        from signal_lab.controller import ControllerAcquisition
+        class FakeHID:
+            name = "Raw HID controller"
+            path = b"hid-path"
+            info = {
+                "product_string": "Test Pad",
+                "manufacturer_string": "Lab",
+                "vendor_id": 0x1234,
+                "product_id": 0x5678,
+                "release_number": 42,
+                "interface_number": 1,
+            }
+        meta = ControllerAcquisition._backend_metadata(FakeHID())
+        self.assertEqual(meta["vid"], 0x1234)
+        self.assertEqual(meta["pid"], 0x5678)
+        self.assertEqual(meta["usb_path"], "hid-path")
+        self.assertEqual(meta["controller_name"], "Test Pad")
+
     def test_measurement_role_cannot_enable_output(self):
         measurement = VisaScpiMeasurementInstrument.__new__(VisaScpiMeasurementInstrument)
         with self.assertRaises(RuntimeError):
@@ -195,6 +214,9 @@ class SignalLabTests(unittest.TestCase):
             self.assertEqual(s["events"],1)
             sessions = db.list_sessions()
             self.assertEqual(sessions[0]["id"], sid)
+            series = db.session_series(sid)
+            self.assertEqual(series["controller_timestamps_ns"], [1])
+            self.assertEqual(series["oscillator_frequencies_hz"], [12_000_000.0])
             self.assertEqual(sessions[0]["events"], 1)
             events = db.list_events(sid)
             self.assertEqual(events[0]["event_type"], "baseline_started")

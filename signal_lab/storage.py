@@ -152,6 +152,31 @@ class LabDatabase:
             writer.writerows(rows)
         return destination
 
+    def session_series(self, session_id: str) -> dict:
+        session = self.session_summary(session_id)
+        controller_timestamps = [
+            int(row[0])
+            for row in self.conn.execute(
+                "SELECT timestamp_ns FROM controller_samples WHERE session_id=? ORDER BY timestamp_ns",
+                (session_id,),
+            )
+        ]
+        oscillator_rows = self.conn.execute(
+            """SELECT frequency_hz,duty_cycle_percent
+               FROM oscillator_samples
+               WHERE session_id=? AND frequency_hz IS NOT NULL
+               ORDER BY timestamp_ns""",
+            (session_id,),
+        ).fetchall()
+        oscillator_frequencies = [float(row[0]) for row in oscillator_rows if row[0] is not None]
+        duty_cycles = [float(row[1]) for row in oscillator_rows if row[1] is not None]
+        return {
+            "session": session,
+            "controller_timestamps_ns": controller_timestamps,
+            "oscillator_frequencies_hz": oscillator_frequencies,
+            "duty_cycles_percent": duty_cycles,
+        }
+
     def list_sessions(self, limit: int = 200) -> list[dict]:
         rows = self.conn.execute(
             """SELECT s.id,s.created_utc,s.name,s.mode,s.app_version,

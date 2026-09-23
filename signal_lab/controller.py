@@ -15,6 +15,7 @@ class ControllerMeasurement:
     timing_quality: str
     raw_report_hex: str | None = None
     duplicate_raw_report: bool = False
+    metadata: dict | None = None
 
 
 class ControllerAcquisition:
@@ -35,6 +36,52 @@ class ControllerAcquisition:
     def _event(self, name: str, payload: dict | None = None) -> None:
         if self.event_callback:
             self.event_callback(name, payload or {})
+
+    @staticmethod
+    def _backend_metadata(active) -> dict:
+        if active is None:
+            return {}
+        meta = {
+            "backend": getattr(active, "name", active.__class__.__name__),
+            "connection_method": active.__class__.__name__,
+        }
+        info = getattr(active, "info", None)
+        if isinstance(info, dict):
+            for src, dst in (
+                ("product_string", "controller_name"),
+                ("manufacturer_string", "manufacturer"),
+                ("vendor_id", "vid"),
+                ("product_id", "pid"),
+                ("serial_number", "serial_number"),
+                ("release_number", "firmware_release"),
+                ("interface_number", "hid_interface"),
+                ("usage_page", "usage_page"),
+                ("usage", "usage"),
+            ):
+                value = info.get(src)
+                if value not in (None, ""):
+                    meta[dst] = value
+            path = info.get("path") or getattr(active, "path", None)
+            if isinstance(path, bytes):
+                path = path.decode(errors="replace")
+            if path:
+                meta["usb_path"] = str(path)
+        if hasattr(active, "connected_user_index") and getattr(active, "connected_user_index") is not None:
+            meta["xinput_slot"] = int(getattr(active, "connected_user_index"))
+        if hasattr(active, "device_id") and getattr(active, "device_id") is not None:
+            meta["device_id"] = int(getattr(active, "device_id"))
+        joystick = getattr(active, "joystick", None)
+        if joystick is not None:
+            for method, key in (("get_name", "controller_name"), ("get_guid", "guid"), ("get_power_level", "battery_status")):
+                fn = getattr(joystick, method, None)
+                if callable(fn):
+                    try:
+                        value = fn()
+                        if value not in (None, ""):
+                            meta[key] = str(value)
+                    except Exception:
+                        pass
+        return meta
 
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
@@ -78,7 +125,7 @@ class ControllerAcquisition:
                     last_seen = time.monotonic()
                     if not connected:
                         connected = True
-                        self._event("controller_connected", {"source": source})
+                        self._event("controller_connected", {"source": source, "metadata": self._backend_metadata(active)})
                     if "buttons" in sample:
                         buttons = int(sample.get("buttons", 0))
                         if last_buttons is not None and buttons != last_buttons:
@@ -104,6 +151,7 @@ class ControllerAcquisition:
                             timing_quality="measured-at-host-read",
                             raw_report_hex=raw_hex,
                             duplicate_raw_report=duplicate,
+                            metadata=self._backend_metadata(active),
                         ))
                 elif sample is not None and now - last_host_sample_ns >= int(self.poll_sleep_s * 1e9):
                     last_host_sample_ns = now
@@ -112,6 +160,7 @@ class ControllerAcquisition:
                         sample=dict(sample),
                         source=getattr(active, "name", "Host controller API") if active is not None else "Host controller API",
                         timing_quality="host-poll-estimate",
+                        metadata=self._backend_metadata(active),
                     ))
 
                 if connected and sample is None and time.monotonic() - last_seen >= 0.5:

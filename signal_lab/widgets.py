@@ -5,7 +5,7 @@ import math
 from pathlib import Path
 from typing import Sequence
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QFileDialog, QFrame, QLabel, QVBoxLayout, QWidget
 
@@ -36,6 +36,9 @@ class MetricCard(QFrame):
 
 
 class LineChart(QWidget):
+    cursorRatioChanged = Signal(float)
+    cursorCleared = Signal()
+
     def __init__(self, title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.title = title
@@ -43,6 +46,7 @@ class LineChart(QWidget):
         self.zoom = 1.0
         self.offset = 0.0
         self.cursor_x: float | None = None
+        self.external_cursor_ratio: float | None = None
         self.drag_origin: float | None = None
         self.setMinimumHeight(190)
         self.setMouseTracking(True)
@@ -55,6 +59,10 @@ class LineChart(QWidget):
     def reset_view(self) -> None:
         self.zoom = 1.0
         self.offset = 0.0
+        self.update()
+
+    def set_external_cursor_ratio(self, ratio: float | None) -> None:
+        self.external_cursor_ratio = None if ratio is None else max(0.0, min(1.0, float(ratio)))
         self.update()
 
     def export_png(self, parent: QWidget | None = None) -> Path | None:
@@ -78,6 +86,10 @@ class LineChart(QWidget):
 
     def mouseMoveEvent(self, event) -> None:
         self.cursor_x = event.position().x()
+        area_left = 52.0
+        area_width = max(10.0, self.width() - 70.0)
+        if area_left <= self.cursor_x <= area_left + area_width:
+            self.cursorRatioChanged.emit((self.cursor_x - area_left) / area_width)
         if self.drag_origin is not None and self.zoom > 1.0 and self.width() > 1:
             delta = (self.drag_origin - event.position().x()) / self.width() / self.zoom
             self.offset = min(max(0.0, self.offset + delta), 1.0 - 1.0 / self.zoom)
@@ -89,6 +101,7 @@ class LineChart(QWidget):
 
     def leaveEvent(self, event) -> None:
         self.cursor_x = None
+        self.cursorCleared.emit()
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -157,10 +170,13 @@ class LineChart(QWidget):
             painter.setPen(text)
             painter.drawText(QPointF(legend_x + 17, self.height() - 9), name)
             legend_x += 18 + max(65, len(name) * 7)
-        if self.cursor_x is not None and area.left() <= self.cursor_x <= area.right():
+        cursor_x = self.cursor_x
+        if cursor_x is None and self.external_cursor_ratio is not None:
+            cursor_x = area.left() + self.external_cursor_ratio * area.width()
+        if cursor_x is not None and area.left() <= cursor_x <= area.right():
             painter.setPen(QPen(QColor("#7689A5"), 1, Qt.PenStyle.DashLine))
-            painter.drawLine(QPointF(self.cursor_x, area.top()), QPointF(self.cursor_x, area.bottom()))
-            ratio = (self.cursor_x - area.left()) / max(1.0, area.width())
+            painter.drawLine(QPointF(cursor_x, area.top()), QPointF(cursor_x, area.bottom()))
+            ratio = (cursor_x - area.left()) / max(1.0, area.width())
             idx = start + int(ratio * max(0, end - start - 1))
             labels = [f"{name}: {values[idx]:.5g}" for name, values, _ in self.series if 0 <= idx < len(values)]
             if labels:
