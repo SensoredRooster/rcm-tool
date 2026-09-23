@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tkinter as tk
+import webbrowser
 from tkinter import messagebox, ttk
 
 from support import (
@@ -77,5 +78,6 @@ def open_support_center(parent: tk.Misc) -> None:
     ttk.Button(buttons, text="Send Diagnostics to Developer", command=send_bundle).grid(row=0, column=1, padx=8, pady=4)
     ttk.Button(buttons, text="Open Logs Folder", command=open_logs_folder).grid(row=1, column=0, padx=(0, 8), pady=4)
     ttk.Button(buttons, text="Report Issue on GitHub", command=report_issue).grid(row=1, column=1, padx=8, pady=4)
-    ttk.Button(buttons, text="Open Repository", command=open_repository).grid(row=1, column=2, padx=8, pady=4)\n    ttk.Button(buttons, text="Tester Share", command=lambda: webbrowser.open("https://rcm-tool-share.sensoredrooster-com.workers.dev")).grid(row=2, column=0, padx=(0, 8), pady=4)
+    ttk.Button(buttons, text="Open Repository", command=open_repository).grid(row=1, column=2, padx=8, pady=4)
+    ttk.Button(buttons, text="Tester Share", command=lambda: webbrowser.open("https://rcm-tool-share.sensoredrooster-com.workers.dev")).grid(row=2, column=0, padx=(0, 8), pady=4)
     ttk.Button(buttons, text="Close", command=window.destroy).grid(row=0, column=2, padx=8, pady=4)
