@@ -33,6 +33,13 @@ from .oscillator import OscillatorAcquisition, OscillatorMeasurement
 from .reporting import write_html_report
 from .storage import LabDatabase
 from .sweep import make_sweep
+from .trace_capture import (
+    SigrokCaptureConfig,
+    analyze_sigrok_csv,
+    check_sigrok_cli,
+    run_sigrok_capture,
+    scan_sigrok,
+)
 from .theme import DARK, LIGHT
 from .widgets import ControllerView, HeatMapWidget, LineChart, MetricCard
 from support import (
@@ -51,11 +58,11 @@ from support import (
 LOGGER = logging.getLogger(__name__)
 
 NAV = [
-    "Dashboard", "Live Capture", "Controller Lab", "Oscillator Lab",
+    "Dashboard", "Live Capture", "Controller Lab", "Electrical Trace", "Oscillator Lab",
     "Interference Lab", "Sweep Lab", "Correlation", "Experiments",
     "Compare", "Reports", "Instruments", "Support", "Settings",
 ]
-FOCUS_NAV = ("Dashboard", "Controller Lab", "Reports", "Support", "Settings")
+FOCUS_NAV = ("Dashboard", "Controller Lab", "Electrical Trace", "Reports", "Support", "Settings")
 
 TESTER_SHARE_URL = "https://rcm-tool-share.sensoredrooster-com.workers.dev"
 
@@ -99,6 +106,22 @@ class SupportUploadWorker(QThread):
             self.completed.emit(upload_support_bundle(bundle_path=self.bundle_path))
         except Exception as exc:
             self.failed.emit(str(exc))
+
+
+class SigrokCaptureWorker(QThread):
+    completed = Signal(dict)
+    failed = Signal(str)
+
+    def __init__(self, config: SigrokCaptureConfig, parent=None) -> None:
+        super().__init__(parent)
+        self.config = config
+
+    def run(self) -> None:
+        result = run_sigrok_capture(self.config)
+        if result.get("ok"):
+            self.completed.emit(result)
+        else:
+            self.failed.emit(str(result.get("output") or result.get("message") or "sigrok capture failed"))
 
 
 class WelcomeDialog(QDialog):
@@ -205,6 +228,10 @@ class MainWindow(QMainWindow):
         self.noise_test_result: dict | None = None
         self.noise_test_results: dict[str, dict] = {}
         self.noise_wizard: dict | None = None
+        self.trace_worker: SigrokCaptureWorker | None = None
+        self.trace_capture_active = False
+        self.trace_capture_start_timestamp_ns = 0
+        self.trace_capture_result: dict | None = None
 
         start_heartbeat()
         support_log_event("gamepad_signal_lab_start", version=__version__)
@@ -296,7 +323,7 @@ class MainWindow(QMainWindow):
 
         self.stack = QStackedWidget()
         for builder in [
-            self._dashboard_page, self._live_page, self._controller_page, self._oscillator_page,
+            self._dashboard_page, self._live_page, self._controller_page, self._trace_page, self._oscillator_page,
             self._interference_page, self._sweep_page, self._correlation_page,
             self._experiments_page, self._compare_page, self._reports_page,
             self._instruments_page, self._support_page, self._settings_page,
@@ -610,6 +637,98 @@ class MainWindow(QMainWindow):
         diagnostics.setColumnStretch(1,1)
         layout.addLayout(diagnostics)
         self._refresh_controller_sources()
+        layout.addStretch(1)
+        return self._scroll(w)
+
+    def _trace_page(self) -> QWidget:
+        w, layout = page(
+            "Electrical Trace",
+            "Optional upstream evidence through sigrok/libsigrok. RcmTool stores the raw capture and aligns it with Raw HID using an explicitly labeled synchronization method.",
+        )
+
+        tool_card, tool_layout = card("OPEN-SOURCE TRACE TOOL")
+        tool_form = QFormLayout()
+        self.trace_executable = QLineEdit("sigrok-cli")
+        self.trace_executable.setToolTip("sigrok-cli executable name or full path. Install sigrok/PulseView separately.")
+        tool_form.addRow("sigrok-cli", self.trace_executable)
+        tool_layout.addLayout(tool_form)
+        tool_actions = QHBoxLayout()
+        check_tool = QPushButton("Check sigrok")
+        check_tool.clicked.connect(self._check_trace_tool)
+        scan_tool = QPushButton("Scan devices")
+        scan_tool.clicked.connect(self._scan_trace_devices)
+        tool_actions.addWidget(check_tool)
+        tool_actions.addWidget(scan_tool)
+        tool_actions.addStretch(1)
+        tool_layout.addLayout(tool_actions)
+        self.trace_tool_status = QLabel("sigrok-cli not checked")
+        self.trace_tool_status.setObjectName("Muted")
+        self.trace_tool_status.setWordWrap(True)
+        tool_layout.addWidget(self.trace_tool_status)
+        self.trace_scan_output = QPlainTextEdit()
+        self.trace_scan_output.setReadOnly(True)
+        self.trace_scan_output.setMaximumHeight(150)
+        self.trace_scan_output.setPlaceholderText("sigrok-cli --scan output will appear here.")
+        tool_layout.addWidget(self.trace_scan_output)
+        layout.addWidget(tool_card)
+
+        config_card, config_layout = card("CAPTURE CONFIGURATION")
+        config_form = QFormLayout()
+        self.trace_driver = QLineEdit()
+        self.trace_driver.setPlaceholderText("Example: fx2lafw or saleae-logic-pro")
+        self.trace_channels = QLineEdit()
+        self.trace_channels.setPlaceholderText("Optional channel list, for example A0 or 0-3")
+        self.trace_samplerate = QLineEdit("1m")
+        self.trace_samplerate.setToolTip("sigrok sample-rate syntax, for example 1m, 10m, or 500k")
+        self.trace_duration = QDoubleSpinBox()
+        self.trace_duration.setRange(1.0, 600.0)
+        self.trace_duration.setDecimals(1)
+        self.trace_duration.setValue(10.0)
+        self.trace_duration.setSuffix(" s")
+        self.trace_wait_trigger = QCheckBox("Wait for hardware trigger")
+        self.trace_triggers = QLineEdit()
+        self.trace_triggers.setPlaceholderText("Optional sigrok trigger expression, for example 0=r")
+        config_form.addRow("Driver / connection", self.trace_driver)
+        config_form.addRow("Channels", self.trace_channels)
+        config_form.addRow("Sample rate", self.trace_samplerate)
+        config_form.addRow("Duration", self.trace_duration)
+        config_form.addRow("Trigger", self.trace_wait_trigger)
+        config_form.addRow("Trigger expression", self.trace_triggers)
+        config_layout.addLayout(config_form)
+        sync_help = QLabel(
+            "Best evidence uses a physical trigger or marker shared by the trace device and the movement. "
+            "If no hardware trigger is configured, the report is labeled host-start-aligned and cannot prove electrical-to-USB causation."
+        )
+        sync_help.setObjectName("Muted")
+        sync_help.setWordWrap(True)
+        config_layout.addWidget(sync_help)
+        capture_actions = QHBoxLayout()
+        start_trace = QPushButton("Start synchronized capture")
+        start_trace.setObjectName("Primary")
+        start_trace.clicked.connect(self._start_trace_capture)
+        export_trace = QPushButton("Export trace evidence")
+        export_trace.clicked.connect(self._export_trace_evidence)
+        capture_actions.addWidget(start_trace)
+        capture_actions.addWidget(export_trace)
+        capture_actions.addStretch(1)
+        config_layout.addLayout(capture_actions)
+        self.trace_capture_status = QLabel("No electrical trace captured.")
+        self.trace_capture_status.setObjectName("Muted")
+        self.trace_capture_status.setWordWrap(True)
+        config_layout.addWidget(self.trace_capture_status)
+        layout.addWidget(config_card)
+
+        limits, limits_layout = card("PROBE / INTERPRETATION BOUNDARY")
+        limits_label = QLabel(
+            "Connect the oscilloscope probe to the stick sensor/potentiometer output, or connect the logic analyzer "
+            "to the upstream sensor bus. Use a high-impedance or differential probe as appropriate. Never connect a "
+            "scope ground to an unknown powered node. RcmTool reports instrument-measured trace metrics separately "
+            "from host-observed Raw HID metrics; it will not label firmware filtering without a valid upstream trace."
+        )
+        limits_label.setWordWrap(True)
+        limits_label.setObjectName("Muted")
+        limits_layout.addWidget(limits_label)
+        layout.addWidget(limits)
         layout.addStretch(1)
         return self._scroll(w)
 
@@ -1419,6 +1538,156 @@ class MainWindow(QMainWindow):
                 ),
             }
             Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _check_trace_tool(self) -> None:
+        result = check_sigrok_cli(self.trace_executable.text().strip() or "sigrok-cli")
+        self.trace_tool_status.setText(
+            ("AVAILABLE" if result.get("available") else "UNAVAILABLE")
+            + f" • {result.get('message', '')}"
+        )
+
+    def _scan_trace_devices(self) -> None:
+        result = scan_sigrok(self.trace_executable.text().strip() or "sigrok-cli")
+        self.trace_tool_status.setText(
+            ("SCAN OK" if result.get("ok") else "SCAN FAILED") + f" • {result.get('message', '')}"
+        )
+        self.trace_scan_output.setPlainText(str(result.get("output", "")))
+
+    def _trace_samplerate_hz(self) -> int:
+        text = self.trace_samplerate.text().strip().lower().replace("hz", "")
+        multiplier = 1
+        if text.endswith("m"):
+            multiplier = 1_000_000
+            text = text[:-1]
+        elif text.endswith("k"):
+            multiplier = 1_000
+            text = text[:-1]
+        value = int(float(text) * multiplier)
+        if value < 1 or value > 1_000_000_000:
+            raise ValueError("Sample rate must be between 1 Hz and 1 GHz")
+        return value
+
+    def _start_trace_capture(self) -> None:
+        if self.trace_capture_active:
+            return
+        if self.controller_source_kind != "raw_hid" or not self.controller_source_path:
+            QMessageBox.information(
+                self,
+                "Raw HID required",
+                "Select a named Raw HID device first so the electrical trace can be compared with controller reports.",
+            )
+            return
+        executable = self.trace_executable.text().strip() or "sigrok-cli"
+        tool = check_sigrok_cli(executable)
+        if not tool.get("available"):
+            QMessageBox.information(self, "sigrok unavailable", str(tool.get("message", "sigrok-cli was not found")))
+            return
+        try:
+            samplerate_hz = self._trace_samplerate_hz()
+        except ValueError as exc:
+            QMessageBox.information(self, "Invalid sample rate", str(exc))
+            return
+        timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        output_path = self.data_root / "electrical_traces" / f"{timestamp}_sigrok.csv"
+        config = SigrokCaptureConfig(
+            executable=str(tool["executable"]),
+            driver=self.trace_driver.text(),
+            samplerate_hz=samplerate_hz,
+            duration_s=float(self.trace_duration.value()),
+            output_path=output_path,
+            channels=self.trace_channels.text(),
+            triggers=self.trace_triggers.text(),
+            wait_trigger=self.trace_wait_trigger.isChecked(),
+        )
+        self.trace_capture_result = None
+        self.trace_capture_active = True
+        self.trace_capture_start_timestamp_ns = time.perf_counter_ns()
+        sync_method = "hardware-trigger-assisted" if config.wait_trigger and config.triggers.strip() else "host-start/finish-aligned"
+        self.trace_capture_status.setText(
+            f"RUNNING • {config.duration_s:g}s sigrok capture • synchronization: {sync_method}"
+        )
+        self._add_event(
+            "electrical_trace_started",
+            {
+                "command": config.command(),
+                "synchronization_method": sync_method,
+                "controller_source": self.controller_source_combo.currentText(),
+            },
+        )
+        self.trace_worker = SigrokCaptureWorker(config, self)
+        self.trace_worker.completed.connect(self._trace_capture_completed)
+        self.trace_worker.failed.connect(self._trace_capture_failed)
+        self.trace_worker.start()
+
+    def _trace_capture_completed(self, process_result: dict) -> None:
+        end_timestamp_ns = time.perf_counter_ns()
+        self.trace_capture_active = False
+        try:
+            trace_result = analyze_sigrok_csv(Path(process_result["output_path"]))
+            timestamps = list(self.controller_ts)
+            samples = list(self.controller_samples)
+            raw_reports = list(self.controller_raw_report_hex)
+            window = [
+                (timestamp, sample, raw_report)
+                for timestamp, sample, raw_report in zip(timestamps, samples, raw_reports)
+                if self.trace_capture_start_timestamp_ns <= timestamp <= end_timestamp_ns
+            ]
+            sync_method = "hardware-trigger-assisted" if self.trace_wait_trigger.isChecked() and self.trace_triggers.text().strip() else "host-start/finish-aligned"
+            trace_result["synchronization"] = {
+                "method": sync_method,
+                "controller_window_start_ns": self.trace_capture_start_timestamp_ns,
+                "controller_window_end_ns": end_timestamp_ns,
+                "limitation": (
+                    "Host alignment does not establish electrical-to-USB causation. A hardware trigger is still "
+                    "limited by the trigger wiring and instrument pretrigger configuration."
+                ),
+            }
+            if window:
+                hid_result = analyze_noise_capture(
+                    timestamps_ns=[item[0] for item in window],
+                    samples=[item[1] for item in window],
+                    raw_report_hex=[item[2] for item in window],
+                    capture_kind="electrical-trace-window",
+                    source_label=self.controller_source_combo.currentText(),
+                    device_metadata=self.controller_metadata,
+                )
+                trace_result["controller_raw_hid"] = hid_result
+            else:
+                trace_result["controller_raw_hid"] = {"evidence_class": "no-raw-hid-window", "sample_count": 0}
+            trace_result["attribution"] = "undetermined-until-electrical-and-raw-hid-signals-are-correlated"
+            trace_result["capture_process"] = process_result
+            self.trace_capture_result = trace_result
+            self.trace_capture_status.setText(
+                f"Complete • {trace_result['sample_count']} instrument samples • "
+                f"{trace_result['controller_raw_hid'].get('sample_count', 0)} Raw HID samples • "
+                f"{sync_method}. Export the evidence package for review."
+            )
+            self._add_event("electrical_trace_completed", trace_result)
+        except Exception as exc:
+            self.trace_capture_result = None
+            self.trace_capture_status.setText(f"Trace was captured but could not be analyzed: {exc}")
+        finally:
+            self.trace_worker = None
+
+    def _trace_capture_failed(self, message: str) -> None:
+        self.trace_capture_active = False
+        self.trace_capture_result = None
+        self.trace_capture_status.setText(f"sigrok capture failed: {message}")
+        self._add_event("electrical_trace_failed", {"message": message})
+        self.trace_worker = None
+
+    def _export_trace_evidence(self) -> None:
+        if not self.trace_capture_result:
+            QMessageBox.information(self, "Electrical trace", "Run a synchronized sigrok capture first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Electrical Trace Evidence",
+            str(self.data_root / "electrical_trace_evidence.json"),
+            "JSON (*.json)",
+        )
+        if path:
+            Path(path).write_text(json.dumps(self.trace_capture_result, indent=2), encoding="utf-8")
 
     def _start_capture(self) -> None:
         if self.capture_active:

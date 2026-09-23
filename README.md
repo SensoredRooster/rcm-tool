@@ -20,6 +20,7 @@ The application is measurement-focused. It does not inject game inputs, modify c
 - SQLite/WAL session storage, experiment history/timeline, JSON export, controller CSV export, saved baseline JSON, saved-session vs saved-session comparison, live-reference comparison, and self-contained HTML engineering reports containing plots, sweep response, timeline, metadata, and limitations.
 - Hardware-only acquisition and explicit unavailable states when a controller, measurement instrument, or generator is not connected.
 - Guided Raw HID noise-evidence workflow for neutral noise and movement/settling captures, with paired host timestamps, normalized samples, raw report bytes, and an explicit boundary against claiming firmware attribution from USB data alone.
+- Optional Electrical Trace page backed by an installed open-source sigrok-cli/libsigrok driver stack for oscilloscope or logic-analyzer capture, raw CSV retention, instrument-channel metrics, and explicitly labeled host or hardware-trigger alignment.
 - Automated tests plus Windows CI validation for unit tests, Qt desktop launch, hardware-only workflow, portable build, standalone one-file EXE, and Inno Setup installer.
 
 ## Measurement integrity

@@ -17,7 +17,7 @@ from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
 from signal_lab.reporting import write_html_report
-from signal_lab.ui import MainWindow
+from signal_lab.ui import NAV, MainWindow
 
 
 def pump(app: QApplication, seconds: float) -> None:
@@ -62,14 +62,15 @@ def main() -> int:
 
     preview_root = ROOT / "artifacts" / "ui-preview"
     preview_root.mkdir(parents=True, exist_ok=True)
-    for index, filename in (
-        (0, "dashboard.png"),
-        (1, "live_capture.png"),
-        (2, "controller_lab.png"),
-        (3, "oscillator_lab.png"),
-        (6, "correlation_lab.png"),
+    for page_name, filename in (
+        ("Dashboard", "dashboard.png"),
+        ("Live Capture", "live_capture.png"),
+        ("Controller Lab", "controller_lab.png"),
+        ("Electrical Trace", "electrical_trace.png"),
+        ("Oscillator Lab", "oscillator_lab.png"),
+        ("Correlation", "correlation_lab.png"),
     ):
-        window._navigate(index)
+        window._navigate(NAV.index(page_name))
         window._refresh_ui()
         pump(app, 0.08)
         image = window.grab()

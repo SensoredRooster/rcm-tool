@@ -78,4 +78,21 @@ The scope side should record at least:
 
 Use a high-impedance probe. Verify the scope ground/reference before connecting it to a controller, and use a differential probe when the measured node is not safely ground-referenced. Do not short sensor, battery, or USB power lines while probing a custom controller.
 
-The oscilloscope driver is intentionally not hard-coded yet. The next implementation needs the scope manufacturer/model, connection method (USB, LAN, or serial), and whether it exports CSV, waveform files, or SCPI readings.
+## Open-source electrical trace adapter
+
+The **Electrical Trace** page can call an installed `sigrok-cli` from the
+sigrok/libsigrok project. Sigrok supplies device-specific drivers for supported
+oscilloscopes and logic analyzers; RcmTool does not pretend that one SCPI
+dialect works for every instrument.
+
+The page can scan for devices, configure a driver, sample rate, channels,
+duration, and optional hardware trigger, then save the raw sigrok CSV beside a
+JSON evidence package. The package keeps instrument-measured channel metrics
+separate from the Raw HID window. If no physical trigger is configured, the
+relationship is labeled host-start/finish-aligned and cannot establish
+electrical-to-USB causation.
+
+Install sigrok/PulseView and make `sigrok-cli` available on PATH, or point the
+page at its executable. The exact driver, channel names, trigger expression,
+probe wiring, and sample rate remain hardware-specific and must be recorded in
+the evidence package.

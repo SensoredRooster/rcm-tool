@@ -9,6 +9,7 @@ from signal_lab.noise_attribution import analyze_noise_capture
 from signal_lab.storage import LabDatabase
 from signal_lab.reporting import write_html_report
 from signal_lab.sweep import make_sweep
+from signal_lab.trace_capture import SigrokCaptureConfig, analyze_sigrok_csv
 
 
 class SignalLabTests(unittest.TestCase):
@@ -218,6 +219,32 @@ class SignalLabTests(unittest.TestCase):
             controller_integrity.hid = original_hid
         self.assertEqual(len(devices), 1)
         self.assertEqual(devices[0]["vendor_id"], 0x057E)
+
+    def test_sigrok_capture_command_and_csv_metrics(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "trace.csv"
+            path.write_text("# sigrok\nTime,CH1,CH2\n0,0.0,1\n0.001,0.1,0\n0.002,0.0,1\n", encoding="utf-8")
+            config = SigrokCaptureConfig(
+                executable="sigrok-cli",
+                driver="demo",
+                samplerate_hz=1_000_000,
+                duration_s=1.0,
+                output_path=path,
+                channels="A0",
+                triggers="0=r",
+                wait_trigger=True,
+            )
+            command = config.command()
+            result = analyze_sigrok_csv(path)
+        self.assertIn("--driver", command)
+        self.assertIn("samplerate=1m", command)
+        self.assertIn("--wait-trigger", command)
+        self.assertEqual(result["sample_count"], 3)
+        self.assertEqual(result["channel_names"], ["CH1", "CH2"])
+        self.assertGreater(result["channels"]["CH1"]["peak_to_peak"], 0.0)
 
     def test_measurement_capability_probe_reflects_actual_queries(self):
         class FakeMeasurement:
