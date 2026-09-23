@@ -1297,53 +1297,66 @@ class MainWindow(QMainWindow):
 
         if current_page == "Controller Lab" and samples:
             last=samples[-1]
-            self.left_stick.set_position(last.get("lx",0),last.get("ly",0))
-            self.right_stick.set_position(last.get("rx",0),last.get("ry",0))
-            self.lt_bar.setValue(int(float(last.get("lt",0))*1000))
-            self.rt_bar.setValue(int(float(last.get("rt",0))*1000))
+            visual_source=self.controller_sources[-1][0] if self.controller_sources else ""
+            self.controller_view.set_state(last,visual_source)
+            self.controller_axes_readout.setText(
+                f"LX {float(last.get('lx',0)):+.4f}  •  LY {float(last.get('ly',0)):+.4f}  •  "
+                f"RX {float(last.get('rx',0)):+.4f}  •  RY {float(last.get('ry',0)):+.4f}  •  "
+                f"LT {float(last.get('lt',0))*100:.1f}%  •  RT {float(last.get('rt',0))*100:.1f}%"
+            )
             rolling=samples[-250:]
             stationary_noise,axis_spans=self._stationary_analog_noise(rolling,self.stationary_excursion.value())
             if stationary_noise is None:
                 largest=max(axis_spans.items(),key=lambda item:item[1]) if axis_spans else ("—",0.0)
                 self.axis_noise.setText(
-                    f"Stationary noise: unavailable • movement detected • max excursion {largest[0].upper()} {largest[1]:.5f} "
-                    f"(limit {self.stationary_excursion.value():.5f})"
+                    f"Noise floor unavailable while controls are moving • max excursion {largest[0].upper()} {largest[1]:.5f} "
+                    f"(stationary limit {self.stationary_excursion.value():.5f})"
                 )
             else:
                 self.axis_noise.setText(
-                    f"Stationary noise RMS: {stationary_noise:.6f} normalized units • "
+                    f"Stationary analog noise RMS {stationary_noise:.6f} normalized units • "
                     f"all-axis excursion ≤ {self.stationary_excursion.value():.5f}"
                 )
             self.axis_noise.setToolTip(METRIC_HELP["analog_noise"])
+
+            input_parts=[]
+            pressed=self.controller_view.pressed_names()
             if "buttons" in last:
-                parts=[f"Buttons mask: 0x{int(last.get('buttons',0)):04X}"]
-                if "dpad_x" in last or "dpad_y" in last:
-                    parts.append(f"D-pad: ({int(last.get('dpad_x',0))}, {int(last.get('dpad_y',0))})")
-                elif "dpad_pov" in last:
-                    pov=int(last.get("dpad_pov",65535))
-                    parts.append("D-pad POV: centered" if pov in (65535,4294967295) else f"D-pad POV: {pov/100:.1f}°")
-                self.button_capability.setText(" • ".join(parts))
+                input_parts.append("Pressed: "+(", ".join(pressed) if pressed else "none"))
+                input_parts.append(f"raw mask 0x{int(last.get('buttons',0)):04X}")
             else:
-                self.button_capability.setText("Buttons / D-pad: unavailable from the active decoded backend")
+                input_parts.append("Buttons: unavailable from active decoded backend")
+            if "dpad_x" in last or "dpad_y" in last:
+                dx,dy=int(last.get("dpad_x",0)),int(last.get("dpad_y",0))
+                input_parts.append(f"D-pad ({dx:+d}, {dy:+d})")
+            elif "dpad_pov" in last:
+                pov=int(last.get("dpad_pov",65535))
+                input_parts.append("D-pad centered" if pov in (65535,4294967295) else f"D-pad {pov/100:.1f}°")
+            elif "xinput" not in visual_source.lower():
+                input_parts.append("D-pad: unavailable/source-specific")
+            self.button_capability.setText(" • ".join(input_parts))
 
         if current_page == "Controller Lab" and self.controller_sources:
             source,quality=self.controller_sources[-1]
             meta=self.controller_metadata
-            fields=[source,f"Timing source quality: {quality}"]
-            name=meta.get("controller_name")
-            if name and name not in source: fields.append(f"Controller: {name}")
+            name=meta.get("controller_name") or source
+            identity=[str(name),f"Source: {source}",f"Timing: {quality}"]
             vid,pid=meta.get("vid"),meta.get("pid")
-            if vid is not None: fields.append(f"VID: {int(vid):04X}")
-            if pid is not None: fields.append(f"PID: {int(pid):04X}")
-            if meta.get("usb_path"): fields.append(f"USB path: {meta['usb_path']}")
-            if meta.get("hid_interface") is not None: fields.append(f"HID interface: {meta['hid_interface']}")
-            self.controller_meta.setText("\n".join(fields))
-            optional=[
-                f"Firmware: {meta.get('firmware_release','Unavailable')}",
-                f"Battery: {meta.get('battery_status','Unavailable')}",
-                f"Connection: {meta.get('connection_method','Unavailable')}",
+            if vid is not None and pid is not None:
+                identity.append(f"VID:PID {int(vid):04X}:{int(pid):04X}")
+            self.controller_meta.setText("  •  ".join(identity))
+
+            detail_parts=[
+                f"Backend {meta.get('backend','Unavailable')}",
+                f"Connection {meta.get('connection_method','Unavailable')}",
+                f"Firmware {meta.get('firmware_release','Unavailable')}",
+                f"Battery {meta.get('battery_status','Unavailable')}",
             ]
-            self.controller_capability.setText(" • ".join(optional))
+            if meta.get("hid_interface") is not None:
+                detail_parts.append(f"HID interface {meta['hid_interface']}")
+            if meta.get("usb_path"):
+                detail_parts.append(f"USB path {meta['usb_path']}")
+            self.controller_capability.setText("  •  ".join(detail_parts))
 
         if current_page == "Correlation":
             self.corr_card.set_value(
