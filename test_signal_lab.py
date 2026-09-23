@@ -3,7 +3,7 @@ from pathlib import Path
 import unittest
 
 from signal_lab.analysis import oscillator_metrics, pearson_correlation, timing_metrics
-from signal_lab.instruments import SafetyLimits, SimulatedInstrument
+from signal_lab.instruments import SafetyLimits, SimulatedInstrument, VisaScpiMeasurementInstrument
 from signal_lab.simulation import GamepadSimulator, SimulatedGamepadConfig, OscillatorSimulator, SimulatedOscillatorConfig
 from signal_lab.storage import LabDatabase
 from signal_lab.sweep import make_sweep
@@ -41,6 +41,11 @@ class SignalLabTests(unittest.TestCase):
             limits.validate(frequency_hz=2000, amplitude_vpp=.1, offset_v=0)
         instrument = SimulatedInstrument()
         self.assertFalse(instrument.output_enabled())
+
+    def test_measurement_role_cannot_enable_output(self):
+        measurement = VisaScpiMeasurementInstrument.__new__(VisaScpiMeasurementInstrument)
+        with self.assertRaises(RuntimeError):
+            measurement.set_output(True)
 
     def test_sweep_log(self):
         plan = make_sweep(100, 10000, 3, logarithmic=True)

@@ -1,4 +1,4 @@
-"""Instrument abstraction with output-off-by-default safety semantics."""
+"""SCPI/VISA instrument adapters with explicit measurement/source roles."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -53,6 +53,9 @@ class InstrumentAdapter:
     def measure_frequency_hz(self) -> float | None:
         return None
 
+    def measure_duty_cycle_percent(self) -> float | None:
+        return None
+
     def close(self) -> None:
         pass
 
@@ -60,12 +63,8 @@ class InstrumentAdapter:
 class SimulatedInstrument(InstrumentAdapter):
     name = "Simulation Instrument"
     capabilities = InstrumentCapabilities(
-        frequency=True,
-        period=True,
-        duty_cycle=True,
-        waveform_capture=True,
-        generator_output=True,
-        high_resolution_timestamps=True,
+        frequency=True, period=True, duty_cycle=True, waveform_capture=True,
+        generator_output=True, high_resolution_timestamps=True,
     )
 
     def __init__(self) -> None:
@@ -82,31 +81,76 @@ class SimulatedInstrument(InstrumentAdapter):
         return self._output
 
 
-class VisaScpiInstrument(InstrumentAdapter):
-    """Generic VISA/SCPI adapter with conservative output state."""
-
-    capabilities = InstrumentCapabilities(frequency=True, period=True, generator_output=True)
-
+class _VisaBase(InstrumentAdapter):
     def __init__(self, resource_name: str, timeout_ms: int = 1500) -> None:
         if pyvisa is None:
             raise RuntimeError("PyVISA is not installed")
+        self.resource_name = resource_name
         self.rm = pyvisa.ResourceManager()
         self.resource = self.rm.open_resource(resource_name)
         self.resource.timeout = timeout_ms
-        self._output = False
-        self.set_output(False)
 
     def identify(self) -> str:
         try:
             return str(self.resource.query("*IDN?")).strip()
         except Exception:
-            return "SCPI instrument"
+            return f"SCPI instrument ({self.resource_name})"
 
     def write(self, command: str) -> None:
         self.resource.write(command)
 
     def query(self, command: str) -> str:
         return str(self.resource.query(command)).strip()
+
+    def close(self) -> None:
+        try:
+            self.resource.close()
+        finally:
+            self.rm.close()
+
+
+class VisaScpiMeasurementInstrument(_VisaBase):
+    """Read-only role for counters/scopes/analyzers. Construction sends no OUTP command."""
+
+    name = "VISA/SCPI measurement instrument"
+    capabilities = InstrumentCapabilities(frequency=True, period=True, duty_cycle=True)
+
+    def _query_float(self, commands: tuple[str, ...]) -> float | None:
+        for command in commands:
+            try:
+                value = float(self.resource.query(command))
+                if value == value:
+                    return value
+            except Exception:
+                continue
+        return None
+
+    def measure_frequency_hz(self) -> float | None:
+        return self._query_float((
+            "MEAS:FREQ?", "MEASure:FREQuency?",
+            "FETCh:FREQuency?", "READ:FREQuency?",
+        ))
+
+    def measure_duty_cycle_percent(self) -> float | None:
+        return self._query_float((
+            "MEAS:DUTY?", "MEASure:DCYCle?", "FETCh:DCYCle?",
+        ))
+
+
+class VisaScpiGenerator(_VisaBase):
+    """Generic SCPI generator role. Output is forced OFF immediately on connect."""
+
+    name = "VISA/SCPI generator"
+    capabilities = InstrumentCapabilities(generator_output=True)
+
+    def __init__(self, resource_name: str, timeout_ms: int = 1500) -> None:
+        super().__init__(resource_name, timeout_ms)
+        self._output = False
+        try:
+            self.set_output(False)
+        except Exception:
+            super().close()
+            raise RuntimeError("Could not establish a safe OUTPUT OFF state on this SCPI resource")
 
     def set_output(self, enabled: bool) -> None:
         self.resource.write("OUTP ON" if enabled else "OUTP OFF")
@@ -116,15 +160,14 @@ class VisaScpiInstrument(InstrumentAdapter):
         return self._output
 
     def configure_generator(
-        self,
-        *,
-        frequency_hz: float,
-        amplitude_vpp: float,
-        offset_v: float,
-        waveform: str,
-        limits: SafetyLimits,
+        self, *, frequency_hz: float, amplitude_vpp: float, offset_v: float,
+        waveform: str, limits: SafetyLimits,
     ) -> None:
-        limits.validate(frequency_hz=frequency_hz, amplitude_vpp=amplitude_vpp, offset_v=offset_v)
+        limits.validate(
+            frequency_hz=frequency_hz,
+            amplitude_vpp=amplitude_vpp,
+            offset_v=offset_v,
+        )
         wave = waveform.upper()
         if wave not in {"SINE", "SQU", "RAMP", "PULS", "NOIS"}:
             raise ValueError("Unsupported waveform")
@@ -133,23 +176,15 @@ class VisaScpiInstrument(InstrumentAdapter):
         self.resource.write(f"VOLT {amplitude_vpp:.12g}")
         self.resource.write(f"VOLT:OFFS {offset_v:.12g}")
 
-    def measure_frequency_hz(self) -> float | None:
-        for command in ("MEAS:FREQ?", "MEASure:FREQuency?"):
-            try:
-                return float(self.resource.query(command))
-            except Exception:
-                continue
-        return None
-
     def close(self) -> None:
         try:
             self.set_output(False)
         except Exception:
             pass
-        try:
-            self.resource.close()
-        finally:
-            self.rm.close()
+        super().close()
+
+
+VisaScpiInstrument = VisaScpiGenerator
 
 
 def list_visa_resources() -> list[str]:

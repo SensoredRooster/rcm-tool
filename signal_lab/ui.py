@@ -19,7 +19,11 @@ from PySide6.QtWidgets import (
 from . import __version__
 from .analysis import oscillator_metrics, pearson_correlation, timing_metrics
 from .controller import ControllerAcquisition
-from .instruments import SafetyLimits, SimulatedInstrument, VisaScpiInstrument, list_visa_resources
+from .instruments import (
+    SafetyLimits, SimulatedInstrument, VisaScpiGenerator,
+    VisaScpiMeasurementInstrument, list_visa_resources,
+)
+from .oscillator import OscillatorAcquisition
 from .reporting import write_html_report
 from .simulation import GamepadSimulator, OscillatorSimulator
 from .storage import LabDatabase
@@ -256,6 +260,9 @@ class LabWindow(QMainWindow):
 
         self.hw_queue = queue.SimpleQueue()
         self.hw_acquisition = ControllerAcquisition(self.hw_queue.put)
+        self.osc_queue = queue.SimpleQueue()
+        self.osc_measurement_instrument = None
+        self.osc_acquisition = None
         self.sweep_timer = QTimer(self)
         self.sweep_timer.timeout.connect(self._advance_sweep)
         self.sweep_plan = []
@@ -420,6 +427,28 @@ class LabWindow(QMainWindow):
         controls.addWidget(self.nominal_spin)
         controls.addStretch(1)
         l.addLayout(controls)
+
+        osc_connect, oc = _card()
+        osc_form = QFormLayout()
+        oc.addLayout(osc_form)
+        l.addWidget(osc_connect)
+        self.osc_resource_combo = QComboBox()
+        self.osc_resource_combo.addItem("Simulation oscillator")
+        self.osc_resource_combo.addItems(list_visa_resources())
+        osc_form.addRow("Measurement source", self.osc_resource_combo)
+        osc_actions = QHBoxLayout()
+        self.osc_connect_btn = QPushButton("Connect measurement instrument")
+        self.osc_connect_btn.clicked.connect(self._connect_oscillator_instrument)
+        osc_actions.addWidget(self.osc_connect_btn)
+        self.osc_disconnect_btn = QPushButton("Disconnect")
+        self.osc_disconnect_btn.clicked.connect(self._disconnect_oscillator_instrument)
+        osc_actions.addWidget(self.osc_disconnect_btn)
+        osc_actions.addStretch(1)
+        oc.addLayout(osc_actions)
+        self.osc_source_status = QLabel("Simulation oscillator · known synthetic data")
+        self.osc_source_status.setObjectName("Muted")
+        oc.addWidget(self.osc_source_status)
+
         og = QGridLayout()
         self.osc_cards = {}
         osc_specs = [
@@ -445,7 +474,16 @@ class LabWindow(QMainWindow):
         l.addWidget(form_card)
         self.instrument_combo = QComboBox()
         self.instrument_combo.addItems(["Simulation Instrument"] + list_visa_resources())
-        form.addRow("Instrument", self.instrument_combo)
+        form.addRow("Generator", self.instrument_combo)
+        generator_row = QHBoxLayout()
+        self.generator_connect_btn = QPushButton("Connect generator")
+        self.generator_connect_btn.clicked.connect(self._connect_generator)
+        generator_row.addWidget(self.generator_connect_btn)
+        self.generator_disconnect_btn = QPushButton("Disconnect generator")
+        self.generator_disconnect_btn.clicked.connect(self._disconnect_generator)
+        generator_row.addWidget(self.generator_disconnect_btn)
+        generator_row.addStretch(1)
+        form.addRow("Connection", generator_row)
         self.wave_combo = QComboBox()
         self.wave_combo.addItems(["SINE", "SQU", "RAMP", "PULS", "NOIS"])
         form.addRow("Waveform", self.wave_combo)
@@ -694,6 +732,24 @@ class LabWindow(QMainWindow):
                 )
                 drained += 1
 
+            osc_drained = 0
+            while osc_drained < 100:
+                try:
+                    measurement = self.osc_queue.get_nowait()
+                except queue.Empty:
+                    break
+                self.osc_times.append(measurement.timestamp_ns)
+                self.osc_freqs.append(measurement.frequency_hz)
+                self.db.add_oscillator_sample(
+                    self.session_id,
+                    measurement.timestamp_ns,
+                    measurement.frequency_hz,
+                    source=measurement.source,
+                    duty_cycle_percent=measurement.duty_cycle_percent,
+                    quality="measured",
+                )
+                osc_drained += 1
+
         if len(self.timestamps) % 1000 < 60:
             self.db.flush()
 
@@ -902,7 +958,7 @@ class LabWindow(QMainWindow):
                     self.instrument.amplitude_vpp = self.stim_amp.value()
                     self.instrument.offset_v = self.stim_offset.value()
                     self.instrument.waveform = self.wave_combo.currentText()
-                elif isinstance(self.instrument, VisaScpiInstrument):
+                elif isinstance(self.instrument, VisaScpiGenerator):
                     self.instrument.configure_generator(
                         frequency_hz=self.stim_freq.value(),
                         amplitude_vpp=self.stim_amp.value(),
@@ -933,6 +989,79 @@ class LabWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Instrument safety", str(exc))
             self._emergency_off()
+
+    def _connect_generator(self) -> None:
+        selected = self.instrument_combo.currentText()
+        if selected == "Simulation Instrument":
+            self._disconnect_generator(close_simulation=False)
+            self.instrument = SimulatedInstrument()
+            self.interference_status.setText("Simulation generator connected · output OFF")
+            return
+        self._emergency_off()
+        self._disconnect_generator(close_simulation=False)
+        try:
+            candidate = VisaScpiGenerator(selected)
+            ident = candidate.identify()
+            self.instrument = candidate
+            self.interference_status.setText(f"{ident} · output OFF")
+            self.db.add_event(
+                self.session_id, time.perf_counter_ns(), "generator_connected",
+                {"resource": selected, "identity": ident},
+            )
+            self.db.flush()
+        except Exception as exc:
+            self.instrument = SimulatedInstrument()
+            QMessageBox.critical(self, "Generator connection", str(exc))
+            self.interference_status.setText("Generator connection failed · simulation source restored")
+
+    def _disconnect_generator(self, close_simulation: bool = True) -> None:
+        try:
+            self.instrument.set_output(False)
+        except Exception:
+            pass
+        if close_simulation or not isinstance(self.instrument, SimulatedInstrument):
+            try:
+                self.instrument.close()
+            except Exception:
+                pass
+        self.instrument = SimulatedInstrument()
+        self.arm_btn.setText("Enable Output")
+        self.interference_status.setText("Simulation generator · output OFF")
+
+    def _connect_oscillator_instrument(self) -> None:
+        selected = self.osc_resource_combo.currentText()
+        self._disconnect_oscillator_instrument()
+        if selected == "Simulation oscillator":
+            self.osc_source_status.setText("Simulation oscillator · known synthetic data")
+            return
+        try:
+            instrument = VisaScpiMeasurementInstrument(selected)
+            identity = instrument.identify()
+            self.osc_measurement_instrument = instrument
+            self.osc_acquisition = OscillatorAcquisition(instrument, self.osc_queue.put)
+            self.osc_acquisition.start()
+            self.osc_source_status.setText(f"{identity} · frequency acquisition active")
+            self.db.add_event(
+                self.session_id, time.perf_counter_ns(), "oscillator_instrument_connected",
+                {"resource": selected, "identity": identity},
+            )
+            self.db.flush()
+        except Exception as exc:
+            self.osc_source_status.setText("Measurement instrument connection failed")
+            QMessageBox.critical(self, "Oscillator instrument", str(exc))
+
+    def _disconnect_oscillator_instrument(self) -> None:
+        if self.osc_acquisition is not None:
+            self.osc_acquisition.stop()
+            self.osc_acquisition = None
+        if self.osc_measurement_instrument is not None:
+            try:
+                self.osc_measurement_instrument.close()
+            except Exception:
+                pass
+            self.osc_measurement_instrument = None
+        if hasattr(self, "osc_source_status"):
+            self.osc_source_status.setText("No physical oscillator measurement instrument connected")
 
     def _emergency_off(self) -> None:
         try:
@@ -1051,6 +1180,20 @@ class LabWindow(QMainWindow):
         for ri, row in enumerate(rows):
             for ci, value in enumerate(row):
                 self.instrument_table.setItem(ri, ci, QTableWidgetItem(str(value)))
+        if hasattr(self, "instrument_combo"):
+            selected = self.instrument_combo.currentText()
+            self.instrument_combo.clear()
+            self.instrument_combo.addItems(["Simulation Instrument"] + resources)
+            index = self.instrument_combo.findText(selected)
+            if index >= 0:
+                self.instrument_combo.setCurrentIndex(index)
+        if hasattr(self, "osc_resource_combo"):
+            selected = self.osc_resource_combo.currentText()
+            self.osc_resource_combo.clear()
+            self.osc_resource_combo.addItems(["Simulation oscillator"] + resources)
+            index = self.osc_resource_combo.findText(selected)
+            if index >= 0:
+                self.osc_resource_combo.setCurrentIndex(index)
 
     def _export_json(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -1113,6 +1256,11 @@ class LabWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._emergency_off()
+        self._disconnect_oscillator_instrument()
+        try:
+            self.instrument.close()
+        except Exception:
+            pass
         self.hw_acquisition.stop()
         self.db.flush()
         self.db.close()
