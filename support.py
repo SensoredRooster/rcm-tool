@@ -189,6 +189,38 @@ def report_issue() -> None:
     webbrowser.open(f"{ISSUES_URL}?title={title}&body={body}")
 
 
+def install_exception_hooks() -> None:
+    original_sys = sys.excepthook
+
+    def sys_hook(exc_type, exc_value, exc_tb):
+        try:
+            log_event(
+                "uncaught_exception",
+                level="ERROR",
+                exception_type=getattr(exc_type, "__name__", str(exc_type)),
+                error=str(exc_value),
+            )
+        finally:
+            original_sys(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = sys_hook
+
+    original_thread = getattr(threading, "excepthook", None)
+    if original_thread is not None:
+        def thread_hook(args):
+            try:
+                log_event(
+                    "thread_uncaught_exception",
+                    level="ERROR",
+                    thread=getattr(getattr(args, "thread", None), "name", None),
+                    exception_type=getattr(getattr(args, "exc_type", None), "__name__", "unknown"),
+                    error=str(getattr(args, "exc_value", "")),
+                )
+            finally:
+                original_thread(args)
+        threading.excepthook = thread_hook
+
+
 def start_heartbeat(interval: float = 1.0) -> None:
     global _HEARTBEAT_THREAD
     if _HEARTBEAT_THREAD and _HEARTBEAT_THREAD.is_alive():
@@ -206,4 +238,4 @@ def start_heartbeat(interval: float = 1.0) -> None:
     _HEARTBEAT_THREAD.start()
 
 
-log_event("app_support_initialized", health=health_snapshot())
+install_exception_hooks()\nlog_event("app_support_initialized", health=health_snapshot())
