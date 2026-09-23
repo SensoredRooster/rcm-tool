@@ -1,6 +1,6 @@
 """Compatibility entry point for the RCM Tool repository.
 
-The modern application is Gamepad Signal Lab. If the Qt dependency is not installed,
+The modern application is RcmTool. If the Qt dependency is not installed,
 the original Tk bench remains available as a compatibility fallback.
 """
 
@@ -13,7 +13,7 @@ def main() -> int | None:
         if exc.name and exc.name.startswith("PySide6"):
             from controller_integrity import main as legacy_main
             print("PySide6 is not installed; launching the legacy RCM capture bench.")
-            print("Install the current requirements to launch Gamepad Signal Lab.")
+            print("Install the current requirements to launch RcmTool.")
             legacy_main()
             return None
         raise
