@@ -152,6 +152,22 @@ class LabDatabase:
             for row in rows
         ]
 
+    def recent_events(self, session_id: str, limit: int = 100) -> list[dict]:
+        rows = self.conn.execute(
+            """SELECT timestamp_ns,event_type,payload_json
+               FROM events WHERE session_id=?
+               ORDER BY id DESC LIMIT ?""",
+            (session_id, max(1, min(int(limit), 1000))),
+        ).fetchall()
+        return [
+            {
+                "timestamp_ns": row[0],
+                "event_type": row[1],
+                "payload": json.loads(row[2]),
+            }
+            for row in reversed(rows)
+        ]
+
     def close(self) -> None:
         self.conn.commit()
         self.conn.close()
