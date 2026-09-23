@@ -238,4 +238,5 @@ def start_heartbeat(interval: float = 1.0) -> None:
     _HEARTBEAT_THREAD.start()
 
 
-install_exception_hooks()\nlog_event("app_support_initialized", health=health_snapshot())
+install_exception_hooks()
+log_event("app_support_initialized", health=health_snapshot())
