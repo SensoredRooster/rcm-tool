@@ -11,8 +11,9 @@ from pathlib import Path
 import queue
 import threading
 import time
+import webbrowser
 
-from PySide6.QtCore import QSettings, QTimer, Qt
+from PySide6.QtCore import QSettings, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
@@ -25,6 +26,7 @@ from . import __version__
 from .analysis import oscillator_metrics, pearson_correlation, timing_metrics
 from .controller import ControllerAcquisition, ControllerMeasurement
 from .instruments import SafetyLimits, SimulatedInstrument, VisaScpiGenerator, VisaScpiMeasurementInstrument, list_visa_resources
+from .metric_catalog import CHART_HELP, METRIC_HELP
 from .oscillator import OscillatorAcquisition, OscillatorMeasurement
 from .reporting import write_html_report
 from .simulation import GamepadSimulator, OscillatorSimulator, stimulus_response
@@ -32,18 +34,31 @@ from .storage import LabDatabase
 from .sweep import make_sweep
 from .theme import DARK, LIGHT
 from .widgets import HeatMapWidget, LineChart, MetricCard, StickView
+from support import (
+    SESSION_ID as SUPPORT_SESSION_ID,
+    create_support_bundle,
+    health_snapshot,
+    log_event as support_log_event,
+    open_logs_folder,
+    open_repository,
+    report_issue,
+    start_heartbeat,
+    upload_support_bundle,
+)
 
 NAV = [
     "Dashboard", "Live Capture", "Controller Lab", "Oscillator Lab",
     "Interference Lab", "Sweep Lab", "Correlation", "Experiments",
-    "Compare", "Reports", "Instruments", "Settings",
+    "Compare", "Reports", "Instruments", "Support", "Settings",
 ]
+
+TESTER_SHARE_URL = "https://rcm-tool-share.sensoredrooster-com.workers.dev"
 
 
 
 def card(title: str) -> tuple[QFrame, QVBoxLayout]:
     frame = QFrame()
-    frame.setObjectName("Card")
+    frame.setObjectName("SectionCard")
     layout = QVBoxLayout(frame)
     layout.setContentsMargins(16, 15, 16, 16)
     layout.setSpacing(10)
@@ -66,6 +81,17 @@ def page(title: str, subtitle: str) -> tuple[QWidget, QVBoxLayout]:
     layout.addWidget(heading)
     layout.addWidget(desc)
     return outer, layout
+
+
+class SupportUploadWorker(QThread):
+    completed = Signal(dict)
+    failed = Signal(str)
+
+    def run(self) -> None:
+        try:
+            self.completed.emit(upload_support_bundle())
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class WelcomeDialog(QDialog):
@@ -169,7 +195,11 @@ class MainWindow(QMainWindow):
         self.current_corr: float | None = None
         self.corr_time_axis: list[int] = []
         self.visualization_paused = False
+        self.host_timer_resolution_ns = time.get_clock_info("perf_counter").resolution * 1_000_000_000.0
+        self.support_upload_worker: SupportUploadWorker | None = None
 
+        start_heartbeat()
+        support_log_event("gamepad_signal_lab_start", version=__version__)
         self._build_ui()
         self._apply_saved_settings()
 
@@ -193,13 +223,12 @@ class MainWindow(QMainWindow):
 
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(226)
+        sidebar.setFixedWidth(238)
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(12, 16, 12, 14)
 
         brand = QLabel("GAMEPAD\nSIGNAL LAB")
-        brand.setObjectName("Title")
-        brand.setStyleSheet("font-size: 15pt;")
+        brand.setObjectName("Brand")
         side.addWidget(brand)
         byline = QLabel("Measurement workstation")
         byline.setObjectName("Muted")
@@ -258,7 +287,7 @@ class MainWindow(QMainWindow):
             self._dashboard_page, self._live_page, self._controller_page, self._oscillator_page,
             self._interference_page, self._sweep_page, self._correlation_page,
             self._experiments_page, self._compare_page, self._reports_page,
-            self._instruments_page, self._settings_page,
+            self._instruments_page, self._support_page, self._settings_page,
         ]:
             self.stack.addWidget(builder())
         work_layout.addWidget(self.stack, 1)
@@ -289,6 +318,7 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(widget)
         return scroll
 
@@ -616,6 +646,111 @@ class MainWindow(QMainWindow):
         self.cap_table=QTableWidget(0,3); self.cap_table.setHorizontalHeaderLabels(["Role","Capability","Status"]); layout.addWidget(self.cap_table)
         off=QPushButton("EMERGENCY OUTPUT OFF"); off.setObjectName("Danger"); off.clicked.connect(self._emergency_off); layout.addWidget(off,alignment=Qt.AlignmentFlag.AlignRight)
         return w
+
+    def _support_page(self) -> QWidget:
+        w, layout = page(
+            "Support & Diagnostics",
+            "The existing local-first tester support pipeline is preserved here. Nothing is uploaded until the tester explicitly confirms it.",
+        )
+        status_card, status_layout = card("PRIVATE SUPPORT SESSION")
+        session = QLabel(f"Session ID  •  {SUPPORT_SESSION_ID}")
+        session.setObjectName("Good")
+        status_layout.addWidget(session)
+        privacy = QLabel(
+            "Runtime telemetry stays under %LOCALAPPDATA%\\RCMTool\\logs until you explicitly send a redacted support bundle."
+        )
+        privacy.setObjectName("Muted")
+        privacy.setWordWrap(True)
+        status_layout.addWidget(privacy)
+        layout.addWidget(status_card)
+
+        health_card, health_layout = card("HEALTH SNAPSHOT")
+        self.support_health = QPlainTextEdit()
+        self.support_health.setReadOnly(True)
+        self.support_health.setMinimumHeight(230)
+        health_layout.addWidget(self.support_health)
+        refresh = QPushButton("Refresh Snapshot")
+        refresh.clicked.connect(self._refresh_support_health)
+        health_layout.addWidget(refresh, alignment=Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(health_card)
+
+        actions_card, actions_layout = card("TESTER → DEVELOPER")
+        primary = QHBoxLayout()
+        bundle = QPushButton("Create Redacted Bundle")
+        bundle.clicked.connect(self._create_support_bundle)
+        self.send_support_button = QPushButton("Send Diagnostics to Developer")
+        self.send_support_button.setObjectName("Primary")
+        self.send_support_button.clicked.connect(self._send_support_bundle)
+        primary.addWidget(bundle)
+        primary.addWidget(self.send_support_button)
+        primary.addStretch(1)
+        actions_layout.addLayout(primary)
+
+        secondary = QHBoxLayout()
+        logs = QPushButton("Open Logs Folder"); logs.clicked.connect(open_logs_folder)
+        issue = QPushButton("Report GitHub Issue"); issue.clicked.connect(report_issue)
+        repo_button = QPushButton("Open Repository"); repo_button.clicked.connect(open_repository)
+        tester_share = QPushButton("Tester Share"); tester_share.clicked.connect(lambda: webbrowser.open(TESTER_SHARE_URL))
+        for button in (logs, issue, repo_button, tester_share):
+            secondary.addWidget(button)
+        secondary.addStretch(1)
+        actions_layout.addLayout(secondary)
+
+        self.support_status = QLabel("No upload has been requested.")
+        self.support_status.setObjectName("Muted")
+        self.support_status.setWordWrap(True)
+        actions_layout.addWidget(self.support_status)
+        layout.addWidget(actions_card)
+        layout.addStretch(1)
+        self._refresh_support_health()
+        return self._scroll(w)
+
+    def _refresh_support_health(self) -> None:
+        if hasattr(self, "support_health"):
+            self.support_health.setPlainText(json.dumps(health_snapshot(), indent=2))
+
+    def _create_support_bundle(self) -> None:
+        try:
+            path = create_support_bundle()
+            self.support_status.setText(f"Redacted support bundle created locally: {path}")
+            QMessageBox.information(self, "Support bundle created", f"Created locally:\n{path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Support bundle failed", str(exc))
+
+    def _send_support_bundle(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Send diagnostics to developer?",
+            "Create and upload a redacted diagnostics bundle to the RCM Tool developer?\n\n"
+            "The bundle contains support logs and a health manifest. It intentionally excludes certification reports, raw controller samples, and raw HID captures.\n\n"
+            "Nothing is uploaded unless you choose Yes.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if self.support_upload_worker is not None and self.support_upload_worker.isRunning():
+            return
+        self.send_support_button.setEnabled(False)
+        self.support_status.setText("Uploading redacted diagnostics…")
+        self.support_upload_worker = SupportUploadWorker(self)
+        self.support_upload_worker.completed.connect(self._support_upload_complete)
+        self.support_upload_worker.failed.connect(self._support_upload_failed)
+        self.support_upload_worker.start()
+
+    def _support_upload_complete(self, result: dict) -> None:
+        self.send_support_button.setEnabled(True)
+        self.support_status.setText(
+            f"Diagnostics sent successfully • HTTP {result.get('status', '?')} • session {SUPPORT_SESSION_ID}"
+        )
+        self._add_event("support_diagnostics_sent", {"status": result.get("status")})
+        QMessageBox.information(self, "Diagnostics sent", f"Upload completed successfully.\nHTTP status: {result.get('status')}")
+
+    def _support_upload_failed(self, message: str) -> None:
+        self.send_support_button.setEnabled(True)
+        self.support_status.setText("Upload failed. A local support bundle can still be created and shared manually.")
+        self._add_event("support_diagnostics_failed", {"error": message})
+        QMessageBox.critical(self, "Diagnostics upload failed", message)
 
     def _settings_page(self) -> QWidget:
         w, layout = page("Settings", "Measurement, safety, data, and performance controls.")
@@ -1497,6 +1632,10 @@ class MainWindow(QMainWindow):
     def _add_event(self,event_type:str,payload:dict) -> None:
         ts=time.perf_counter_ns(); self.events.append((ts,event_type,dict(payload)))
         if self.capture_active and self.session_id: self.db.add_event(self.session_id,ts,event_type,payload)
+        try:
+            support_log_event("signal_lab_event", event_type=event_type, details=payload)
+        except Exception:
+            pass
         self._update_timeline()
 
     def _update_timeline(self) -> None:
@@ -1801,6 +1940,10 @@ class MainWindow(QMainWindow):
         self._emergency_off()
         if self.controller_acquisition: self.controller_acquisition.stop()
         self._disconnect_instrument(quiet=True)
+        try:
+            support_log_event("gamepad_signal_lab_stop", version=__version__)
+        except Exception:
+            pass
         self.db.close(); event.accept()
 
 
