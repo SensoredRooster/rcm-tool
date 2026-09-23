@@ -13,6 +13,7 @@ SCRIPTS = (
     "apply_pair_delta.py",
     "apply_injection.py",
     "apply_after_noise.py",
+    "apply_hid_signal.py",
     "apply_theme.py",
 )
 
