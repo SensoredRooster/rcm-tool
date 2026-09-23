@@ -85,6 +85,20 @@ def main() -> int:
         if pixmap.isNull() or not pixmap.save(str(preview_root / filename), "PNG"):
             raise RuntimeError(f"Failed to capture {filename}")
 
+    # Verify both manual controller views exist independently of auto detection.
+    window._navigate(2)
+    for family, filename in (("xbox", "controller_xbox.png"), ("dualsense", "controller_dualsense.png")):
+        index = window.controller_skin_combo.findData(family)
+        if index < 0:
+            raise RuntimeError(f"Missing controller view option: {family}")
+        window.controller_skin_combo.setCurrentIndex(index)
+        window._refresh_ui()
+        pump(app, 0.2)
+        pixmap = window.grab()
+        if pixmap.isNull() or not pixmap.save(str(preview_root / filename), "PNG"):
+            raise RuntimeError(f"Failed to capture {filename}")
+    window.controller_skin_combo.setCurrentIndex(window.controller_skin_combo.findData("auto"))
+
     window.close()
     app.processEvents()
     print("Native Windows UI previews captured")
