@@ -803,12 +803,25 @@ class MainWindow(QMainWindow):
         form=QFormLayout()
         self.theme_combo=QComboBox(); self.theme_combo.addItems(["Dark","Light"]); self.theme_combo.setCurrentText(self.theme_name); self.theme_combo.currentTextChanged.connect(self._change_theme)
         self.baseline_seconds=QSpinBox(); self.baseline_seconds.setRange(5,3600); self.baseline_seconds.setValue(60); self.baseline_seconds.setSuffix(" s")
+        self.timing_reference_mode=QComboBox()
+        self.timing_reference_mode.addItem("Measured median interval (recommended)","median")
+        self.timing_reference_mode.addItem("Configured reference rate","configured")
+        self.timing_reference_mode.setToolTip(
+            "Measured median derives the timing reference from the capture itself. Configured reference uses the field below and should only be selected intentionally."
+        )
         self.expected_rate=QDoubleSpinBox(); self.expected_rate.setRange(1,8000); self.expected_rate.setValue(1000); self.expected_rate.setSuffix(" Hz")
-        self.late_factor=QDoubleSpinBox(); self.late_factor.setRange(1.01,10.0); self.late_factor.setDecimals(2); self.late_factor.setValue(1.50); self.late_factor.setSuffix(" × expected interval")
+        self.expected_rate.setToolTip("Used only when Timing reference is set to Configured reference rate.")
+        self.late_factor=QDoubleSpinBox(); self.late_factor.setRange(1.01,10.0); self.late_factor.setDecimals(2); self.late_factor.setValue(1.50); self.late_factor.setSuffix(" × reference interval")
         self.outlier_sigma=QDoubleSpinBox(); self.outlier_sigma.setRange(0.5,20.0); self.outlier_sigma.setDecimals(2); self.outlier_sigma.setValue(4.0); self.outlier_sigma.setSuffix(" σ")
         self.graph_refresh=QSpinBox(); self.graph_refresh.setRange(33,1000); self.graph_refresh.setValue(100); self.graph_refresh.setSuffix(" ms")
         self.graph_refresh.valueChanged.connect(lambda v: self.ui_timer.setInterval(v) if hasattr(self,"ui_timer") else None)
-        form.addRow("Theme",self.theme_combo); form.addRow("Default baseline duration",self.baseline_seconds); form.addRow("Expected polling rate",self.expected_rate); form.addRow("Late-report threshold",self.late_factor); form.addRow("Oscillator outlier threshold",self.outlier_sigma); form.addRow("Graph refresh interval",self.graph_refresh)
+        form.addRow("Theme",self.theme_combo)
+        form.addRow("Default baseline duration",self.baseline_seconds)
+        form.addRow("Timing reference",self.timing_reference_mode)
+        form.addRow("Configured reference rate",self.expected_rate)
+        form.addRow("Late-report threshold",self.late_factor)
+        form.addRow("Oscillator outlier threshold",self.outlier_sigma)
+        form.addRow("Graph refresh interval",self.graph_refresh)
         gl.addLayout(form); layout.addWidget(g)
 
         s, sl=card("INSTRUMENT SAFETY LIMITS")
@@ -882,7 +895,15 @@ class MainWindow(QMainWindow):
         if self.capture_active:
             return
         mode="simulation" if self.simulation_mode else "hardware"
-        self.session_id=self.db.create_session("Gamepad Signal Lab capture",mode,__version__,{"nominal_frequency_hz":self.nominal_freq.value(),"expected_rate_hz":self.expected_rate.value()})
+        self.session_id=self.db.create_session(
+            "Gamepad Signal Lab capture",mode,__version__,
+            {
+                "nominal_frequency_hz":self.nominal_freq.value(),
+                "timing_reference_mode":self.timing_reference_mode.currentData(),
+                "configured_reference_rate_hz":self.expected_rate.value(),
+                "host_timer_resolution_ns":self.host_timer_resolution_ns,
+            },
+        )
         self.capture_active=True
         self.capture_button.setText("Stop Capture")
         self._add_event("capture_started",{"mode":mode})
@@ -1137,6 +1158,43 @@ class MainWindow(QMainWindow):
             self.baseline_progress.setValue(int((1-remaining/max(1,duration))*1000))
             self.baseline_state.setText(f"Baseline capture running • {remaining:.1f}s remaining")
         self.db.flush()
+
+    def _timing_reference_ms(self, intervals_ms:list[float]) -> float | None:
+        if hasattr(self,"timing_reference_mode") and self.timing_reference_mode.currentData()=="configured":
+            return 1000.0/max(self.expected_rate.value(),1.0)
+        return None
+
+    @staticmethod
+    def _median(values:list[float]) -> float:
+        if not values:
+            return 0.0
+        ordered=sorted(float(value) for value in values)
+        mid=len(ordered)//2
+        if len(ordered)%2:
+            return ordered[mid]
+        return (ordered[mid-1]+ordered[mid])/2.0
+
+    @staticmethod
+    def _elapsed_seconds(timestamps_ns:list[int], origin_ns:int|None=None) -> list[float]:
+        if not timestamps_ns:
+            return []
+        origin=int(timestamps_ns[0] if origin_ns is None else origin_ns)
+        return [(int(ts)-origin)/1_000_000_000.0 for ts in timestamps_ns]
+
+    @staticmethod
+    def _histogram_xy(values:list[float],bins:int) -> tuple[list[float],list[float]]:
+        if not values:
+            return [],[]
+        lo,hi=min(values),max(values)
+        if math.isclose(lo,hi):
+            return [lo],[float(len(values))]
+        width=(hi-lo)/bins
+        counts=[0.0]*bins
+        for value in values:
+            idx=min(bins-1,max(0,int((value-lo)/(hi-lo)*bins)))
+            counts[idx]+=1
+        centers=[lo+(i+0.5)*width for i in range(bins)]
+        return centers,counts
 
     @staticmethod
     def _moving_average(values:list[float],window:int) -> list[float]:
@@ -1920,6 +1978,9 @@ class MainWindow(QMainWindow):
 
     def _apply_saved_settings(self) -> None:
         self.baseline_seconds.setValue(int(self.settings.value("baseline_seconds",60)))
+        saved_reference=str(self.settings.value("timing_reference_mode","median"))
+        reference_index=self.timing_reference_mode.findData(saved_reference)
+        self.timing_reference_mode.setCurrentIndex(max(0,reference_index))
         self.expected_rate.setValue(float(self.settings.value("expected_rate",1000)))
         self.late_factor.setValue(float(self.settings.value("late_factor",1.5)))
         self.outlier_sigma.setValue(float(self.settings.value("outlier_sigma",4.0)))
@@ -1946,6 +2007,7 @@ class MainWindow(QMainWindow):
         self._sync_safety_limits()
         values={
             "theme":self.theme_combo.currentText(),"baseline_seconds":self.baseline_seconds.value(),
+            "timing_reference_mode":self.timing_reference_mode.currentData(),
             "expected_rate":self.expected_rate.value(),"late_factor":self.late_factor.value(),"outlier_sigma":self.outlier_sigma.value(),"nominal_freq":self.nominal_freq.value(),
             "graph_refresh":self.graph_refresh.value(),"max_freq":self.max_freq.value(),
             "max_amp":self.max_amp.value(),"max_offset":self.max_offset.value(),
