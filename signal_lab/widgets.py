@@ -374,7 +374,7 @@ class StickView(QWidget):
 
 
 class ControllerView(QWidget):
-    """Controller-shaped live input visual without assuming unsupported mappings."""
+    """Live controller visual with Xbox, DualSense, and generic skins."""
 
     XINPUT_BUTTONS = {
         0x0001: "D-UP", 0x0002: "D-DOWN", 0x0004: "D-LEFT", 0x0008: "D-RIGHT",
@@ -387,16 +387,27 @@ class ControllerView(QWidget):
         super().__init__(parent)
         self.sample: dict = {}
         self.source = ""
-        self.setMinimumHeight(360)
+        self.skin = "generic"
+        self.mapping_family = "generic"
+        self.setMinimumHeight(390)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setToolTip(
-            "Live decoded controller state. Stick and trigger values are normalized by the active backend. "
-            "Named face-button mapping is shown only for XInput; generic backends keep source-specific buttons generic."
+            "Live decoded controller state. Auto skin detection is separate from input mapping. "
+            "Manual skin override changes only the drawing; it never invents button mappings."
         )
 
-    def set_state(self, sample: dict | None, source: str = "") -> None:
+    def set_state(
+        self,
+        sample: dict | None,
+        source: str = "",
+        *,
+        skin: str = "generic",
+        mapping_family: str = "generic",
+    ) -> None:
         self.sample = dict(sample or {})
         self.source = str(source or "")
+        self.skin = skin if skin in {"xbox", "dualsense", "generic"} else "generic"
+        self.mapping_family = mapping_family if mapping_family in {"xbox", "dualsense", "generic"} else "generic"
         self.update()
 
     @staticmethod
@@ -407,42 +418,18 @@ class ControllerView(QWidget):
     def _trigger(value: float) -> float:
         return max(0.0, min(1.0, float(value)))
 
-    def _is_xinput(self) -> bool:
-        return "xinput" in self.source.lower()
-
     def pressed_names(self) -> list[str]:
         if "buttons" not in self.sample:
             return []
         mask = int(self.sample.get("buttons", 0))
-        if self._is_xinput():
+        if self.mapping_family == "xbox":
             return [name for bit, name in self.XINPUT_BUTTONS.items() if mask & bit]
         return [f"B{index}" for index in range(32) if mask & (1 << index)]
-
-    def _draw_stick(self, painter: QPainter, center: QPointF, radius: float, x: float, y: float, label: str) -> None:
-        painter.setPen(QPen(QColor("#344761"), 1.4))
-        painter.setBrush(QColor("#0A121E"))
-        painter.drawEllipse(center, radius, radius)
-        painter.setPen(QPen(QColor("#23354C"), 1))
-        painter.drawLine(QPointF(center.x() - radius, center.y()), QPointF(center.x() + radius, center.y()))
-        painter.drawLine(QPointF(center.x(), center.y() - radius), QPointF(center.x(), center.y() + radius))
-        dot = QPointF(center.x() + self._clamp(x) * radius * 0.72, center.y() - self._clamp(y) * radius * 0.72)
-        painter.setPen(QPen(QColor("#9EC0FF"), 2))
-        painter.setBrush(QColor("#5D93FF"))
-        painter.drawEllipse(dot, radius * 0.18, radius * 0.18)
-        painter.setPen(QColor("#91A6C0"))
-        painter.drawText(QRectF(center.x() - radius, center.y() + radius + 7, radius * 2, 20), Qt.AlignmentFlag.AlignHCenter, label)
-
-    def _draw_round_button(self, painter: QPainter, center: QPointF, radius: float, label: str, active: bool) -> None:
-        painter.setPen(QPen(QColor("#526B8E") if active else QColor("#31435D"), 1.5))
-        painter.setBrush(QColor("#376FE0") if active else QColor("#101B2A"))
-        painter.drawEllipse(center, radius, radius)
-        painter.setPen(QColor("#FFFFFF") if active else QColor("#9FB0C5"))
-        painter.drawText(QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2), Qt.AlignmentFlag.AlignCenter, label)
 
     def _dpad_state(self) -> tuple[int, int]:
         if "dpad_x" in self.sample or "dpad_y" in self.sample:
             return int(self.sample.get("dpad_x", 0)), int(self.sample.get("dpad_y", 0))
-        if self._is_xinput() and "buttons" in self.sample:
+        if self.mapping_family == "xbox" and "buttons" in self.sample:
             mask = int(self.sample.get("buttons", 0))
             dx = (1 if mask & 0x0008 else 0) - (1 if mask & 0x0004 else 0)
             dy = (1 if mask & 0x0001 else 0) - (1 if mask & 0x0002 else 0)
@@ -457,77 +444,214 @@ class ControllerView(QWidget):
             return dx, dy
         return 0, 0
 
+    def _draw_stick(
+        self, painter: QPainter, center: QPointF, radius: float,
+        x: float, y: float, label: str,
+    ) -> None:
+        painter.setPen(QPen(QColor("#344761"), 1.4))
+        painter.setBrush(QColor("#0A121E"))
+        painter.drawEllipse(center, radius, radius)
+        painter.setPen(QPen(QColor("#23354C"), 1))
+        painter.drawLine(QPointF(center.x() - radius, center.y()), QPointF(center.x() + radius, center.y()))
+        painter.drawLine(QPointF(center.x(), center.y() - radius), QPointF(center.x(), center.y() + radius))
+        dot = QPointF(
+            center.x() + self._clamp(x) * radius * 0.72,
+            center.y() - self._clamp(y) * radius * 0.72,
+        )
+        painter.setPen(QPen(QColor("#9EC0FF"), 2))
+        painter.setBrush(QColor("#5D93FF"))
+        painter.drawEllipse(dot, radius * 0.18, radius * 0.18)
+        painter.setPen(QColor("#8FA4BE"))
+        painter.drawText(
+            QRectF(center.x() - radius, center.y() + radius + 6, radius * 2, 18),
+            Qt.AlignmentFlag.AlignHCenter, label,
+        )
+
+    def _draw_button(
+        self, painter: QPainter, center: QPointF, radius: float,
+        label: str, active: bool = False,
+    ) -> None:
+        painter.setPen(QPen(QColor("#6A8ABC") if active else QColor("#344A68"), 1.5))
+        painter.setBrush(QColor("#376FE0") if active else QColor("#111D2C"))
+        painter.drawEllipse(center, radius, radius)
+        painter.setPen(QColor("#FFFFFF") if active else QColor("#A9B8CA"))
+        painter.drawText(
+            QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2),
+            Qt.AlignmentFlag.AlignCenter, label,
+        )
+
+    def _draw_dpad(self, painter: QPainter, center: QPointF, size: float) -> None:
+        dx, dy = self._dpad_state()
+        arm = size * 0.34
+        painter.setPen(QPen(QColor("#344A68"), 1.2))
+        painter.setBrush(QColor("#111D2C"))
+        painter.drawRoundedRect(QRectF(center.x() - arm * 0.45, center.y() - arm * 1.35, arm * 0.9, arm * 2.7), 4, 4)
+        painter.drawRoundedRect(QRectF(center.x() - arm * 1.35, center.y() - arm * 0.45, arm * 2.7, arm * 0.9), 4, 4)
+        if dx or dy:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#5D93FF"))
+            painter.drawEllipse(QPointF(center.x() + dx * arm * 0.9, center.y() - dy * arm * 0.9), 6, 6)
+
+    def _draw_trigger_bars(
+        self, painter: QPainter, left: float, top: float, body_w: float,
+        left_label: str, right_label: str,
+    ) -> None:
+        lt = self._trigger(self.sample.get("lt", 0.0))
+        rt = self._trigger(self.sample.get("rt", 0.0))
+        bar_w = body_w * 0.20
+        for x, value, label in (
+            (left + body_w * 0.12, lt, left_label),
+            (left + body_w * 0.68, rt, right_label),
+        ):
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#182840"))
+            painter.drawRoundedRect(QRectF(x, top - 24, bar_w, 8), 4, 4)
+            painter.setBrush(QColor("#5D93FF"))
+            painter.drawRoundedRect(QRectF(x, top - 24, bar_w * value, 8), 4, 4)
+            painter.setPen(QColor("#8FA4BE"))
+            painter.drawText(QRectF(x, top - 43, bar_w, 16), Qt.AlignmentFlag.AlignCenter, f"{label} {value*100:.0f}%")
+
+    @staticmethod
+    def _shell_path(left: float, top: float, width: float, height: float, *, dualsense: bool = False) -> QPainterPath:
+        """Balanced gamepad shell; geometry differs by family but avoids caricatured grips."""
+        p = QPainterPath()
+        if dualsense:
+            p.moveTo(left + width * 0.20, top + height * 0.08)
+            p.cubicTo(left + width * 0.10, top, left + width * 0.02, top + height * 0.20, left + width * 0.05, top + height * 0.47)
+            p.cubicTo(left + width * 0.08, top + height * 0.68, left + width * 0.12, top + height * 0.98, left + width * 0.22, top + height)
+            p.cubicTo(left + width * 0.29, top + height, left + width * 0.34, top + height * 0.80, left + width * 0.39, top + height * 0.68)
+            p.cubicTo(left + width * 0.46, top + height * 0.77, left + width * 0.54, top + height * 0.77, left + width * 0.61, top + height * 0.68)
+            p.cubicTo(left + width * 0.66, top + height * 0.80, left + width * 0.71, top + height, left + width * 0.78, top + height)
+            p.cubicTo(left + width * 0.88, top + height * 0.98, left + width * 0.92, top + height * 0.68, left + width * 0.95, top + height * 0.47)
+            p.cubicTo(left + width * 0.98, top + height * 0.20, left + width * 0.90, top, left + width * 0.80, top + height * 0.08)
+            p.cubicTo(left + width * 0.66, top + height * 0.01, left + width * 0.34, top + height * 0.01, left + width * 0.20, top + height * 0.08)
+        else:
+            p.moveTo(left + width * 0.19, top + height * 0.10)
+            p.cubicTo(left + width * 0.08, top + height * 0.03, left + width * 0.02, top + height * 0.23, left + width * 0.06, top + height * 0.48)
+            p.cubicTo(left + width * 0.09, top + height * 0.70, left + width * 0.12, top + height * 0.94, left + width * 0.21, top + height * 0.98)
+            p.cubicTo(left + width * 0.29, top + height, left + width * 0.34, top + height * 0.76, left + width * 0.39, top + height * 0.66)
+            p.cubicTo(left + width * 0.46, top + height * 0.73, left + width * 0.54, top + height * 0.73, left + width * 0.61, top + height * 0.66)
+            p.cubicTo(left + width * 0.66, top + height * 0.76, left + width * 0.71, top + height, left + width * 0.79, top + height * 0.98)
+            p.cubicTo(left + width * 0.88, top + height * 0.94, left + width * 0.91, top + height * 0.70, left + width * 0.94, top + height * 0.48)
+            p.cubicTo(left + width * 0.98, top + height * 0.23, left + width * 0.92, top + height * 0.03, left + width * 0.81, top + height * 0.10)
+            p.cubicTo(left + width * 0.67, top + height * 0.02, left + width * 0.33, top + height * 0.02, left + width * 0.19, top + height * 0.10)
+        p.closeSubpath()
+        return p
+
+    def _paint_xbox(self, painter: QPainter, left: float, top: float, body_w: float, body_h: float) -> None:
+        painter.setPen(QPen(QColor("#30445F"), 2))
+        painter.setBrush(QColor("#0E1826"))
+        painter.drawPath(self._shell_path(left, top, body_w, body_h))
+        self._draw_trigger_bars(painter, left, top, body_w, "LT", "RT")
+
+        stick_r = min(38.0, body_w * 0.055)
+        self._draw_stick(
+            painter, QPointF(left + body_w * 0.30, top + body_h * 0.37), stick_r,
+            self.sample.get("lx", 0.0), self.sample.get("ly", 0.0), "LEFT",
+        )
+        self._draw_stick(
+            painter, QPointF(left + body_w * 0.61, top + body_h * 0.66), stick_r,
+            self.sample.get("rx", 0.0), self.sample.get("ry", 0.0), "RIGHT",
+        )
+        self._draw_dpad(painter, QPointF(left + body_w * 0.35, top + body_h * 0.66), 54)
+
+        mask = int(self.sample.get("buttons", 0)) if "buttons" in self.sample else 0
+        mapped = self.mapping_family == "xbox"
+        face = QPointF(left + body_w * 0.74, top + body_h * 0.38)
+        gap = 26.0
+        self._draw_button(painter, QPointF(face.x(), face.y() + gap), 13, "A", mapped and bool(mask & 0x1000))
+        self._draw_button(painter, QPointF(face.x() + gap, face.y()), 13, "B", mapped and bool(mask & 0x2000))
+        self._draw_button(painter, QPointF(face.x() - gap, face.y()), 13, "X", mapped and bool(mask & 0x4000))
+        self._draw_button(painter, QPointF(face.x(), face.y() - gap), 13, "Y", mapped and bool(mask & 0x8000))
+        self._draw_button(painter, QPointF(left + body_w * 0.47, top + body_h * 0.39), 10, "≡", mapped and bool(mask & 0x0010))
+        self._draw_button(painter, QPointF(left + body_w * 0.53, top + body_h * 0.39), 10, "◫", mapped and bool(mask & 0x0020))
+
+    def _paint_dualsense(self, painter: QPainter, left: float, top: float, body_w: float, body_h: float) -> None:
+        painter.setPen(QPen(QColor("#B9C5D4"), 2))
+        painter.setBrush(QColor("#D8DEE8"))
+        painter.drawPath(self._shell_path(left, top, body_w, body_h, dualsense=True))
+
+        # Dark center section and touchpad make this unmistakably DualSense-like.
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#111820"))
+        center_panel = QRectF(left + body_w * 0.32, top + body_h * 0.14, body_w * 0.36, body_h * 0.48)
+        painter.drawRoundedRect(center_panel, 24, 24)
+        painter.setBrush(QColor("#202B38"))
+        touchpad = QRectF(left + body_w * 0.385, top + body_h * 0.16, body_w * 0.23, body_h * 0.18)
+        painter.drawRoundedRect(touchpad, 8, 8)
+        self._draw_trigger_bars(painter, left, top, body_w, "L2", "R2")
+
+        stick_r = min(37.0, body_w * 0.054)
+        self._draw_stick(
+            painter, QPointF(left + body_w * 0.42, top + body_h * 0.66), stick_r,
+            self.sample.get("lx", 0.0), self.sample.get("ly", 0.0), "LEFT",
+        )
+        self._draw_stick(
+            painter, QPointF(left + body_w * 0.58, top + body_h * 0.66), stick_r,
+            self.sample.get("rx", 0.0), self.sample.get("ry", 0.0), "RIGHT",
+        )
+        self._draw_dpad(painter, QPointF(left + body_w * 0.25, top + body_h * 0.42), 54)
+
+        face = QPointF(left + body_w * 0.75, top + body_h * 0.42)
+        gap = 26.0
+        # Current raw HID adapter does not claim a safe named DualSense button mask,
+        # so these are layout labels unless a future adapter supplies that mapping.
+        self._draw_button(painter, QPointF(face.x(), face.y() + gap), 13, "×", False)
+        self._draw_button(painter, QPointF(face.x() + gap, face.y()), 13, "○", False)
+        self._draw_button(painter, QPointF(face.x() - gap, face.y()), 13, "□", False)
+        self._draw_button(painter, QPointF(face.x(), face.y() - gap), 13, "△", False)
+
+    def _paint_generic(self, painter: QPainter, left: float, top: float, body_w: float, body_h: float) -> None:
+        painter.setPen(QPen(QColor("#30445F"), 2))
+        painter.setBrush(QColor("#0E1826"))
+        painter.drawRoundedRect(QRectF(left + body_w * 0.08, top + body_h * 0.12, body_w * 0.84, body_h * 0.70), 50, 50)
+        self._draw_trigger_bars(painter, left, top, body_w, "L", "R")
+        stick_r = min(37.0, body_w * 0.054)
+        self._draw_stick(
+            painter, QPointF(left + body_w * 0.38, top + body_h * 0.55), stick_r,
+            self.sample.get("lx", 0.0), self.sample.get("ly", 0.0), "LEFT",
+        )
+        self._draw_stick(
+            painter, QPointF(left + body_w * 0.62, top + body_h * 0.55), stick_r,
+            self.sample.get("rx", 0.0), self.sample.get("ry", 0.0), "RIGHT",
+        )
+        self._draw_dpad(painter, QPointF(left + body_w * 0.23, top + body_h * 0.43), 50)
+        face = QPointF(left + body_w * 0.77, top + body_h * 0.43)
+        for index, (ox, oy) in enumerate(((0,24),(24,0),(-24,0),(0,-24))):
+            self._draw_button(painter, QPointF(face.x()+ox,face.y()+oy), 12, str(index+1), False)
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         w = float(self.width())
         h = float(self.height())
-        cx = w * 0.5
-        body_w = min(w * 0.82, 760.0)
-        body_h = min(h * 0.68, 245.0)
-        left = cx - body_w / 2.0
-        top = max(42.0, (h - body_h) * 0.42)
+        body_w = min(w * 0.78, 720.0)
+        body_h = min(h * 0.67, 250.0)
+        left = (w - body_w) / 2.0
+        top = max(62.0, (h - body_h) * 0.43)
 
-        body = QPainterPath()
-        body.moveTo(left + body_w * 0.18, top)
-        body.cubicTo(left + body_w * 0.04, top + 4, left, top + body_h * 0.45, left + body_w * 0.08, top + body_h * 0.92)
-        body.cubicTo(left + body_w * 0.12, top + body_h * 1.12, left + body_w * 0.24, top + body_h * 0.98, left + body_w * 0.31, top + body_h * 0.72)
-        body.cubicTo(left + body_w * 0.40, top + body_h * 0.86, left + body_w * 0.60, top + body_h * 0.86, left + body_w * 0.69, top + body_h * 0.72)
-        body.cubicTo(left + body_w * 0.76, top + body_h * 0.98, left + body_w * 0.88, top + body_h * 1.12, left + body_w * 0.92, top + body_h * 0.92)
-        body.cubicTo(left + body_w, top + body_h * 0.45, left + body_w * 0.96, top + 4, left + body_w * 0.82, top)
-        body.cubicTo(left + body_w * 0.67, top - 14, left + body_w * 0.33, top - 14, left + body_w * 0.18, top)
-        body.closeSubpath()
+        painter.setPen(QColor("#70D6FF"))
+        label = {"xbox":"XBOX LAYOUT","dualsense":"DUALSENSE LAYOUT","generic":"GENERIC LAYOUT"}[self.skin]
+        painter.drawText(QRectF(0, 14, w, 22), Qt.AlignmentFlag.AlignHCenter, label)
 
-        painter.setPen(QPen(QColor("#2E405A"), 2))
-        painter.setBrush(QColor("#0E1826"))
-        painter.drawPath(body)
-
-        # Shoulder / trigger level bars.
-        lt = self._trigger(self.sample.get("lt", 0.0))
-        rt = self._trigger(self.sample.get("rt", 0.0))
-        bar_w = body_w * 0.22
-        bar_h = 9.0
-        for x, value, label in ((left + body_w * 0.10, lt, "LT"), (left + body_w * 0.68, rt, "RT")):
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor("#182840"))
-            painter.drawRoundedRect(QRectF(x, top - 28, bar_w, bar_h), 4, 4)
-            painter.setBrush(QColor("#5D93FF"))
-            painter.drawRoundedRect(QRectF(x, top - 28, bar_w * value, bar_h), 4, 4)
-            painter.setPen(QColor("#8FA4BE"))
-            painter.drawText(QRectF(x, top - 48, bar_w, 18), Qt.AlignmentFlag.AlignCenter, f"{label}  {value*100:.0f}%")
-
-        stick_r = min(42.0, body_w * 0.06)
-        left_stick = QPointF(left + body_w * 0.37, top + body_h * 0.62)
-        right_stick = QPointF(left + body_w * 0.59, top + body_h * 0.70)
-        self._draw_stick(painter, left_stick, stick_r, self.sample.get("lx", 0.0), self.sample.get("ly", 0.0), "LEFT")
-        self._draw_stick(painter, right_stick, stick_r, self.sample.get("rx", 0.0), self.sample.get("ry", 0.0), "RIGHT")
-
-        # D-pad.
-        dpad = QPointF(left + body_w * 0.23, top + body_h * 0.46)
-        arm = 19.0
-        dx, dy = self._dpad_state()
-        painter.setPen(QPen(QColor("#334760"), 1.2))
-        painter.setBrush(QColor("#132033"))
-        painter.drawRoundedRect(QRectF(dpad.x() - arm * 0.45, dpad.y() - arm * 1.35, arm * 0.9, arm * 2.7), 4, 4)
-        painter.drawRoundedRect(QRectF(dpad.x() - arm * 1.35, dpad.y() - arm * 0.45, arm * 2.7, arm * 0.9), 4, 4)
-        if dx or dy:
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor("#5D93FF"))
-            painter.drawEllipse(QPointF(dpad.x() + dx * arm * 0.9, dpad.y() - dy * arm * 0.9), 6, 6)
-
-        # Face buttons only receive named state for XInput. Generic masks remain source-specific.
-        face = QPointF(left + body_w * 0.78, top + body_h * 0.43)
-        gap = 28.0
-        mask = int(self.sample.get("buttons", 0)) if "buttons" in self.sample else 0
-        mapped = self._is_xinput()
-        self._draw_round_button(painter, QPointF(face.x(), face.y() + gap), 14, "A", mapped and bool(mask & 0x1000))
-        self._draw_round_button(painter, QPointF(face.x() + gap, face.y()), 14, "B", mapped and bool(mask & 0x2000))
-        self._draw_round_button(painter, QPointF(face.x() - gap, face.y()), 14, "X", mapped and bool(mask & 0x4000))
-        self._draw_round_button(painter, QPointF(face.x(), face.y() - gap), 14, "Y", mapped and bool(mask & 0x8000))
+        if self.skin == "xbox":
+            self._paint_xbox(painter,left,top,body_w,body_h)
+        elif self.skin == "dualsense":
+            self._paint_dualsense(painter,left,top,body_w,body_h)
+        else:
+            self._paint_generic(painter,left,top,body_w,body_h)
 
         painter.setPen(QColor("#7F93AC"))
-        backend_note = "XInput button map" if mapped else "generic/source-specific button map"
-        painter.drawText(QRectF(left, top + body_h + 36, body_w, 22), Qt.AlignmentFlag.AlignHCenter, backend_note)
+        if self.mapping_family == "xbox":
+            mapping = "Xbox/XInput mapping active"
+        elif self.mapping_family == "dualsense":
+            mapping = "DualSense detected • named button mapping unavailable from current backend"
+        else:
+            mapping = "Generic/source-specific button mapping"
+        painter.drawText(
+            QRectF(left, top + body_h + 28, body_w, 22),
+            Qt.AlignmentFlag.AlignHCenter, mapping,
+        )
 
 
 class HeatMapWidget(QWidget):
