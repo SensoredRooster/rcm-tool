@@ -2,6 +2,10 @@ name: Deploy Cloudflare Support Collector
 
 on:
   workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/deploy-support-worker.yml"
 
 jobs:
   deploy:
@@ -64,8 +68,22 @@ jobs:
           for attempt in 1 2 3 4 5; do
             if curl --fail --silent --show-error "https://rcm-tool-support.sensoredrooster-com.workers.dev/health" | tee health.json; then
               grep -q '"ok":true' health.json
-              exit 0
+              break
             fi
             sleep 2
           done
-          exit 1
+          grep -q '"ok":true' health.json
+
+      - name: Probe upload route through Cloudflare edge
+        shell: bash
+        run: |
+          STATUS="$(curl --silent --output upload-probe.json --write-out '%{http_code}' \
+            --request POST \
+            --header 'Content-Type: application/zip' \
+            --header 'X-RCM-Session: ci-probe' \
+            --header 'X-RCM-Filename: probe.zip' \
+            --data-binary '' \
+            'https://rcm-tool-support.sensoredrooster-com.workers.dev/upload')"
+          cat upload-probe.json
+          test "$STATUS" = "400"
+          grep -q '"Empty bundle"' upload-probe.json
