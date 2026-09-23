@@ -1,25 +1,29 @@
-"""2026 dark lab theme for the RCM Tool window."""
+"""Desktop theme aligned with the Tester Share portal."""
 
 from __future__ import annotations
 
 import tkinter as tk
 from tkinter import ttk
 
-BG = "#0E1116"
-SURFACE = "#161B22"
-CARD = "#1C2330"
-LINE = "#2A3340"
-TEXT = "#E8EDF4"
-MUTED = "#8B9BB0"
-ACCENT = "#3DDC97"
-ACCENT_DIM = "#1F6F4A"
+# Portal palette from rcm-tool-share login card
+BG = "#070B14"
+SURFACE = "#101628"
+CARD = "#161D30"
+LINE = "#2A3550"
+TEXT = "#F4F7FF"
+MUTED = "#8B97B3"
+ACCENT = "#3B82F6"
+ACCENT_HOVER = "#4F8CFF"
+ACCENT_DIM = "#1E3A8A"
+CYAN = "#5EC8FF"
 WARN = "#F5A524"
-TRACK = "#243042"
+TRACK = "#1A2340"
+ON_ACCENT = "#F8FBFF"
 
 
 def apply_rcm_theme(root: tk.Tk) -> None:
     root.configure(bg=BG)
-    root.option_add("*Font", "{Segoe UI Variable} 10")
+    root.option_add("*Font", "{Segoe UI} 10")
     root.option_add("*TCombobox*Listbox.background", CARD)
     root.option_add("*TCombobox*Listbox.foreground", TEXT)
     root.option_add("*TCombobox*Listbox.selectBackground", ACCENT_DIM)
@@ -37,20 +41,20 @@ def apply_rcm_theme(root: tk.Tk) -> None:
     style.configure("TLabel", background=BG, foreground=TEXT, font=("Segoe UI", 10))
     style.configure("Muted.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 9))
     style.configure("Title.TLabel", background=BG, foreground=TEXT, font=("Segoe UI Semibold", 22))
-    style.configure("Accent.TLabel", background=BG, foreground=ACCENT, font=("Segoe UI", 9))
+    style.configure("Accent.TLabel", background=BG, foreground=CYAN, font=("Segoe UI Semibold", 9))
     style.configure(
         "TLabelframe",
         background=SURFACE,
         foreground=TEXT,
         bordercolor=LINE,
         relief="flat",
-        padding=10,
+        padding=12,
     )
     style.configure(
         "TLabelframe.Label",
         background=SURFACE,
-        foreground=MUTED,
-        font=("Segoe UI", 9),
+        foreground=CYAN,
+        font=("Segoe UI Semibold", 8),
     )
     style.configure(
         "TButton",
@@ -58,31 +62,35 @@ def apply_rcm_theme(root: tk.Tk) -> None:
         foreground=TEXT,
         bordercolor=LINE,
         focusthickness=0,
-        padding=(14, 8),
+        padding=(16, 9),
         font=("Segoe UI Semibold", 10),
     )
     style.map(
         "TButton",
-        background=[("active", ACCENT_DIM), ("disabled", "#12161C")],
+        background=[("active", ACCENT_DIM), ("disabled", "#0C1220")],
         foreground=[("disabled", "#5C6B7A")],
     )
     style.configure(
         "Accent.TButton",
         background=ACCENT,
-        foreground="#062016",
+        foreground=ON_ACCENT,
         bordercolor=ACCENT,
-        padding=(16, 8),
+        padding=(18, 10),
         font=("Segoe UI Semibold", 10),
     )
-    style.map("Accent.TButton", background=[("active", "#64E8B0"), ("disabled", ACCENT_DIM)])
+    style.map(
+        "Accent.TButton",
+        background=[("active", ACCENT_HOVER), ("disabled", ACCENT_DIM)],
+        foreground=[("disabled", "#9BB7E8")],
+    )
     style.configure(
         "TCombobox",
         fieldbackground=CARD,
         background=CARD,
         foreground=TEXT,
-        arrowcolor=ACCENT,
+        arrowcolor=CYAN,
         bordercolor=LINE,
-        padding=4,
+        padding=6,
     )
     style.map(
         "TCombobox",
@@ -105,7 +113,7 @@ def apply_rcm_theme(root: tk.Tk) -> None:
         fieldbackground=CARD,
         foreground=TEXT,
         bordercolor=LINE,
-        rowheight=26,
+        rowheight=28,
         font=("Cascadia Mono", 9),
     )
     style.configure(
