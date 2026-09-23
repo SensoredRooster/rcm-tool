@@ -1363,7 +1363,7 @@ class MainWindow(QMainWindow):
                 f"effective rate {t.effective_rate_hz:.2f} Hz • consecutive identical raw HID payloads {self.duplicate_raw_reports}.\n"
                 "Host-arrival timestamps include Windows/USB scheduling unless dedicated on-wire timing hardware supplies the timestamp."
             )
-            if current_page == "Interference Lab":
+        if current_page == "Interference Lab":
             self.safety_label.setText(
                 f"Configured safety limits • {self.safety_limits.max_frequency_hz:g} Hz • {self.safety_limits.max_amplitude_vpp:g} Vpp • "
                 f"±{self.safety_limits.max_abs_offset_v:g} V • generator output defaults OFF."
