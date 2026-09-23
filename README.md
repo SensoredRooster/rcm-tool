@@ -245,3 +245,17 @@ The original Cloudflare workflows remain alongside the Windows application build
 Gamepad Signal Lab does not use 1 kHz as a measurement ceiling. The configured-reference and simulation controls accept **1 Hz through 100 kHz**, covering 8 kHz and higher-rate controllers. Effective polling rate is still calculated from observed report timestamps; selecting a reference value never makes the application report that rate unless the captured timing supports it.
 
 At very high physical rates, usable fidelity still depends on the controller, USB transport, backend, Windows scheduling, and timing source. Raw-HID arrival timing is preferred when available; host-poll backends remain labeled as estimates.
+
+
+## Performance architecture
+
+The live measurement path is designed to keep visualization and persistence work from becoming artificial timing bottlenecks:
+
+- controller timestamps are captured by the acquisition backend before GUI rendering or SQLite persistence
+- raw controller/oscillator rows are buffered and persisted in batched SQLite `executemany()` writes instead of one SQL statement per report
+- buffered rows are force-flushed at capture stop, export, session reads, and application close
+- hidden pages do not rebuild graph datasets or schedule chart repaints; navigating to a live page triggers an immediate refresh
+- controller metadata is only copied when it actually changes
+- the hardware queue drain and simulation batching are sized for high-rate controller testing without treating 1 kHz or 8 kHz as a software ceiling
+
+These optimizations do not downsample or discard captured raw reports. Effective polling rate and timing metrics continue to come from the observed timestamps.

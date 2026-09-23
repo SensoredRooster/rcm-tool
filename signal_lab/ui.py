@@ -234,6 +234,7 @@ class MainWindow(QMainWindow):
         side.setContentsMargins(12, 14, 12, 14)
 
         brand_block = QWidget()
+        brand_block.setStyleSheet("background: transparent;")
         brand_layout = QVBoxLayout(brand_block)
         brand_layout.setContentsMargins(0, 0, 0, 0)
         brand_layout.setSpacing(0)
