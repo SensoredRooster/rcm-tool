@@ -3,6 +3,7 @@ from pathlib import Path
 import unittest
 
 from signal_lab.analysis import align_nearest, oscillator_metrics, pearson_correlation, timing_metrics
+from signal_lab.controller import detect_controller_family
 from signal_lab.instruments import SafetyLimits, SimulatedInstrument, VisaScpiMeasurementInstrument
 from signal_lab.simulation import GamepadSimulator, SimulatedGamepadConfig, OscillatorSimulator, SimulatedOscillatorConfig, stimulus_response
 from signal_lab.storage import LabDatabase
@@ -11,6 +12,39 @@ from signal_lab.sweep import make_sweep
 
 
 class SignalLabTests(unittest.TestCase):
+    def test_controller_family_detection_xinput(self):
+        self.assertEqual(
+            detect_controller_family({"backend":"Windows XInput","connection_method":"XInputGamepad"},"XInput slot 0"),
+            "xbox",
+        )
+
+    def test_controller_family_detection_dualsense_vid_pid(self):
+        self.assertEqual(
+            detect_controller_family(
+                {"vid":0x054C,"pid":0x0CE6,"controller_name":"Wireless Controller","backend":"Raw HID controller"},
+                "Raw HID connected",
+            ),
+            "dualsense",
+        )
+
+    def test_controller_family_detection_dualsense_name(self):
+        self.assertEqual(
+            detect_controller_family({"controller_name":"DualSense Wireless Controller"},"Raw HID"),
+            "dualsense",
+        )
+
+    def test_controller_family_detection_does_not_call_every_sony_pad_dualsense(self):
+        self.assertEqual(
+            detect_controller_family({"vid":0x054C,"pid":0x05C4,"controller_name":"Wireless Controller"},"Raw HID"),
+            "generic",
+        )
+
+    def test_controller_family_detection_unknown_is_generic(self):
+        self.assertEqual(
+            detect_controller_family({"controller_name":"USB Gamepad","vid":0x1234,"pid":0x5678},"SDL"),
+            "generic",
+        )
+
     def test_timing_metrics_1000hz(self):
         stamps = [i * 1_000_000 for i in range(1001)]
         m = timing_metrics(stamps, expected_interval_ms=1.0)
