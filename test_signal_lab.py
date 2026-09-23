@@ -90,6 +90,11 @@ class SignalLabTests(unittest.TestCase):
             self.assertEqual(s["controller_samples"],1)
             self.assertEqual(s["oscillator_samples"],1)
             self.assertEqual(s["events"],1)
+            sessions = db.list_sessions()
+            self.assertEqual(sessions[0]["id"], sid)
+            self.assertEqual(sessions[0]["events"], 1)
+            events = db.list_events(sid)
+            self.assertEqual(events[0]["event_type"], "baseline_started")
             db.close()
 
 
