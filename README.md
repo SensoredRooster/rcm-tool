@@ -9,15 +9,16 @@ The application is measurement-focused. It does not inject game inputs, modify c
 - Modern PySide6/Qt desktop UI with rounded panels, dark/light modes, high-DPI scaling, dashboard cards, live plots, and dedicated lab pages.
 - Existing RCM controller acquisition through Windows XInput, SDL/pygame, Raw HID/hidapi, and WinMM fallback.
 - Controller timing analysis: effective report rate, interval statistics, RMS timing deviation, peak-to-peak jitter, successive interval variation, P50/P90/P95/P99/P99.9, late reports, and estimated missing reports.
-- Live stick visualization and analog stability inspection.
-- Oscillator Lab: frequency, error in Hz and ppm, period statistics, RMS period jitter, peak-to-peak jitter, cycle-to-cycle jitter, drift visualization, and one-sample-interval Allan deviation.
+- Live stick visualization, button/D-pad display where decoded by the active backend, trigger display, and stationary analog-noise inspection.
+- Live Capture controls for zoom, pan, crosshair inspection, pause-visualization-without-pausing-acquisition, display-only moving-average smoothing, PNG export, fullscreen inspection, raw-data viewing, report-interval histogram, and explicit unavailable labeling for latency when no device-origin timestamp exists.
+- Oscillator Lab: frequency, error in Hz and ppm, frequency standard deviation/span, first-to-last-window drift, configurable sigma outlier count, period statistics, RMS period jitter, peak-to-peak jitter, cycle-to-cycle jitter, and one-sample-interval Allan deviation.
 - A dedicated read-only VISA/SCPI measurement role for counters, oscilloscopes, and analyzers.
 - A separate VISA/SCPI signal-generator role with output-off-by-default behavior.
 - Interference Lab with explicit output enable, configurable software limits, and an EMERGENCY OUTPUT OFF control.
-- Linear/logarithmic sweep planning with repetitions, dwell time, event logging, and forced output-off at completion.
+- Linear/logarithmic frequency and amplitude sweep planning with repetitions, settling time, dwell time, sequential/randomized ordering, event logging, selectable response heat maps, per-step isolated measurement windows, and forced output-off at completion.
 - Synchronized controller and oscillator storage with descriptive correlation.
-- SQLite/WAL session storage, JSON export, controller CSV export, and self-contained HTML engineering reports.
-- Deterministic gamepad/oscillator simulation so the workflow can be exercised without physical hardware.
+- SQLite/WAL session storage, experiment history/timeline, JSON export, controller CSV export, saved baseline JSON, and self-contained HTML engineering reports containing plots, sweep response, timeline, metadata, and limitations.
+- Deterministic gamepad/oscillator simulation with configurable rate, random/periodic jitter, spikes, missing-report cadence, oscillator offset/jitter/drift, plus known stimulus-response relationships for validating sweep/correlation behavior.
 - Automated tests and Windows CI packaging for a portable app and Inno Setup installer.
 
 ## Measurement integrity
@@ -79,7 +80,9 @@ It also tries common duty-cycle queries. Instrument command sets differ, so mode
 Calculated oscillator metrics include:
 
 - mean, minimum, and maximum frequency
-- frequency standard deviation
+- frequency standard deviation and span
+- first-to-last-window frequency drift in Hz and ppm
+- configurable sigma-based frequency outlier count
 - error in Hz
 - error in ppm
 - mean period
@@ -99,6 +102,7 @@ Measurement instruments and signal sources are separate roles.
 - A VISA resource is not accepted as a generator unless an OUTP OFF command succeeds.
 - Discovery never turns output on.
 - Frequency, amplitude, and offset are validated against configured software limits before enable or sweep.
+- When supported, generator state is read back after configuration and at sweep result points; requested values and instrument-reported values are recorded separately.
 - The UI exposes **EMERGENCY OUTPUT OFF**.
 - Sweep completion forces the source OFF.
 - Closing the application attempts to force output OFF and close the source.
@@ -107,14 +111,18 @@ Default software limits are conservative starting values; they are not electrica
 
 ## Baselines, sweeps, and correlation
 
-A baseline captures the current controller timing and oscillator statistics as the reference for the active session.
+A baseline captures the current controller timing and oscillator statistics as the reference for the active session. It can be saved to JSON, promoted to the active comparison reference, and compared with live measurements including absolute and percentage change.
 
 The sweep engine supports:
 
 - linear or logarithmic frequency spacing
+- amplitude grids
 - repeated sweeps
-- configurable dwell
-- deterministic step ordering
+- configurable settling and dwell periods
+- sequential or deterministic randomized ordering
+- isolated per-step measurement windows
+- requested-vs-instrument-reported configuration capture
+- gamepad/clock response heat maps
 - timestamped experiment events
 
 Correlation is descriptive. A coefficient or visual time alignment can show that values moved together; it does not establish causation.
@@ -159,7 +167,7 @@ The GitHub Actions workflow at .github/workflows/build-windows.yml runs the test
 python -m unittest discover -v
 ~~~
 
-The suite covers the legacy RCM measurement code plus the new timing calculations, ppm calculations, deterministic simulation, correlation, instrument safety behavior, sweep construction, and SQLite persistence.
+The suite covers the legacy RCM measurement code plus timing calculations, configurable late-report detection, ppm/period/jitter calculations, oscillator drift/outlier statistics, deterministic simulation, correlation, SCPI readback and output safety, sweep construction, report generation, and SQLite/CSV/JSON persistence. Windows CI also performs an offscreen Qt window smoke test before packaging.
 
 ## Project layout
 
