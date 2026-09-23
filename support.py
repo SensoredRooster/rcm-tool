@@ -28,6 +28,7 @@ from pathlib import Path
 APP_NAME = "RCMTool"
 REPOSITORY_URL = "https://github.com/SensoredRooster/rcm-tool"
 ISSUES_URL = REPOSITORY_URL + "/issues/new"
+DEFAULT_UPLOAD_URL = "https://rcm-tool-support.sensoredrooster-com.workers.dev/upload"
 SESSION_ID = uuid.uuid4().hex[:12]
 STARTED_AT = datetime.now(timezone.utc).isoformat()
 MAX_LOG_BYTES = 8 * 1024 * 1024
@@ -121,7 +122,7 @@ def health_snapshot() -> dict:
         "pygame_available": _module_available("pygame"),
         "hid_available": _module_available("hid"),
         "report_directory": str((Path(__file__).resolve().parent / "reports").resolve()),
-        "upload_configured": bool(os.environ.get("RCM_SUPPORT_UPLOAD_URL", "").strip()),
+        "upload_configured": bool(os.environ.get("RCM_SUPPORT_UPLOAD_URL", "").strip() or DEFAULT_UPLOAD_URL),
         "repository": REPOSITORY_URL,
     }
 
@@ -168,7 +169,7 @@ def create_support_bundle() -> Path:
 
 
 def upload_support_bundle(url: str | None = None, token: str | None = None) -> dict:
-    endpoint = (url or os.environ.get("RCM_SUPPORT_UPLOAD_URL", "")).strip()
+    endpoint = (url or os.environ.get("RCM_SUPPORT_UPLOAD_URL", "").strip() or DEFAULT_UPLOAD_URL).strip()
     if not endpoint:
         raise RuntimeError("RCM support upload endpoint is not configured.")
     bundle = create_support_bundle()
