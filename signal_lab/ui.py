@@ -569,8 +569,11 @@ class MainWindow(QMainWindow):
         self.controller_source_combo.currentIndexChanged.connect(self._controller_source_changed)
         refresh_sources = QPushButton("Refresh devices")
         refresh_sources.clicked.connect(self._refresh_controller_sources)
+        diagnose_sources = QPushButton("Diagnose backends")
+        diagnose_sources.clicked.connect(self._diagnose_controller_backends)
         source_row.addWidget(self.controller_source_combo, 1)
         source_row.addWidget(refresh_sources)
+        source_row.addWidget(diagnose_sources)
         source_layout.addLayout(source_row)
         self.controller_source_status = QLabel(
             "Automatic backend selection. Hardware acquisition is always active when the app is running."
@@ -1108,6 +1111,22 @@ class MainWindow(QMainWindow):
                 )
             else:
                 self.controller_source_status.setText(backend_status)
+
+    def _diagnose_controller_backends(self) -> None:
+        diagnostics = ControllerAcquisition.backend_diagnostics()
+        lines = []
+        for item in diagnostics:
+            marker = "FOUND" if item.get("detected") else "not found"
+            lines.append(f"{item.get('backend', 'backend')}: {marker} — {item.get('status', '')}")
+            for device in item.get("devices", []):
+                lines.append(
+                    f"  {device.get('manufacturer') or ''} {device.get('product') or 'unnamed HID'} "
+                    f"VID {int(device.get('vendor_id') or 0):04X} PID {int(device.get('product_id') or 0):04X}"
+                )
+        summary = "\n".join(lines) or "No backend results returned."
+        self.controller_source_status.setText(summary.replace("\n", " • "))
+        self._add_event("controller_backend_diagnostics", {"results": diagnostics})
+        QMessageBox.information(self, "Controller backend diagnostics", summary)
 
     def _controller_source_changed(self, _index: int = 0) -> None:
         if not hasattr(self, "controller_source_combo"):

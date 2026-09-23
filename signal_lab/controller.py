@@ -108,6 +108,63 @@ class ControllerAcquisition:
             return False, "Raw HID backend is not installed; run python -m pip install -r requirements.txt"
         return True, "Raw HID backend available"
 
+    @staticmethod
+    def backend_diagnostics() -> list[dict]:
+        """Probe every read-only controller backend and return user-facing results."""
+        try:
+            from controller_integrity import HIDGamepad, SDLJoystick, WinMMJoystick, XInputGamepad
+        except Exception as exc:
+            return [{"backend": "backend import", "detected": False, "status": f"failed: {exc}"}]
+
+        results: list[dict] = []
+        try:
+            xinput = XInputGamepad()
+            sample = xinput.read()
+            results.append({"backend": "XInput", "detected": sample is not None, "status": xinput.status()})
+        except Exception as exc:
+            results.append({"backend": "XInput", "detected": False, "status": f"failed: {exc}"})
+
+        try:
+            sdl_count = SDLJoystick.device_count()
+            sdl = SDLJoystick()
+            sample = sdl.read()
+            results.append({
+                "backend": "SDL",
+                "detected": sample is not None,
+                "status": sdl.status() if sample is not None else f"{sdl_count} SDL joystick(s) enumerated",
+            })
+        except Exception as exc:
+            results.append({"backend": "SDL", "detected": False, "status": f"failed: {exc}"})
+
+        try:
+            winmm = WinMMJoystick()
+            sample = winmm.read()
+            results.append({"backend": "DirectInput/WinMM", "detected": sample is not None, "status": winmm.status()})
+        except Exception as exc:
+            results.append({"backend": "DirectInput/WinMM", "detected": False, "status": f"failed: {exc}"})
+
+        try:
+            raw_devices = HIDGamepad.enumerate_devices()
+            results.append({
+                "backend": "Raw HID",
+                "detected": bool(raw_devices),
+                "status": f"{len(raw_devices)} controller-like HID device(s) enumerated",
+                "devices": [
+                    {
+                        "product": info.get("product_string"),
+                        "manufacturer": info.get("manufacturer_string"),
+                        "vendor_id": info.get("vendor_id"),
+                        "product_id": info.get("product_id"),
+                        "usage_page": info.get("usage_page"),
+                        "usage": info.get("usage"),
+                    }
+                    for info in raw_devices
+                ],
+            })
+        except Exception as exc:
+            results.append({"backend": "Raw HID", "detected": False, "status": f"failed: {exc}"})
+        return results
+
     def _event(self, name: str, payload: dict | None = None) -> None:
         if self.event_callback:
             self.event_callback(name, payload or {})
