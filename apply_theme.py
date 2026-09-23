@@ -44,7 +44,7 @@ def main() -> None:
         '        ttk.Label(header, text="RCMTool", style="Title.TLabel").pack(anchor="w")\n'
         "        ttk.Label(\n"
         "            header,\n"
-        '            text="Controller integrity  ·  read-only capture  ·  testers",\n'
+        '            text="Read-only  ·  Before = pad direct  ·  After = device in path",\n'
         '            style="Muted.TLabel",\n'
         '        ).pack(anchor="w", pady=(4, 0))\n',
         "header typography",
