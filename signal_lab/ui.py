@@ -1,4 +1,4 @@
-"""Modern Qt desktop shell for Gamepad Signal Lab."""
+"""Modern Qt desktop shell for RcmTool."""
 from __future__ import annotations
 
 from bisect import bisect_left
@@ -95,7 +95,7 @@ class SupportUploadWorker(QThread):
 class WelcomeDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Welcome to Gamepad Signal Lab")
+        self.setWindowTitle("Welcome to RcmTool")
         self.setMinimumWidth(560)
         layout = QVBoxLayout(self)
         title = QLabel("GAMEPAD SIGNAL LAB")
@@ -123,7 +123,7 @@ class WelcomeDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle(f"Gamepad Signal Lab {__version__}")
+        self.setWindowTitle(f"RcmTool {__version__}")
         self.resize(1480, 920)
         self.setMinimumSize(1120, 720)
         self.settings = QSettings("SensoredRooster", "GamepadSignalLab")
@@ -980,7 +980,7 @@ class MainWindow(QMainWindow):
             return
         mode="simulation" if self.simulation_mode else "hardware"
         self.session_id=self.db.create_session(
-            "Gamepad Signal Lab capture",mode,__version__,
+            "RcmTool capture",mode,__version__,
             {
                 "nominal_frequency_hz":self.nominal_freq.value(),
                 "timing_reference_mode":self.timing_reference_mode.currentData(),
@@ -2245,7 +2245,7 @@ class MainWindow(QMainWindow):
 
     def _export_html_report(self) -> None:
         if not self._ensure_session(): return
-        path,_=QFileDialog.getSaveFileName(self,"Engineering Report",str(self.data_root/"GamepadSignalLab_Report.html"),"HTML (*.html)")
+        path,_=QFileDialog.getSaveFileName(self,"Engineering Report",str(self.data_root/"RcmTool_Report.html"),"HTML (*.html)")
         if not path: return
         timestamps=list(self.controller_ts)[-5000:]
         intervals=[(b-a)/1e6 for a,b in zip(timestamps,timestamps[1:]) if b>a]
@@ -2257,7 +2257,7 @@ class MainWindow(QMainWindow):
         ppm=[(value-nominal)/nominal*1e6 for value in freqs] if nominal>0 else []
         timeline=self.db.list_events(self.session_id,limit=250)
         write_html_report(
-            path,title="Gamepad Signal Lab Engineering Report",
+            path,title="RcmTool Engineering Report",
             controller_metrics=asdict(self.current_timing),
             oscillator_metrics=asdict(self.current_osc),
             metadata={
@@ -2419,7 +2419,7 @@ class MainWindow(QMainWindow):
 
 def main() -> int:
     app=QApplication.instance() or QApplication([])
-    app.setApplicationName("Gamepad Signal Lab")
+    app.setApplicationName("RcmTool")
     app.setOrganizationName("SensoredRooster")
     app.setStyle("Fusion")
     window=MainWindow()
