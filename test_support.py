@@ -61,10 +61,13 @@ class SupportTests(unittest.TestCase):
                     self.assertNotIn("another-secret", merged_logs)
                     self.assertNotIn("query-secret", merged_logs)
 
-    def test_upload_requires_configured_endpoint(self):
+    def test_default_support_endpoint_is_wired(self):
         with mock.patch.dict(os.environ, {"RCM_SUPPORT_UPLOAD_URL": ""}, clear=False):
-            with self.assertRaises(RuntimeError):
-                support.upload_support_bundle()
+            self.assertEqual(
+                support.DEFAULT_UPLOAD_URL,
+                "https://rcm-tool-support.sensoredrooster-com.workers.dev/upload",
+            )
+            self.assertTrue(support.health_snapshot()["upload_configured"])
 
 
 if __name__ == "__main__":
