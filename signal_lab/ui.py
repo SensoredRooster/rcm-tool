@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .analysis import oscillator_metrics, pearson_correlation, timing_metrics
-from .controller import ControllerAcquisition, ControllerMeasurement
+from .controller import ControllerAcquisition, ControllerMeasurement, detect_controller_family
 from .instruments import SafetyLimits, SimulatedInstrument, VisaScpiGenerator, VisaScpiMeasurementInstrument, list_visa_resources
 from .metric_catalog import CHART_HELP, METRIC_HELP
 from .oscillator import OscillatorAcquisition, OscillatorMeasurement
@@ -460,10 +460,33 @@ class MainWindow(QMainWindow):
         )
 
         identity, il = card("CONNECTED CONTROLLER")
+        identity_row = QHBoxLayout()
         self.controller_meta = QLabel("Simulation controller")
         self.controller_meta.setObjectName("Good")
         self.controller_meta.setWordWrap(True)
-        il.addWidget(self.controller_meta)
+        identity_row.addWidget(self.controller_meta, 1)
+
+        selector_box = QVBoxLayout()
+        selector_label = QLabel("CONTROLLER VIEW")
+        selector_label.setObjectName("Eyebrow")
+        self.controller_skin_combo = QComboBox()
+        self.controller_skin_combo.addItem("Auto", "auto")
+        self.controller_skin_combo.addItem("Xbox", "xbox")
+        self.controller_skin_combo.addItem("DualSense", "dualsense")
+        self.controller_skin_combo.addItem("Generic", "generic")
+        self.controller_skin_combo.setMinimumWidth(170)
+        self.controller_skin_combo.setToolTip(
+            "Auto selects the shell from backend and USB identity. Manual override changes only the visual shell; "
+            "it does not invent button mappings."
+        )
+        self.controller_skin_combo.currentIndexChanged.connect(self._controller_skin_changed)
+        self.controller_skin_status = QLabel("Auto detection: Generic")
+        self.controller_skin_status.setObjectName("Muted")
+        selector_box.addWidget(selector_label)
+        selector_box.addWidget(self.controller_skin_combo)
+        selector_box.addWidget(self.controller_skin_status)
+        identity_row.addLayout(selector_box)
+        il.addLayout(identity_row)
         layout.addWidget(identity)
 
         visual, vl = card("LIVE CONTROLLER STATE")
@@ -1298,7 +1321,16 @@ class MainWindow(QMainWindow):
         if current_page == "Controller Lab" and samples:
             last=samples[-1]
             visual_source=self.controller_sources[-1][0] if self.controller_sources else ""
-            self.controller_view.set_state(last,visual_source)
+            detected_family=detect_controller_family(self.controller_metadata,visual_source)
+            requested_skin=self.controller_skin_combo.currentData() if hasattr(self,"controller_skin_combo") else "auto"
+            visual_skin=detected_family if requested_skin=="auto" else str(requested_skin)
+            self.controller_view.set_state(
+                last,visual_source,skin=visual_skin,mapping_family=detected_family
+            )
+            mode_text="Auto" if requested_skin=="auto" else "Manual"
+            self.controller_skin_status.setText(
+                f"{mode_text} view: {visual_skin.title()} • detected {detected_family.title()}"
+            )
             self.controller_axes_readout.setText(
                 f"LX {float(last.get('lx',0)):+.4f}  •  LY {float(last.get('ly',0)):+.4f}  •  "
                 f"RX {float(last.get('rx',0)):+.4f}  •  RY {float(last.get('ry',0)):+.4f}  •  "
@@ -1332,7 +1364,12 @@ class MainWindow(QMainWindow):
             elif "dpad_pov" in last:
                 pov=int(last.get("dpad_pov",65535))
                 input_parts.append("D-pad centered" if pov in (65535,4294967295) else f"D-pad {pov/100:.1f}°")
-            elif "xinput" not in visual_source.lower():
+            elif detected_family=="xbox" and "buttons" in last:
+                mask=int(last.get("buttons",0))
+                dx=(1 if mask&0x0008 else 0)-(1 if mask&0x0004 else 0)
+                dy=(1 if mask&0x0001 else 0)-(1 if mask&0x0002 else 0)
+                input_parts.append(f"D-pad ({dx:+d}, {dy:+d})")
+            else:
                 input_parts.append("D-pad: unavailable/source-specific")
             self.button_capability.setText(" • ".join(input_parts))
 
@@ -1340,7 +1377,8 @@ class MainWindow(QMainWindow):
             source,quality=self.controller_sources[-1]
             meta=self.controller_metadata
             name=meta.get("controller_name") or source
-            identity=[str(name),f"Source: {source}",f"Timing: {quality}"]
+            detected=detect_controller_family(meta,source)
+            identity=[str(name),f"Family: {detected.title()}",f"Source: {source}",f"Timing: {quality}"]
             vid,pid=meta.get("vid"),meta.get("pid")
             if vid is not None and pid is not None:
                 identity.append(f"VID:PID {int(vid):04X}:{int(pid):04X}")
@@ -2311,6 +2349,9 @@ class MainWindow(QMainWindow):
         self.sim_osc_random.setValue(float(self.settings.value("sim_osc_random",0.25)))
         self.sim_osc_periodic.setValue(float(self.settings.value("sim_osc_periodic",0.15)))
         self.sim_osc_drift.setValue(float(self.settings.value("sim_osc_drift",0.01)))
+        saved_skin=str(self.settings.value("controller_skin","auto"))
+        skin_index=self.controller_skin_combo.findData(saved_skin)
+        self.controller_skin_combo.setCurrentIndex(max(0,skin_index))
         self._sync_safety_limits()
         self._apply_simulation_settings()
 
@@ -2328,7 +2369,8 @@ class MainWindow(QMainWindow):
             "sim_spike_every":self.sim_spike_every.value(),"sim_spike_ms":self.sim_spike_ms.value(),
             "sim_drop_every":self.sim_drop_every.value(),"sim_osc_ppm":self.sim_osc_ppm.value(),
             "sim_osc_random":self.sim_osc_random.value(),"sim_osc_periodic":self.sim_osc_periodic.value(),
-            "sim_osc_drift":self.sim_osc_drift.value()
+            "sim_osc_drift":self.sim_osc_drift.value(),
+            "controller_skin":self.controller_skin_combo.currentData()
         }
         for key,val in values.items(): self.settings.setValue(key,val)
         QMessageBox.information(self,"Settings","Settings saved.")
@@ -2341,6 +2383,13 @@ class MainWindow(QMainWindow):
 
     def _change_theme(self,name:str) -> None:
         self.theme_name=name; self.setStyleSheet(LIGHT if name=="Light" else DARK); self.settings.setValue("theme",name)
+
+    def _controller_skin_changed(self, _index:int=0) -> None:
+        if not hasattr(self,"controller_skin_combo"):
+            return
+        self.settings.setValue("controller_skin",self.controller_skin_combo.currentData())
+        if hasattr(self,"stack") and NAV[self.stack.currentIndex()]=="Controller Lab":
+            QTimer.singleShot(0,self._refresh_ui)
 
     def _reset_graphs(self) -> None:
         for ch in [
