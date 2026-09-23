@@ -34,37 +34,6 @@ def main() -> int:
     pump(app, 0.6)
     window._refresh_ui()
 
-    window.baseline_seconds.setValue(5)
-    window._start_baseline()
-    pump(app, 0.2)
-    window.baseline_deadline = time.monotonic() - 0.01
-    window._sample_tick()
-    window._refresh_ui()
-    window._set_reference_baseline()
-
-    window.sweep_start.setValue(100.0)
-    window.sweep_stop.setValue(1000.0)
-    window.sweep_steps.setValue(2)
-    window.amp_start.setValue(0.05)
-    window.amp_stop.setValue(0.05)
-    window.amp_steps.setValue(1)
-    window.settle_ms.setValue(0)
-    window.dwell_ms.setValue(100)
-    window.sweep_reps.setValue(1)
-    window.sweep_enable_output.setChecked(False)
-    window._start_sweep()
-    deadline = time.monotonic() + 3.0
-    while window.sweep_active and time.monotonic() < deadline:
-        app.processEvents()
-        time.sleep(0.01)
-    window._refresh_ui()
-    window._add_user_marker()
-
-    # Show a high-rate controller configuration in the Settings preview.
-    window.timing_reference_mode.setCurrentIndex(window.timing_reference_mode.findData("configured"))
-    window.expected_rate.setValue(32000.0)
-    window.sim_rate.setValue(32000.0)
-
     preview_root = ROOT / "artifacts" / "ui-preview-native"
     preview_root.mkdir(parents=True, exist_ok=True)
     captures = (

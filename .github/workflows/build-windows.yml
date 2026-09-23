@@ -39,7 +39,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           python -c "from PySide6.QtWidgets import QApplication; from signal_lab.ui import MainWindow; app=QApplication([]); w=MainWindow(); w.show(); app.processEvents(); w.close(); print('RcmTool UI smoke OK')"
-      - name: Run full simulation workflow smoke
+      - name: Run hardware-only workflow smoke
         shell: powershell
         env:
           QT_QPA_PLATFORM: offscreen

@@ -26,11 +26,10 @@ from PySide6.QtWidgets import (
 from . import __version__
 from .analysis import oscillator_metrics, pearson_correlation, timing_metrics
 from .controller import ControllerAcquisition, ControllerMeasurement, detect_controller_family
-from .instruments import SafetyLimits, SimulatedInstrument, VisaScpiGenerator, VisaScpiMeasurementInstrument, list_visa_resources
+from .instruments import SafetyLimits, UnavailableInstrument, VisaScpiGenerator, VisaScpiMeasurementInstrument, list_visa_resources
 from .metric_catalog import CHART_HELP, METRIC_HELP
 from .oscillator import OscillatorAcquisition, OscillatorMeasurement
 from .reporting import write_html_report
-from .simulation import GamepadSimulator, OscillatorSimulator, stimulus_response
 from .storage import LabDatabase
 from .sweep import make_sweep
 from .theme import DARK, LIGHT
@@ -117,12 +116,10 @@ class WelcomeDialog(QDialog):
             "4  Run baseline\n"
             "5  Optionally configure controlled stimulus\n"
             "6  Start experiment\n\n"
-            "Simulation Mode is available without hardware."
+            "A physical controller is required for controller measurements."
         )
         copy.setWordWrap(True)
         layout.addWidget(copy)
-        self.hardware = QCheckBox("Start in hardware mode")
-        layout.addWidget(self.hardware)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
         buttons.accepted.connect(self.accept)
         layout.addWidget(buttons)
@@ -143,30 +140,23 @@ class MainWindow(QMainWindow):
         self.data_root = data_root
         self.db = LabDatabase(data_root / "signal_lab.sqlite3")
 
-        self.simulation_mode = True
         self.capture_active = False
         self.session_id: str | None = None
         self.controller_acquisition: ControllerAcquisition | None = None
+        self.controller_source_kind = "automatic"
+        self.controller_source_path = None
+        self.controller_source_info: dict = {}
         self.controller_queue: queue.Queue[ControllerMeasurement] = queue.Queue()
         self.controller_event_queue: queue.Queue = queue.Queue()
         self.osc_queue: queue.Queue = queue.Queue()
 
-        self.instrument = SimulatedInstrument()
+        self.instrument = UnavailableInstrument()
         self.measurement_instrument = None
         self.osc_acquisition: OscillatorAcquisition | None = None
         self.instrument_lock = threading.Lock()
         self.safety_limits = SafetyLimits()
 
-        self.gamepad_sim = GamepadSimulator()
-        self.osc_sim = OscillatorSimulator()
-        self.sim_base_jitter_ms = self.gamepad_sim.config.jitter_ms
-        self.sim_base_osc_ppm = self.osc_sim.config.ppm_offset
-        self.sim_analog_extra = 0.0
         self.duplicate_raw_reports = 0
-        self.sim_epoch_ns = time.perf_counter_ns()
-        self.last_sim_wall_ns = time.perf_counter_ns()
-        self.sim_sample_accum = 0.0
-        self.osc_sample_accum = 0.0
 
         self.controller_ts = deque(maxlen=60000)
         self.controller_samples = deque(maxlen=60000)
@@ -212,6 +202,7 @@ class MainWindow(QMainWindow):
         support_log_event("gamepad_signal_lab_start", version=__version__)
         self._build_ui()
         self._apply_saved_settings()
+        self._start_controller_acquisition()
 
         self.sample_timer = QTimer(self)
         self.sample_timer.timeout.connect(self._sample_tick)
@@ -257,7 +248,7 @@ class MainWindow(QMainWindow):
             self.nav_buttons[name] = button
 
         side.addStretch(1)
-        self.hardware_status = QLabel("SIMULATION • no external output")
+        self.hardware_status = QLabel("HARDWARE • controller discovery active")
         self.hardware_status.setObjectName("Good")
         self.hardware_status.setWordWrap(True)
         side.addWidget(self.hardware_status)
@@ -287,9 +278,6 @@ class MainWindow(QMainWindow):
         self.top_title.setObjectName("PageTitle")
         top.addWidget(self.top_title)
         top.addStretch(1)
-        self.mode_button = QPushButton("Simulation Mode")
-        self.mode_button.clicked.connect(self._toggle_mode)
-        top.addWidget(self.mode_button)
         self.baseline_button = QPushButton("Run Baseline")
         self.baseline_button.clicked.connect(self._start_baseline)
         top.addWidget(self.baseline_button)
@@ -474,7 +462,7 @@ class MainWindow(QMainWindow):
 
         identity, il = card("CONNECTED CONTROLLER")
         identity_row = QHBoxLayout()
-        self.controller_meta = QLabel("Simulation controller")
+        self.controller_meta = QLabel("No physical controller detected")
         self.controller_meta.setObjectName("Good")
         self.controller_meta.setWordWrap(True)
         identity_row.addWidget(self.controller_meta, 1)
@@ -537,9 +525,31 @@ class MainWindow(QMainWindow):
         device_layout.addWidget(self.controller_capability)
         diagnostics.addWidget(device_card,1,0,1,2)
 
+        source_card, source_layout = card("INPUT SOURCE")
+        source_row = QHBoxLayout()
+        self.controller_source_combo = QComboBox()
+        self.controller_source_combo.setMinimumWidth(420)
+        self.controller_source_combo.setToolTip(
+            "Automatic tries XInput, SDL, Raw HID, then DirectInput. Raw HID reads the selected device's USB HID reports."
+        )
+        self.controller_source_combo.currentIndexChanged.connect(self._controller_source_changed)
+        refresh_sources = QPushButton("Refresh devices")
+        refresh_sources.clicked.connect(self._refresh_controller_sources)
+        source_row.addWidget(self.controller_source_combo, 1)
+        source_row.addWidget(refresh_sources)
+        source_layout.addLayout(source_row)
+        self.controller_source_status = QLabel(
+            "Automatic backend selection. Hardware acquisition is always active when the app is running."
+        )
+        self.controller_source_status.setObjectName("Muted")
+        self.controller_source_status.setWordWrap(True)
+        source_layout.addWidget(self.controller_source_status)
+        diagnostics.addWidget(source_card, 2, 0, 1, 2)
+
         diagnostics.setColumnStretch(0,1)
         diagnostics.setColumnStretch(1,1)
         layout.addLayout(diagnostics)
+        self._refresh_controller_sources()
         layout.addStretch(1)
         return self._scroll(w)
 
@@ -565,7 +575,7 @@ class MainWindow(QMainWindow):
         osc_disconnect = QPushButton("Disconnect"); osc_disconnect.clicked.connect(self._disconnect_measurement_instrument)
         instrument_row.addWidget(self.osc_visa_combo,1); instrument_row.addWidget(osc_refresh); instrument_row.addWidget(osc_connect); instrument_row.addWidget(osc_disconnect)
         rl.addLayout(instrument_row)
-        self.osc_instrument_status = QLabel("Simulation oscillator")
+        self.osc_instrument_status = QLabel("No measurement instrument connected")
         self.osc_instrument_status.setObjectName("Muted")
         self.osc_instrument_status.setWordWrap(True)
         rl.addWidget(self.osc_instrument_status)
@@ -608,7 +618,7 @@ class MainWindow(QMainWindow):
     def _interference_page(self) -> QWidget:
         w, layout = page("Interference Lab", "Controlled bench stimulus. External output always starts OFF and must be explicitly enabled.")
         stat, sl = card("ACTIVE INSTRUMENT")
-        self.interference_status = QLabel("Simulation Instrument • OUTPUT OFF")
+        self.interference_status = QLabel("No generator connected • OUTPUT OFF")
         self.interference_status.setWordWrap(True)
         sl.addWidget(self.interference_status)
         layout.addWidget(stat)
@@ -773,7 +783,7 @@ class MainWindow(QMainWindow):
         row.addWidget(self.visa_combo,1); row.addWidget(refresh); row.addWidget(measure); row.addWidget(generator); row.addWidget(disconnect)
         dl.addLayout(row)
         self.measurement_id=QLabel("Measurement: not connected"); self.measurement_id.setWordWrap(True); dl.addWidget(self.measurement_id)
-        self.generator_id=QLabel("Generator: Simulation Instrument • OUTPUT OFF"); self.generator_id.setWordWrap(True); dl.addWidget(self.generator_id)
+        self.generator_id=QLabel("Generator: No generator connected • OUTPUT OFF"); self.generator_id.setWordWrap(True); dl.addWidget(self.generator_id)
         layout.addWidget(d)
         self.cap_table=QTableWidget(0,3); self.cap_table.setHorizontalHeaderLabels(["Role","Capability","Status"]); layout.addWidget(self.cap_table)
         off=QPushButton("EMERGENCY OUTPUT OFF"); off.setObjectName("Danger"); off.clicked.connect(self._emergency_off); layout.addWidget(off,alignment=Qt.AlignmentFlag.AlignRight)
@@ -944,64 +954,115 @@ class MainWindow(QMainWindow):
         save=QPushButton("Save Settings"); save.clicked.connect(self._save_settings)
         sl.addLayout(sf); sl.addWidget(save,alignment=Qt.AlignmentFlag.AlignRight); layout.addWidget(s)
 
-        simcard, siml=card("SIMULATION")
-        simf=QFormLayout()
-        self.sim_rate=QDoubleSpinBox(); self.sim_rate.setRange(1,100000); self.sim_rate.setDecimals(0); self.sim_rate.setSingleStep(125); self.sim_rate.setValue(self.gamepad_sim.config.rate_hz); self.sim_rate.setSuffix(" Hz")
-        self.sim_rate.setToolTip(
-            "Synthetic controller report rate. Supports high-rate validation through 100 kHz; "
-            "this does not imply a physical controller or Windows backend can achieve that rate."
-        )
-        self.sim_jitter=QDoubleSpinBox(); self.sim_jitter.setRange(0,20); self.sim_jitter.setDecimals(4); self.sim_jitter.setValue(self.sim_base_jitter_ms); self.sim_jitter.setSuffix(" ms")
-        self.sim_periodic_jitter=QDoubleSpinBox(); self.sim_periodic_jitter.setRange(0,20); self.sim_periodic_jitter.setDecimals(4); self.sim_periodic_jitter.setValue(self.gamepad_sim.config.periodic_jitter_ms); self.sim_periodic_jitter.setSuffix(" ms")
-        self.sim_periodic_hz=QDoubleSpinBox(); self.sim_periodic_hz.setRange(0.01,5000); self.sim_periodic_hz.setDecimals(3); self.sim_periodic_hz.setValue(self.gamepad_sim.config.periodic_hz); self.sim_periodic_hz.setSuffix(" Hz")
-        self.sim_spike_every=QSpinBox(); self.sim_spike_every.setRange(0,1000000); self.sim_spike_every.setValue(self.gamepad_sim.config.spike_every); self.sim_spike_every.setSpecialValueText("Off")
-        self.sim_spike_ms=QDoubleSpinBox(); self.sim_spike_ms.setRange(0,100); self.sim_spike_ms.setDecimals(4); self.sim_spike_ms.setValue(self.gamepad_sim.config.spike_ms); self.sim_spike_ms.setSuffix(" ms")
-        self.sim_drop_every=QSpinBox(); self.sim_drop_every.setRange(0,1000000); self.sim_drop_every.setValue(self.gamepad_sim.config.drop_every); self.sim_drop_every.setSpecialValueText("Off")
-        self.sim_osc_ppm=QDoubleSpinBox(); self.sim_osc_ppm.setRange(-100000,100000); self.sim_osc_ppm.setDecimals(5); self.sim_osc_ppm.setValue(self.sim_base_osc_ppm); self.sim_osc_ppm.setSuffix(" ppm")
-        self.sim_osc_random=QDoubleSpinBox(); self.sim_osc_random.setRange(0,100000); self.sim_osc_random.setDecimals(5); self.sim_osc_random.setValue(self.osc_sim.config.random_jitter_ppm); self.sim_osc_random.setSuffix(" ppm")
-        self.sim_osc_periodic=QDoubleSpinBox(); self.sim_osc_periodic.setRange(0,100000); self.sim_osc_periodic.setDecimals(5); self.sim_osc_periodic.setValue(self.osc_sim.config.periodic_jitter_ppm); self.sim_osc_periodic.setSuffix(" ppm")
-        self.sim_osc_drift=QDoubleSpinBox(); self.sim_osc_drift.setRange(-10000,10000); self.sim_osc_drift.setDecimals(6); self.sim_osc_drift.setValue(self.osc_sim.config.drift_ppm_per_second); self.sim_osc_drift.setSuffix(" ppm/s")
-        for label_text,widget in [
-            ("Gamepad rate",self.sim_rate),("Random jitter",self.sim_jitter),("Periodic jitter",self.sim_periodic_jitter),
-            ("Periodic jitter frequency",self.sim_periodic_hz),("Spike every N reports",self.sim_spike_every),("Spike size",self.sim_spike_ms),
-            ("Missing-report cadence",self.sim_drop_every),("Oscillator offset",self.sim_osc_ppm),("Oscillator random jitter",self.sim_osc_random),
-            ("Oscillator periodic jitter",self.sim_osc_periodic),("Oscillator drift",self.sim_osc_drift),
-        ]:
-            simf.addRow(label_text,widget)
-        apply_sim=QPushButton("Apply Simulation Settings"); apply_sim.clicked.connect(self._apply_simulation_settings)
-        siml.addLayout(simf); siml.addWidget(apply_sim,alignment=Qt.AlignmentFlag.AlignRight); layout.addWidget(simcard)
-
         dbcard, dbl=card("DATA")
         label=QLabel(f"SQLite database:\n{self.db.path}\n\nRaw samples are retained and can be exported from Reports.")
         label.setWordWrap(True); dbl.addWidget(label); layout.addWidget(dbcard); layout.addStretch(1)
         return self._scroll(w)
 
-    def _toggle_mode(self) -> None:
-        if self.capture_active:
-            QMessageBox.information(self,"Capture active","Stop the active capture before changing acquisition mode.")
-            return
-        if self.simulation_mode:
-            self.simulation_mode=False
-            self.mode_button.setText("Hardware Mode")
-            self.hardware_status.setText("HARDWARE • controller discovery active")
-            self.hardware_status.setObjectName("Warn")
-            self.controller_acquisition=ControllerAcquisition(self.controller_queue.put, lambda name, payload: self.controller_event_queue.put((name, payload)))
-            self.controller_acquisition.start()
-            if hasattr(self,"osc_instrument_status"):
-                self.osc_instrument_status.setText("No measurement instrument connected")
-            self._add_event("hardware_mode_enabled",{})
+    def _clear_controller_state(self, identity: str) -> None:
+        """Prevent samples from one acquisition mode being shown as another."""
+        self.controller_ts.clear()
+        self.controller_samples.clear()
+        self.controller_sources.clear()
+        self.controller_metadata = {}
+        self.duplicate_raw_reports = 0
+        while True:
+            try:
+                self.controller_queue.get_nowait()
+            except queue.Empty:
+                break
+        self.controller_meta.setText(identity)
+        self.controller_axes_readout.setText(
+            "LX unavailable  •  LY unavailable  •  RX unavailable  •  RY unavailable  •  LT unavailable  •  RT unavailable"
+        )
+        self.axis_noise.setText("Analog noise unavailable until hardware samples arrive")
+        self.button_capability.setText("No decoded hardware input sample")
+        self.controller_capability.setText("No active physical controller/backend")
+
+    def _start_controller_acquisition(self) -> None:
+        if self.controller_acquisition:
+            self.controller_acquisition.stop()
+        self.controller_acquisition = ControllerAcquisition(
+            self.controller_queue.put,
+            lambda name, payload: self.controller_event_queue.put((name, payload)),
+            source_kind=self.controller_source_kind,
+            hid_path=self.controller_source_path,
+            hid_info=self.controller_source_info,
+        )
+        self.controller_acquisition.start()
+        if self.controller_source_kind == "raw_hid":
+            name = self.controller_source_info.get("product_string") or "selected device"
+            self.controller_source_status.setText(
+                f"Raw HID selected: {name}. Reports are timestamped when received by Windows."
+            )
         else:
-            self.simulation_mode=True
-            if self.controller_acquisition:
-                self.controller_acquisition.stop()
-                self.controller_acquisition=None
-            self._disconnect_instrument(quiet=True)
-            self.instrument=SimulatedInstrument()
-            self.mode_button.setText("Simulation Mode")
-            self.hardware_status.setText("SIMULATION • no external output")
-            self.hardware_status.setObjectName("Good")
-            self._add_event("simulation_mode_enabled",{})
-        self.style().unpolish(self.hardware_status); self.style().polish(self.hardware_status)
+            self.controller_source_status.setText(
+                "Automatic backend selection active: XInput → SDL → Raw HID → DirectInput."
+            )
+
+    def _refresh_controller_sources(self) -> None:
+        if not hasattr(self, "controller_source_combo"):
+            return
+        selected_path = self.controller_source_path
+        combo = self.controller_source_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("Automatic — XInput → SDL → Raw HID → DirectInput", {"kind": "automatic"})
+        raw_devices = ControllerAcquisition.enumerate_raw_hid_devices()
+        for info in raw_devices:
+            path = info.get("path")
+            if not path:
+                continue
+            product = info.get("product_string") or "unnamed HID controller"
+            vendor_id = int(info.get("vendor_id") or 0)
+            product_id = int(info.get("product_id") or 0)
+            combo.addItem(
+                f"Raw HID — {product} (VID {vendor_id:04X}, PID {product_id:04X})",
+                {"kind": "raw_hid", "path": path, "info": dict(info)},
+            )
+        if not raw_devices:
+            combo.addItem(
+                "Raw HID — no device detected (connect a controller and refresh)",
+                {"kind": "raw_hid", "path": None, "info": {}},
+            )
+        combo.blockSignals(False)
+
+        index = 0
+        if selected_path is not None:
+            for i in range(combo.count()):
+                data = combo.itemData(i) or {}
+                if data.get("kind") == "raw_hid" and data.get("path") == selected_path:
+                    index = i
+                    break
+        combo.setCurrentIndex(index)
+        self._controller_source_changed(index)
+        if not raw_devices:
+            self.controller_source_status.setText(
+                "No Raw HID controller was found. Automatic mode is still available; connect a controller and refresh."
+            )
+
+    def _controller_source_changed(self, _index: int = 0) -> None:
+        if not hasattr(self, "controller_source_combo"):
+            return
+        data = self.controller_source_combo.currentData() or {"kind": "automatic"}
+        self.controller_source_kind = data.get("kind", "automatic")
+        self.controller_source_path = data.get("path")
+        self.controller_source_info = dict(data.get("info") or {})
+        if self.controller_source_kind == "raw_hid":
+            product = self.controller_source_info.get("product_string") or "selected device"
+            self.controller_source_status.setText(
+                f"Raw HID ready: {product}. Hardware acquisition is always active when the app is running."
+            )
+        elif self.controller_source_kind == "automatic":
+            self.controller_source_status.setText(
+                "Automatic backend selection. Hardware acquisition is always active when the app is running."
+            )
+        if not hasattr(self, "sample_timer"):
+            return
+        if self.capture_active:
+            self.controller_source_status.setText("Stop Capture before changing the controller source.")
+        else:
+            self._start_controller_acquisition()
 
     def _toggle_capture(self) -> None:
         self._stop_capture() if self.capture_active else self._start_capture()
@@ -1009,7 +1070,7 @@ class MainWindow(QMainWindow):
     def _start_capture(self) -> None:
         if self.capture_active:
             return
-        mode="simulation" if self.simulation_mode else "hardware"
+        mode="hardware"
         self.session_id=self.db.create_session(
             "RcmTool capture",mode,__version__,
             {
@@ -1047,65 +1108,20 @@ class MainWindow(QMainWindow):
         self.capture_button.setText("Start Capture")
 
     def _sample_tick(self) -> None:
-        now=time.perf_counter_ns()
-        if self.simulation_mode:
-            elapsed=max(0,(now-self.last_sim_wall_ns)/1e9)
-            self.last_sim_wall_ns=now
+        while True:
             try:
-                sim_output = self.instrument.output_enabled()
-            except Exception:
-                sim_output = False
-            if sim_output and isinstance(self.instrument,SimulatedInstrument):
-                response = stimulus_response(self.instrument.frequency_hz, self.instrument.amplitude_vpp)
-                self.gamepad_sim.config.jitter_ms = self.sim_base_jitter_ms + response.gamepad_extra_jitter_ms
-                self.osc_sim.config.ppm_offset = self.sim_base_osc_ppm + response.oscillator_extra_ppm
-                self.sim_analog_extra = response.analog_noise_extra
-            else:
-                self.gamepad_sim.config.jitter_ms = self.sim_base_jitter_ms
-                self.osc_sim.config.ppm_offset = self.sim_base_osc_ppm
-                self.sim_analog_extra = 0.0
-
-            rate=max(1.0,self.gamepad_sim.config.rate_hz)
-            self.sim_sample_accum += elapsed*rate
-            # Do not silently clip high-rate simulation. The catch-up ceiling is
-            # proportional to requested rate and covers about 100 ms of backlog.
-            max_batch=max(400,int(rate*0.10))
-            count=min(max_batch,int(self.sim_sample_accum)); self.sim_sample_accum -= count
-            for _ in range(count):
-                rel=self.gamepad_sim.next_timestamp_ns()
-                sample=self.gamepad_sim.sample()
-                if self.sim_analog_extra:
-                    extra=self.sim_analog_extra*math.sin(2*math.pi*997.0*(rel/1e9))
-                    for axis in ("lx","ly","rx","ry"):
-                        sample[axis]=max(-1.0,min(1.0,float(sample.get(axis,0.0))+extra))
-                self._accept_controller(
-                    self.sim_epoch_ns+rel,sample,"Simulation controller","simulated",
-                    metadata={"controller_name":"Simulation controller","connection_method":"Simulation","backend":"GamepadSimulator"},
-                )
-
-            # A physical clock instrument can be used while the controller side
-            # remains simulated. Only synthesize oscillator samples when no
-            # physical measurement source is attached.
-            if self.measurement_instrument is None:
-                self.osc_sample_accum += elapsed/0.05
-                oc=min(10,int(self.osc_sample_accum)); self.osc_sample_accum -= oc
-                for _ in range(oc):
-                    self._accept_oscillator(now,self.osc_sim.next_frequency_hz(0.05),"Simulation oscillator","simulated")
-        else:
-            while True:
-                try:
-                    event_name,event_payload=self.controller_event_queue.get_nowait()
-                except queue.Empty:
-                    break
-                self._add_event(event_name,event_payload)
-            # Drain enough queued hardware reports for high-rate controllers so
-            # this handoff queue does not become an artificial polling ceiling.
-            for _ in range(10000):
-                try:
-                    m=self.controller_queue.get_nowait()
-                except queue.Empty:
-                    break
-                self._accept_controller(m.timestamp_ns,m.sample,m.source,m.timing_quality,m.raw_report_hex,m.duplicate_raw_report,m.metadata)
+                event_name,event_payload=self.controller_event_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._add_event(event_name,event_payload)
+        # Drain enough queued hardware reports for high-rate controllers so this
+        # handoff queue does not become an artificial polling ceiling.
+        for _ in range(10000):
+            try:
+                m=self.controller_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._accept_controller(m.timestamp_ns,m.sample,m.source,m.timing_quality,m.raw_report_hex,m.duplicate_raw_report,m.metadata)
 
         # Oscillator acquisition is independent of controller acquisition mode.
         # OscillatorAcquisition emits OscillatorMeasurement objects; tuple support
@@ -1189,22 +1205,23 @@ class MainWindow(QMainWindow):
         current_page = NAV[self.stack.currentIndex()] if hasattr(self, "stack") else "Dashboard"
 
         reference_name="configured" if expected_override is not None else "measured median"
-        osc_source="SIMULATED" if self.simulation_mode and self.measurement_instrument is None else "MEASURED"
+        osc_source="MEASURED" if self.measurement_instrument is not None else "UNAVAILABLE"
+        controller_samples_available = t.sample_count > 0
 
         if current_page == "Dashboard":
             self.cards["rate"].set_value(
-                f"{t.effective_rate_hz:,.2f} Hz",
-                f"{t.sample_count:,} observed report timestamps",
-                source="MEASURED" if not self.simulation_mode else "SIMULATED",
+                f"{t.effective_rate_hz:,.2f} Hz" if controller_samples_available else "Unavailable",
+                f"{t.sample_count:,} observed report timestamps" if controller_samples_available else "No controller reports received",
+                source="MEASURED",
             )
             self.cards["interval"].set_value(
-                f"{t.mean_interval_ms:.3f} ms",
-                f"min {t.min_interval_ms:.3f} • max {t.max_interval_ms:.3f}",
-                source="MEASURED" if not self.simulation_mode else "SIMULATED",
+                f"{t.mean_interval_ms:.3f} ms" if controller_samples_available else "Unavailable",
+                f"min {t.min_interval_ms:.3f} • max {t.max_interval_ms:.3f}" if controller_samples_available else "Requires controller reports",
+                source="MEASURED",
             )
             self.cards["jitter"].set_value(
-                f"{t.rms_deviation_ms:.3f} ms",
-                f"RMS vs {reference_name} {reference_ms:.3f} ms • p2p {t.peak_to_peak_jitter_ms:.3f}",
+                f"{t.rms_deviation_ms:.3f} ms" if t.sample_count >= 2 else "Unavailable",
+                f"RMS vs {reference_name} {reference_ms:.3f} ms • p2p {t.peak_to_peak_jitter_ms:.3f}" if t.sample_count >= 2 else "Requires at least two controller reports",
                 source="CALCULATED",
             )
             self.cards["osc"].set_value(
@@ -1223,8 +1240,8 @@ class MainWindow(QMainWindow):
                 source="CALCULATED",
             )
             self.cards["late"].set_value(
-                str(t.late_reports),
-                f"missing estimate {t.missing_reports_estimate} • raw duplicates {self.duplicate_raw_reports}",
+                str(t.late_reports) if controller_samples_available else "Unavailable",
+                f"missing estimate {t.missing_reports_estimate} • raw duplicates {self.duplicate_raw_reports}" if controller_samples_available else "Requires controller reports",
                 source="CALCULATED",
             )
 
@@ -1233,9 +1250,10 @@ class MainWindow(QMainWindow):
         except Exception:
             output=False
         if current_page == "Dashboard":
+            generator_available = bool(getattr(getattr(self.instrument, "capabilities", None), "generator_output", False))
             self.cards["stimulus"].set_value(
-                "ON" if output else "OFF",
-                f"{self.stim_freq.value():g} Hz • {self.stim_amp.value():g} Vpp",
+                ("ON" if output else "OFF") if generator_available else "Unavailable",
+                f"{self.stim_freq.value():g} Hz • {self.stim_amp.value():g} Vpp" if generator_available else "No physical generator connected",
                 source="STATE",
             )
         if current_page == "Interference Lab":
@@ -1749,7 +1767,7 @@ class MainWindow(QMainWindow):
         if hasattr(self,"measurement_id"):
             self.measurement_id.setText("Measurement: not connected")
         if hasattr(self,"osc_instrument_status"):
-            self.osc_instrument_status.setText("Simulation oscillator" if self.simulation_mode else "No measurement instrument connected")
+            self.osc_instrument_status.setText("No measurement instrument connected")
         if hasattr(self,"cap_table"):
             self._refresh_capabilities()
 
@@ -1757,10 +1775,10 @@ class MainWindow(QMainWindow):
         resource=self._selected_visa_resource()
         if not resource: return
         self._emergency_off()
-        if not isinstance(self.instrument,SimulatedInstrument):
-            try: self.instrument.close()
-            except Exception:
-                LOGGER.exception("Failed to close the previous generator before reconnect")
+        try:
+            self.instrument.close()
+        except Exception:
+            LOGGER.exception("Failed to close the previous generator before reconnect")
         try:
             generator=VisaScpiGenerator(resource)
             identity=generator.identify()
@@ -1770,8 +1788,9 @@ class MainWindow(QMainWindow):
             self._add_event("generator_connected",{"resource":resource,"identity":identity})
             self._refresh_capabilities()
         except Exception as exc:
-            self.instrument=SimulatedInstrument()
-            self.generator_id.setText("Generator: connection failed • simulation source restored")
+            self.instrument=UnavailableInstrument()
+            self.generator_id.setText("Generator: connection failed • no generator connected")
+            self.interference_status.setText("No generator connected • OUTPUT OFF")
             self._report_error("Generator connection failed", exc)
             QMessageBox.critical(self,"Generator connection",str(exc))
 
@@ -1784,14 +1803,14 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             if not quiet:
                 QMessageBox.warning(self,"Generator",f"Disconnect warning: {exc}")
-        self.instrument=SimulatedInstrument()
+        self.instrument=UnavailableInstrument()
         if hasattr(self,"generator_id"):
-            self.generator_id.setText("Generator: Simulation Instrument • OUTPUT OFF")
+            self.generator_id.setText("Generator: No generator connected • OUTPUT OFF")
         if hasattr(self,"output_button"):
             self.output_button.setChecked(False)
             self.output_button.setText("Enable Output")
         if hasattr(self,"interference_status"):
-            self.interference_status.setText("Simulation Instrument • OUTPUT OFF")
+            self.interference_status.setText("No generator connected • OUTPUT OFF")
         if hasattr(self,"cap_table"):
             self._refresh_capabilities()
 
@@ -1799,20 +1818,15 @@ class MainWindow(QMainWindow):
     def _apply_stimulus_settings(self) -> bool:
         self._sync_safety_limits()
         try:
+            if not getattr(getattr(self.instrument, "capabilities", None), "generator_output", False):
+                raise RuntimeError("Connect a physical VISA/SCPI generator before configuring stimulus")
             self.instrument.set_safety_limits(self.safety_limits)
             self.safety_limits.validate(frequency_hz=self.stim_freq.value(),amplitude_vpp=self.stim_amp.value(),offset_v=self.stim_offset.value())
-            if isinstance(self.instrument,SimulatedInstrument):
+            with self.instrument_lock:
                 self.instrument.configure_generator(
-                    frequency_hz=self.stim_freq.value(), amplitude_vpp=self.stim_amp.value(),
-                    offset_v=self.stim_offset.value(), waveform=self.waveform_combo.currentText(),
-                    limits=self.safety_limits,
+                    frequency_hz=self.stim_freq.value(),amplitude_vpp=self.stim_amp.value(),
+                    offset_v=self.stim_offset.value(),waveform=self.waveform_combo.currentText(),limits=self.safety_limits
                 )
-            elif hasattr(self.instrument,"configure_generator"):
-                with self.instrument_lock:
-                    self.instrument.configure_generator(
-                        frequency_hz=self.stim_freq.value(),amplitude_vpp=self.stim_amp.value(),
-                        offset_v=self.stim_offset.value(),waveform=self.waveform_combo.currentText(),limits=self.safety_limits
-                    )
             requested={"frequency_hz":self.stim_freq.value(),"amplitude_vpp":self.stim_amp.value(),"offset_v":self.stim_offset.value(),"waveform":self.waveform_combo.currentText()}
             try:
                 with self.instrument_lock:
@@ -2303,7 +2317,7 @@ class MainWindow(QMainWindow):
             oscillator_metrics=asdict(self.current_osc),
             metadata={
                 "session_id":self.session_id,
-                "mode":"simulation" if self.simulation_mode else "hardware",
+                "mode":"hardware",
                 "correlation":self.current_corr,
                 "app_version":__version__,
                 "nominal_frequency_hz":self.nominal_freq.value(),
@@ -2337,34 +2351,6 @@ class MainWindow(QMainWindow):
             ]
         )
 
-    def _apply_simulation_settings(self) -> None:
-        self.gamepad_sim.config.rate_hz=self.sim_rate.value()
-        self.sim_base_jitter_ms=self.sim_jitter.value()
-        self.gamepad_sim.config.jitter_ms=self.sim_base_jitter_ms
-        self.gamepad_sim.config.periodic_jitter_ms=self.sim_periodic_jitter.value()
-        self.gamepad_sim.config.periodic_hz=self.sim_periodic_hz.value()
-        self.gamepad_sim.config.spike_every=self.sim_spike_every.value()
-        self.gamepad_sim.config.spike_ms=self.sim_spike_ms.value()
-        self.gamepad_sim.config.drop_every=self.sim_drop_every.value()
-        self.sim_base_osc_ppm=self.sim_osc_ppm.value()
-        self.osc_sim.config.ppm_offset=self.sim_base_osc_ppm
-        self.osc_sim.config.random_jitter_ppm=self.sim_osc_random.value()
-        self.osc_sim.config.periodic_jitter_ppm=self.sim_osc_periodic.value()
-        self.osc_sim.config.drift_ppm_per_second=self.sim_osc_drift.value()
-        self._add_event("simulation_settings",{
-            "gamepad_rate_hz":self.sim_rate.value(),
-            "random_jitter_ms":self.sim_jitter.value(),
-            "periodic_jitter_ms":self.sim_periodic_jitter.value(),
-            "periodic_hz":self.sim_periodic_hz.value(),
-            "spike_every":self.sim_spike_every.value(),
-            "spike_ms":self.sim_spike_ms.value(),
-            "drop_every":self.sim_drop_every.value(),
-            "oscillator_ppm_offset":self.sim_osc_ppm.value(),
-            "oscillator_random_jitter_ppm":self.sim_osc_random.value(),
-            "oscillator_periodic_jitter_ppm":self.sim_osc_periodic.value(),
-            "oscillator_drift_ppm_per_second":self.sim_osc_drift.value(),
-        })
-
     def _apply_saved_settings(self) -> None:
         self.baseline_seconds.setValue(int(self.settings.value("baseline_seconds",60)))
         saved_reference=str(self.settings.value("timing_reference_mode","median"))
@@ -2379,22 +2365,10 @@ class MainWindow(QMainWindow):
         self.max_freq.setValue(float(self.settings.value("max_freq",20_000_000)))
         self.max_amp.setValue(float(self.settings.value("max_amp",1.0)))
         self.max_offset.setValue(float(self.settings.value("max_offset",0.5)))
-        self.sim_rate.setValue(float(self.settings.value("sim_rate",1000.0)))
-        self.sim_jitter.setValue(float(self.settings.value("sim_jitter",0.05)))
-        self.sim_periodic_jitter.setValue(float(self.settings.value("sim_periodic_jitter",0.0)))
-        self.sim_periodic_hz.setValue(float(self.settings.value("sim_periodic_hz",60.0)))
-        self.sim_spike_every.setValue(int(self.settings.value("sim_spike_every",0)))
-        self.sim_spike_ms.setValue(float(self.settings.value("sim_spike_ms",1.0)))
-        self.sim_drop_every.setValue(int(self.settings.value("sim_drop_every",0)))
-        self.sim_osc_ppm.setValue(float(self.settings.value("sim_osc_ppm",-1.5)))
-        self.sim_osc_random.setValue(float(self.settings.value("sim_osc_random",0.25)))
-        self.sim_osc_periodic.setValue(float(self.settings.value("sim_osc_periodic",0.15)))
-        self.sim_osc_drift.setValue(float(self.settings.value("sim_osc_drift",0.01)))
         saved_skin=str(self.settings.value("controller_skin","auto"))
         skin_index=self.controller_skin_combo.findData(saved_skin)
         self.controller_skin_combo.setCurrentIndex(max(0,skin_index))
         self._sync_safety_limits()
-        self._apply_simulation_settings()
 
     def _save_settings(self) -> None:
         self._sync_safety_limits()
@@ -2405,12 +2379,6 @@ class MainWindow(QMainWindow):
             "stationary_excursion":self.stationary_excursion.value(),"nominal_freq":self.nominal_freq.value(),
             "graph_refresh":self.graph_refresh.value(),"max_freq":self.max_freq.value(),
             "max_amp":self.max_amp.value(),"max_offset":self.max_offset.value(),
-            "sim_rate":self.sim_rate.value(),"sim_jitter":self.sim_jitter.value(),
-            "sim_periodic_jitter":self.sim_periodic_jitter.value(),"sim_periodic_hz":self.sim_periodic_hz.value(),
-            "sim_spike_every":self.sim_spike_every.value(),"sim_spike_ms":self.sim_spike_ms.value(),
-            "sim_drop_every":self.sim_drop_every.value(),"sim_osc_ppm":self.sim_osc_ppm.value(),
-            "sim_osc_random":self.sim_osc_random.value(),"sim_osc_periodic":self.sim_osc_periodic.value(),
-            "sim_osc_drift":self.sim_osc_drift.value(),
             "controller_skin":self.controller_skin_combo.currentData()
         }
         for key,val in values.items(): self.settings.setValue(key,val)
@@ -2443,7 +2411,6 @@ class MainWindow(QMainWindow):
         dlg=WelcomeDialog(self)
         if dlg.exec()==QDialog.DialogCode.Accepted:
             self.settings.setValue("welcomed",True)
-            if dlg.hardware.isChecked(): self._toggle_mode()
 
     def closeEvent(self,event:QCloseEvent) -> None:
         self._emergency_off()

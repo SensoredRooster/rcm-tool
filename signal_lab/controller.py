@@ -72,14 +72,30 @@ class ControllerAcquisition:
         callback: Callable[[ControllerMeasurement], None],
         event_callback: Callable[[str, dict], None] | None = None,
         poll_sleep_s: float = 0.001,
+        source_kind: str = "automatic",
+        hid_path=None,
+        hid_info: dict | None = None,
     ) -> None:
         self.callback = callback
         self.event_callback = event_callback
         self.poll_sleep_s = max(0.00025, float(poll_sleep_s))
+        self.source_kind = source_kind if source_kind in {"automatic", "raw_hid"} else "automatic"
+        self.hid_path = hid_path
+        self.hid_info = dict(hid_info or {})
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.backend = None
         self.error: str | None = None
+
+    @staticmethod
+    def enumerate_raw_hid_devices() -> list[dict]:
+        """Return controller-like Raw HID devices for the modern UI selector."""
+        try:
+            from controller_integrity import HIDGamepad
+            return list(HIDGamepad.enumerate_devices())
+        except Exception:
+            LOGGER.warning("Raw HID enumeration failed", exc_info=True)
+            return []
 
     def _event(self, name: str, payload: dict | None = None) -> None:
         if self.event_callback:
@@ -145,8 +161,11 @@ class ControllerAcquisition:
 
     def _run(self) -> None:
         try:
-            from controller_integrity import AutomaticControllerBackend
-            self.backend = AutomaticControllerBackend()
+            from controller_integrity import AutomaticControllerBackend, HIDGamepad
+            if self.source_kind == "raw_hid":
+                self.backend = HIDGamepad(path=self.hid_path, info=self.hid_info)
+            else:
+                self.backend = AutomaticControllerBackend()
         except Exception as exc:
             self.error = f"Controller backend initialization failed: {exc}"
             self._event("controller_backend_error", {"message": self.error})
@@ -164,6 +183,8 @@ class ControllerAcquisition:
                 sample = self.backend.read()
                 now = time.perf_counter_ns()
                 active = getattr(self.backend, "active", None)
+                if active is None and self.source_kind == "raw_hid":
+                    active = self.backend
                 source = (
                     getattr(active, "status", lambda: getattr(active, "name", "Controller"))()
                     if active is not None else "Controller"

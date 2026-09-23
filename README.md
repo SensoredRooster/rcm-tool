@@ -18,8 +18,8 @@ The application is measurement-focused. It does not inject game inputs, modify c
 - Linear/logarithmic frequency and amplitude sweep planning with repetitions, settling time, dwell time, sequential/randomized ordering, event logging, selectable response heat maps, per-step isolated measurement windows, and forced output-off at completion.
 - Synchronized controller and oscillator storage with descriptive correlation, shared cross-chart cursors, user markers, and timeline-event cursor positioning.
 - SQLite/WAL session storage, experiment history/timeline, JSON export, controller CSV export, saved baseline JSON, saved-session vs saved-session comparison, live-reference comparison, and self-contained HTML engineering reports containing plots, sweep response, timeline, metadata, and limitations.
-- Deterministic gamepad/oscillator simulation with configurable rate, random/periodic jitter, spikes, missing-report cadence, oscillator offset/jitter/drift, plus known stimulus-response relationships for validating sweep/correlation behavior.
-- Automated tests plus Windows CI validation for unit tests, Qt desktop launch, full simulation workflow, portable build, standalone one-file EXE, and Inno Setup installer.
+- Hardware-only acquisition and explicit unavailable states when a controller, measurement instrument, or generator is not connected.
+- Automated tests plus Windows CI validation for unit tests, Qt desktop launch, hardware-only workflow, portable build, standalone one-file EXE, and Inno Setup installer.
 
 ## Measurement integrity
 
@@ -29,7 +29,7 @@ Controller timestamps use Python's highest-resolution host monotonic clock avail
 - **XInput, SDL, and WinMM** are host-polling APIs. Their timing includes operating-system scheduling and API buffering effects.
 - Dedicated oscilloscopes, counters, logic analyzers, USB analyzers, or timing instruments are required when direct electrical or bus-level timing is needed.
 
-The application labels data as simulated, measured, calculated, estimated, or unavailable rather than inventing unsupported values.
+The application labels data as measured, calculated, estimated, or unavailable rather than inventing unsupported values.
 
 Dashboard cards, oscillator readouts, comparison metrics, and graphs include short hover definitions describing what each value means and whether it is measured or derived. Controller timing uses the measured median report interval as the default jitter/late-report reference; a configured reference rate can be selected explicitly in Settings. Time-series plots use elapsed timestamps rather than treating sample number as time.
 
@@ -62,13 +62,15 @@ Runtime dependencies are pinned in `requirements.txt` from the validated Windows
 ## First-run workflow
 
 1. Launch RcmTool.
-2. Leave Simulation selected initially.
-3. Start Capture and verify the timing and oscillator dashboard.
-4. Run a baseline.
-5. Review Controller Lab, Oscillator Lab, Correlation, Experiments, Compare, and Reports.
-6. For a physical gamepad, choose Real controller under Settings.
+2. Connect a physical controller, open Controller Lab, click **Refresh devices**, and choose either **Automatic** or a named **Raw HID** device under **Input Source**.
+3. Start Capture and verify the timing and controller dashboard.
+4. Connect a physical frequency instrument before using Oscillator Lab or running a baseline that includes clock data.
+5. Run a baseline.
+6. Review Controller Lab, Oscillator Lab, Correlation, Experiments, Compare, and Reports.
 7. For physical clock measurement, select a VISA resource in Oscillator Lab and connect it as a measurement instrument.
 8. For controlled stimulus, select a VISA resource in Interference Lab and explicitly connect it as a generator. Generator output remains OFF until the user enables it.
+
+The Raw HID selector reads the selected controller's USB HID reports and labels their timestamps as **measured-at-host-read**. If no device is found, Controller Lab reports that hardware samples are unavailable.
 
 ## Oscillator and clock measurements
 
@@ -186,7 +188,7 @@ The GitHub Actions workflow at `.github/workflows/test.yml` runs compilation, Ru
 python -m unittest discover -v
 ~~~
 
-The suite covers timing calculations, ppm/period/jitter calculations, oscillator drift/outlier statistics, deterministic simulation, controller metadata extraction, correlation, SCPI readback and output safety, sweep construction, report generation, saved-session retrieval, and SQLite/CSV/JSON persistence. The legacy compatibility bench remains covered by its existing tests but is not the release product.
+The suite covers timing calculations, ppm/period/jitter calculations, oscillator drift/outlier statistics, controller metadata extraction, correlation, SCPI readback and output safety, sweep construction, report generation, saved-session retrieval, and SQLite/CSV/JSON persistence. The legacy compatibility bench remains covered by its existing tests but is not the release product.
 
 ## Project layout
 
@@ -197,7 +199,6 @@ signal_lab/
   controller.py     adapter over existing RCM controller backends
   oscillator.py     background physical frequency acquisition
   instruments.py    separate VISA/SCPI measurement and generator roles
-  simulation.py     deterministic virtual gamepad and oscillator
   storage.py        SQLite and exports
   sweep.py          reproducible sweep planning
   reporting.py      engineering HTML reports
@@ -249,7 +250,7 @@ The original Cloudflare workflows remain alongside the Windows application build
 
 ## High-rate controller support
 
-RcmTool does not use 1 kHz as a measurement ceiling in simulation or configured-reference analysis. Those controls accept **1 Hz through 100 kHz**, covering 8 kHz and higher-rate controllers. Physical hardware validation is backend- and device-dependent; only Raw HID arrival timing is treated as a measured host-observed stream, while XInput, SDL, and WinMM remain host-poll estimates. Hardware-specific rate claims should be reported only for devices validated in `HARDWARE_MEASUREMENTS.md`.
+RcmTool does not use 1 kHz as a measurement ceiling in configured-reference analysis. That control accepts **1 Hz through 100 kHz**, covering 8 kHz and higher-rate controllers. Physical hardware validation is backend- and device-dependent; only Raw HID arrival timing is treated as a measured host-observed stream, while XInput, SDL, and WinMM remain host-poll estimates. Hardware-specific rate claims should be reported only for devices validated in `HARDWARE_MEASUREMENTS.md`.
 
 At very high physical rates, usable fidelity still depends on the controller, USB transport, backend, Windows scheduling, and timing source. Raw-HID arrival timing is preferred when available; host-poll backends remain labeled as estimates.
 
@@ -263,6 +264,6 @@ The live measurement path is designed to keep visualization and persistence work
 - buffered rows are force-flushed at capture stop, export, session reads, and application close
 - hidden pages do not rebuild graph datasets or schedule chart repaints; navigating to a live page triggers an immediate refresh
 - controller metadata is only copied when it actually changes
-- the hardware queue drain and simulation batching are sized for high-rate controller testing without treating 1 kHz or 8 kHz as a software ceiling
+- the hardware queue drain is sized for high-rate controller testing without treating 1 kHz or 8 kHz as a software ceiling
 
 These optimizations do not downsample or discard captured raw reports. Effective polling rate and timing metrics continue to come from the observed timestamps.

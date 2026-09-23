@@ -4,8 +4,7 @@ import unittest
 
 from signal_lab.analysis import align_nearest, oscillator_metrics, pearson_correlation, timing_metrics
 from signal_lab.controller import detect_controller_family
-from signal_lab.instruments import SafetyLimits, SimulatedInstrument, VisaScpiMeasurementInstrument
-from signal_lab.simulation import GamepadSimulator, SimulatedGamepadConfig, OscillatorSimulator, SimulatedOscillatorConfig, stimulus_response
+from signal_lab.instruments import InstrumentAdapter, SafetyLimits, VisaScpiMeasurementInstrument
 from signal_lab.storage import LabDatabase
 from signal_lab.reporting import write_html_report
 from signal_lab.sweep import make_sweep
@@ -98,11 +97,6 @@ class SignalLabTests(unittest.TestCase):
         self.assertAlmostEqual(metrics.effective_rate_hz, 32000.0, places=6)
         self.assertAlmostEqual(metrics.mean_interval_ms, 0.03125, places=9)
 
-    def test_simulator_is_deterministic(self):
-        cfg = SimulatedGamepadConfig(rate_hz=1000, jitter_ms=0.05, seed=9)
-        a, b = GamepadSimulator(cfg), GamepadSimulator(cfg)
-        self.assertEqual([a.next_timestamp_ns() for _ in range(50)], [b.next_timestamp_ns() for _ in range(50)])
-
     def test_oscillator_ppm(self):
         m = oscillator_metrics([11_999_988.0] * 20, 12_000_000.0)
         self.assertAlmostEqual(m.frequency_error_hz, -12.0, places=6)
@@ -121,10 +115,6 @@ class SignalLabTests(unittest.TestCase):
         loose = timing_metrics(stamps, expected_interval_ms=1.0, late_factor=2.0)
         self.assertEqual(strict.late_reports, 1)
         self.assertEqual(loose.late_reports, 0)
-
-    def test_oscillator_simulator(self):
-        sim = OscillatorSimulator(SimulatedOscillatorConfig(nominal_frequency_hz=10_000_000, ppm_offset=2.0, random_jitter_ppm=0, periodic_jitter_ppm=0, drift_ppm_per_second=0))
-        self.assertAlmostEqual(sim.next_frequency_hz(), 10_000_020.0, places=3)
 
     def test_correlation_is_invariant_to_reference_offset(self):
         controller = [0, 1_000_000, 2_000_000, 4_000_000, 5_000_000]
@@ -154,14 +144,12 @@ class SignalLabTests(unittest.TestCase):
         limits = SafetyLimits(max_frequency_hz=1000, max_amplitude_vpp=1, max_abs_offset_v=.5)
         with self.assertRaises(ValueError):
             limits.validate(frequency_hz=2000, amplitude_vpp=.1, offset_v=0)
-        instrument = SimulatedInstrument()
+        instrument = InstrumentAdapter()
         self.assertFalse(instrument.output_enabled())
 
-    def test_simulated_generator_rechecks_limits_at_output_boundary(self):
-        instrument = SimulatedInstrument()
-        instrument.set_safety_limits(SafetyLimits(max_frequency_hz=1000))
-        instrument.frequency_hz = 2000
-        with self.assertRaises(ValueError):
+    def test_unavailable_generator_cannot_enable_output(self):
+        instrument = InstrumentAdapter()
+        with self.assertRaises(RuntimeError):
             instrument.set_output(True)
         self.assertFalse(instrument.output_enabled())
 
@@ -273,14 +261,6 @@ class SignalLabTests(unittest.TestCase):
         self.assertEqual(len(plan), 6)
         self.assertEqual(sorted({round(x.amplitude_vpp, 3) for x in plan}), [0.1, 0.2, 0.3])
 
-    def test_simulated_stimulus_has_known_response(self):
-        quiet = stimulus_response(1000, 0.0)
-        driven = stimulus_response(1000, 0.5)
-        off_resonance = stimulus_response(50, 0.5)
-        self.assertEqual(quiet.gamepad_extra_jitter_ms, 0.0)
-        self.assertGreater(driven.gamepad_extra_jitter_ms, off_resonance.gamepad_extra_jitter_ms)
-        self.assertGreater(driven.oscillator_extra_ppm, 0.0)
-
     def test_engineering_report_contains_plots_sweep_and_timeline(self):
         with tempfile.TemporaryDirectory() as td:
             target = Path(td) / "report.html"
@@ -289,7 +269,7 @@ class SignalLabTests(unittest.TestCase):
                 title="Lab Report",
                 controller_metrics={"rate_hz": 1000.0},
                 oscillator_metrics={"frequency_hz": 12_000_000.0},
-                metadata={"mode": "simulation"},
+                metadata={"mode": "hardware"},
                 limitations=["host timing is not bus timing"],
                 plots={"Timing": [1.0, 1.1, 0.9]},
                 sweep_points=[(100.0, 0.1, 0.02, 1.5)],
@@ -322,7 +302,7 @@ class SignalLabTests(unittest.TestCase):
     def test_database_buffers_rows_until_flush(self):
         with tempfile.TemporaryDirectory() as td:
             db = LabDatabase(Path(td) / "buffered.sqlite3")
-            sid = db.create_session("buffered", "simulation", "test")
+            sid = db.create_session("buffered", "hardware", "test")
             db.add_controller_sample(
                 sid, 123,
                 {"lx":0.0,"ly":0.0,"rx":0.0,"ry":0.0,"lt":0.0,"rt":0.0},
@@ -337,13 +317,13 @@ class SignalLabTests(unittest.TestCase):
     def test_sqlite_round_trip(self):
         with tempfile.TemporaryDirectory() as td:
             db = LabDatabase(Path(td)/"lab.sqlite3")
-            sid = db.create_session("test","simulation","x")
+            sid = db.create_session("test","hardware","x")
             db.add_controller_sample(
                 sid,1,
                 {"lx":0,"ly":0,"rx":0,"ry":0,"lt":0,"rt":0,"buttons":5,"dpad_x":1.0,"dpad_y":0.0},
-                source="sim",
+                source="test",
             )
-            db.add_oscillator_sample(sid,1,12_000_000,source="sim",quality="simulated")
+            db.add_oscillator_sample(sid,1,12_000_000,source="test",quality="measured")
             db.add_event(sid,1,"baseline_started")
             db.flush()
             s = db.session_summary(sid)

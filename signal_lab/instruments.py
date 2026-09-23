@@ -80,59 +80,13 @@ class InstrumentAdapter:
         pass
 
 
-class SimulatedInstrument(InstrumentAdapter):
-    name = "Simulation Instrument"
-    capabilities = InstrumentCapabilities(
-        frequency=True, period=True, duty_cycle=True, waveform_capture=True,
-        generator_output=True, high_resolution_timestamps=True,
-    )
+class UnavailableInstrument(InstrumentAdapter):
+    """Explicit no-hardware state used until a real VISA instrument is connected."""
 
-    def __init__(self) -> None:
-        self._safety_limits = SafetyLimits()
-        self._output = False
-        self.frequency_hz = 1000.0
-        self.amplitude_vpp = 0.1
-        self.offset_v = 0.0
-        self.waveform = "SINE"
+    name = "No generator connected"
 
-    def configure_generator(
-        self, *, frequency_hz: float, amplitude_vpp: float, offset_v: float,
-        waveform: str, limits: SafetyLimits | None = None,
-    ) -> None:
-        active_limits = limits or self._safety_limits
-        active_limits.validate(
-            frequency_hz=frequency_hz,
-            amplitude_vpp=amplitude_vpp,
-            offset_v=offset_v,
-        )
-        wave = waveform.upper()
-        if wave not in {"SINE", "SQU", "RAMP", "PULS", "NOIS"}:
-            raise ValueError("Unsupported waveform")
-        self.frequency_hz = frequency_hz
-        self.amplitude_vpp = amplitude_vpp
-        self.offset_v = offset_v
-        self.waveform = wave
-
-    def set_output(self, enabled: bool) -> None:
-        if enabled:
-            self._safety_limits.validate(
-                frequency_hz=self.frequency_hz,
-                amplitude_vpp=self.amplitude_vpp,
-                offset_v=self.offset_v,
-            )
-        self._output = bool(enabled)
-
-    def output_enabled(self) -> bool:
-        return self._output
-
-    def read_generator_state(self) -> dict:
-        return {
-            "output_enabled": self._output,
-            "frequency_hz": self.frequency_hz,
-            "amplitude_vpp": self.amplitude_vpp,
-            "offset_v": self.offset_v,
-            "waveform": self.waveform,
-        }
+    def identify(self) -> str:
+        return self.name
 
 
 class _VisaBase(InstrumentAdapter):
