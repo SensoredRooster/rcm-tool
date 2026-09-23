@@ -97,6 +97,17 @@ class ControllerAcquisition:
             LOGGER.warning("Raw HID enumeration failed", exc_info=True)
             return []
 
+    @staticmethod
+    def raw_hid_backend_status() -> tuple[bool, str]:
+        """Return an actionable status for the optional Raw HID dependency."""
+        try:
+            from controller_integrity import hid
+        except Exception as exc:
+            return False, f"Raw HID backend import failed: {exc}"
+        if hid is None:
+            return False, "Raw HID backend is not installed; run python -m pip install -r requirements.txt"
+        return True, "Raw HID backend available"
+
     def _event(self, name: str, payload: dict | None = None) -> None:
         if self.event_callback:
             self.event_callback(name, payload or {})

@@ -199,6 +199,26 @@ class SignalLabTests(unittest.TestCase):
         self.assertEqual(meta["usb_path"], "hid-path")
         self.assertEqual(meta["controller_name"], "Test Pad")
 
+    def test_raw_hid_filter_keeps_known_vendor_generic_controller(self):
+        import controller_integrity
+
+        class FakeHID:
+            @staticmethod
+            def enumerate():
+                return [
+                    {"vendor_id": 0x057E, "product_id": 1, "product_string": "USB Input Device"},
+                    {"vendor_id": 0x413C, "product_id": 2, "product_string": "Dell Keyboard", "usage_page": 1, "usage": 6},
+                ]
+
+        original_hid = controller_integrity.hid
+        controller_integrity.hid = FakeHID()
+        try:
+            devices = controller_integrity.HIDGamepad.enumerate_devices()
+        finally:
+            controller_integrity.hid = original_hid
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(devices[0]["vendor_id"], 0x057E)
+
     def test_measurement_capability_probe_reflects_actual_queries(self):
         class FakeMeasurement:
             def __init__(self):

@@ -1082,9 +1082,13 @@ class MainWindow(QMainWindow):
         combo.setCurrentIndex(index)
         self._controller_source_changed(index)
         if not raw_devices:
-            self.controller_source_status.setText(
-                "No Raw HID controller was found. Automatic mode is still available; connect a controller and refresh."
-            )
+            backend_available, backend_status = ControllerAcquisition.raw_hid_backend_status()
+            if backend_available:
+                self.controller_source_status.setText(
+                    "No Raw HID controller was found. Automatic mode is still available; connect the controller by USB and refresh."
+                )
+            else:
+                self.controller_source_status.setText(backend_status)
 
     def _controller_source_changed(self, _index: int = 0) -> None:
         if not hasattr(self, "controller_source_combo"):
@@ -1425,6 +1429,18 @@ class MainWindow(QMainWindow):
             except queue.Empty:
                 break
             self._add_event(event_name,event_payload)
+            if event_name == "controller_backend_error":
+                self.controller_source_status.setText(
+                    f"Controller backend error: {event_payload.get('message', 'unknown error')}"
+                )
+            elif event_name == "controller_connected":
+                self.controller_source_status.setText(
+                    f"Controller connected: {event_payload.get('source', 'hardware input')}"
+                )
+            elif event_name == "controller_disconnected":
+                self.controller_source_status.setText(
+                    "Controller disconnected or stopped reporting. Check the cable/mode, then refresh devices."
+                )
         # Drain enough queued hardware reports for high-rate controllers so this
         # handoff queue does not become an artificial polling ceiling.
         for _ in range(10000):

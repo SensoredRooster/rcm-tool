@@ -330,7 +330,21 @@ class HIDGamepad:
     """Raw HID reader with a DualSense-compatible axis parser and generic fallback."""
 
     name = "Raw HID controller"
-    _KEYWORDS = ("controller", "gamepad", "joystick", "dualsense", "dualshock", "wireless")
+    _KEYWORDS = (
+        "controller", "gamepad", "joystick", "dualsense", "dualshock", "wireless",
+        "xbox", "playstation", "nintendo", "switch", "pro controller", "8bitdo",
+        "gamesir", "hori", "thrustmaster", "steam controller", "joy-con",
+    )
+    _KNOWN_CONTROLLER_VENDORS = frozenset({
+        0x045E,  # Microsoft / Xbox
+        0x054C,  # Sony / PlayStation
+        0x057E,  # Nintendo
+        0x28DE,  # Valve / Steam Controller
+        0x2DC8,  # 8BitDo
+        0x0F0D,  # HORI
+        0x146B,  # Bigben / Nacon
+        0x24C6,  # Mad Catz / licensed gamepads
+    })
 
     def __init__(self, path=None, info: Optional[dict] = None) -> None:
         self.path = path
@@ -356,12 +370,14 @@ class HIDGamepad:
             usage_page = info.get("usage_page")
             usage = info.get("usage")
             product = (info.get("product_string") or "").strip()
+            vendor_id = info.get("vendor_id")
             searchable = " ".join(
                 str(info.get(key) or "") for key in ("product_string", "manufacturer_string", "serial_number")
             ).lower()
-            is_joystick_usage = usage_page == 0x01 and usage in (0x04, 0x05)
+            is_joystick_usage = usage_page == 0x01 and usage in (0x00, 0x04, 0x05)
             has_controller_name = any(keyword in searchable for keyword in cls._KEYWORDS)
-            if is_joystick_usage or has_controller_name:
+            is_known_controller_vendor = vendor_id in cls._KNOWN_CONTROLLER_VENDORS
+            if is_joystick_usage or has_controller_name or is_known_controller_vendor:
                 result.append(info)
         return result
 
