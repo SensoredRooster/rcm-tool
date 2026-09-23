@@ -5,11 +5,12 @@ No support bundle is uploaded automatically. Users explicitly choose Send Diagno
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import platform
+import re
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
@@ -63,16 +64,29 @@ def _rotate(path: Path) -> None:
     path.replace(path.with_name(path.name + ".1"))
 
 
+_SENSITIVE_KEY = re.compile(r"(?i)(token|secret|password|passwd|authorization|cookie|credential|api[_-]?key)")
+_BEARER = re.compile(r"(?i)Bearer\s+[A-Za-z0-9._~+/-]+=*")
+_QUERY_SECRET = re.compile(r"(?i)([?&](?:code|token|access_token|refresh_token|client_secret|state|password)=)[^&#\s]+")
+_LONG_TOKEN = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9_-]{56,}(?![A-Za-z0-9])")
+
+
+def redact_text(value: str) -> str:
+    value = _BEARER.sub("Bearer [REDACTED]", value)
+    value = _QUERY_SECRET.sub(r"\1[REDACTED]", value)
+    value = _LONG_TOKEN.sub("[REDACTED]", value)
+    return value
+
+
 def _redact(value):
     if isinstance(value, dict):
         return {
-            key: ("[REDACTED]" if any(token in key.lower() for token in ("token", "secret", "password", "cookie", "authorization", "credential", "api_key")) else _redact(item))
+            key: ("[REDACTED]" if _SENSITIVE_KEY.search(str(key)) else _redact(item))
             for key, item in value.items()
         }
     if isinstance(value, list):
         return [_redact(item) for item in value]
-    if isinstance(value, str) and len(value) > 48 and all(ch.isalnum() or ch in "-_." for ch in value):
-        return "[REDACTED]"
+    if isinstance(value, str):
+        return redact_text(value)
     return value
 
 
@@ -107,6 +121,8 @@ def health_snapshot() -> dict:
         "pygame_available": _module_available("pygame"),
         "hid_available": _module_available("hid"),
         "report_directory": str((Path(__file__).resolve().parent / "reports").resolve()),
+        "upload_configured": bool(os.environ.get("RCM_SUPPORT_UPLOAD_URL", "").strip()),
+        "repository": REPOSITORY_URL,
     }
 
 
@@ -140,9 +156,13 @@ def create_support_bundle() -> Path:
             "RCM Tool support bundle. Created locally after explicit user action. "
             "Review before sharing if desired. The bundle intentionally avoids controller telemetry reports and raw HID captures.\n",
         )
-        for path in support_root().glob("*.jsonl*"):
-            if path.is_file():
-                archive.write(path, f"logs/{path.name}")
+        for path in support_root().glob("*"):
+            if not path.is_file():
+                continue
+            if not (path.name.startswith("rcm-tool.jsonl") or path.name.startswith("errors.jsonl") or path.suffix.lower() == ".log"):
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            archive.writestr(f"logs/{path.name}", redact_text(text))
     log_event("support_bundle_created", path=str(destination), size_bytes=destination.stat().st_size)
     return destination
 
@@ -238,5 +258,13 @@ def start_heartbeat(interval: float = 1.0) -> None:
     _HEARTBEAT_THREAD.start()
 
 
+def _log_shutdown() -> None:
+    try:
+        log_event("app_stop")
+    except Exception:
+        pass
+
+
 install_exception_hooks()
+atexit.register(_log_shutdown)
 log_event("app_support_initialized", health=health_snapshot())
