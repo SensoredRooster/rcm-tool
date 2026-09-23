@@ -2,7 +2,7 @@ import tempfile
 from pathlib import Path
 import unittest
 
-from signal_lab.analysis import oscillator_metrics, pearson_correlation, timing_metrics
+from signal_lab.analysis import align_nearest, oscillator_metrics, pearson_correlation, timing_metrics
 from signal_lab.instruments import SafetyLimits, SimulatedInstrument, VisaScpiMeasurementInstrument
 from signal_lab.simulation import GamepadSimulator, SimulatedGamepadConfig, OscillatorSimulator, SimulatedOscillatorConfig
 from signal_lab.storage import LabDatabase
@@ -34,6 +34,14 @@ class SignalLabTests(unittest.TestCase):
 
     def test_correlation(self):
         self.assertAlmostEqual(pearson_correlation([1,2,3,4],[2,4,6,8]), 1.0, places=9)
+
+    def test_timestamp_alignment(self):
+        left, right = align_nearest(
+            [100, 200, 300], [1.0, 2.0, 3.0],
+            [110, 290], [10.0, 30.0], max_delta_ns=25,
+        )
+        self.assertEqual(left, [1.0, 3.0])
+        self.assertEqual(right, [10.0, 30.0])
 
     def test_safety_limits_reject_excess(self):
         limits = SafetyLimits(max_frequency_hz=1000, max_amplitude_vpp=1, max_abs_offset_v=.5)

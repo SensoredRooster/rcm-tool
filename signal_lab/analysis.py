@@ -6,6 +6,7 @@ advertised controller polling rates or instrument precision.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from bisect import bisect_left
 import math
 import statistics
 from typing import Iterable, Sequence
@@ -192,3 +193,47 @@ def pearson_correlation(xs: Sequence[float], ys: Sequence[float]) -> float | Non
     if sx == 0 or sy == 0:
         return None
     return sum(a * b for a, b in zip(dx, dy)) / (sx * sy)
+
+
+def align_nearest(
+    left_times_ns: Sequence[int],
+    left_values: Sequence[float],
+    right_times_ns: Sequence[int],
+    right_values: Sequence[float],
+    *,
+    max_delta_ns: int | None = None,
+) -> tuple[list[float], list[float]]:
+    """Align two sampled series by nearest timestamp.
+
+    Each right-side sample is paired with the nearest left-side sample. A
+    max_delta_ns window can reject pairs that are too far apart to be meaningful.
+    """
+    n_left = min(len(left_times_ns), len(left_values))
+    n_right = min(len(right_times_ns), len(right_values))
+    if n_left == 0 or n_right == 0:
+        return [], []
+    pairs = sorted(
+        (int(t), float(v))
+        for t, v in zip(left_times_ns[-n_left:], left_values[-n_left:])
+    )
+    times = [x[0] for x in pairs]
+    values = [x[1] for x in pairs]
+    out_left: list[float] = []
+    out_right: list[float] = []
+    for rt, rv in zip(right_times_ns[-n_right:], right_values[-n_right:]):
+        rt = int(rt)
+        idx = bisect_left(times, rt)
+        candidates = []
+        if idx < len(times):
+            candidates.append(idx)
+        if idx > 0:
+            candidates.append(idx - 1)
+        if not candidates:
+            continue
+        best = min(candidates, key=lambda i: abs(times[i] - rt))
+        delta = abs(times[best] - rt)
+        if max_delta_ns is not None and delta > max_delta_ns:
+            continue
+        out_left.append(values[best])
+        out_right.append(float(rv))
+    return out_left, out_right

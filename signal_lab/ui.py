@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
-from .analysis import oscillator_metrics, pearson_correlation, timing_metrics
+from .analysis import align_nearest, oscillator_metrics, pearson_correlation, timing_metrics
 from .controller import ControllerAcquisition
 from .instruments import (
     SafetyLimits, SimulatedInstrument, VisaScpiGenerator,
@@ -706,16 +706,17 @@ class LabWindow(QMainWindow):
                 self.db.add_controller_sample(
                     self.session_id, ts, sample, source="simulated-controller"
                 )
-            freq = self.osc_sim.next_frequency_hz(0.05)
-            ots = self.gamepad_sim.timestamp_ns
-            self.osc_times.append(ots)
-            self.osc_freqs.append(freq)
-            self.db.add_oscillator_sample(
-                self.session_id, ots, freq,
-                source="simulated-oscillator",
-                duty_cycle_percent=50.0,
-                quality="simulated",
-            )
+            if self.osc_measurement_instrument is None:
+                freq = self.osc_sim.next_frequency_hz(0.05)
+                ots = self.gamepad_sim.timestamp_ns
+                self.osc_times.append(ots)
+                self.osc_freqs.append(freq)
+                self.db.add_oscillator_sample(
+                    self.session_id, ots, freq,
+                    source="simulated-oscillator",
+                    duty_cycle_percent=50.0,
+                    quality="simulated",
+                )
         else:
             drained = 0
             while drained < 500:
@@ -732,23 +733,23 @@ class LabWindow(QMainWindow):
                 )
                 drained += 1
 
-            osc_drained = 0
-            while osc_drained < 100:
-                try:
-                    measurement = self.osc_queue.get_nowait()
-                except queue.Empty:
-                    break
-                self.osc_times.append(measurement.timestamp_ns)
-                self.osc_freqs.append(measurement.frequency_hz)
-                self.db.add_oscillator_sample(
-                    self.session_id,
-                    measurement.timestamp_ns,
-                    measurement.frequency_hz,
-                    source=measurement.source,
-                    duty_cycle_percent=measurement.duty_cycle_percent,
-                    quality="measured",
-                )
-                osc_drained += 1
+        osc_drained = 0
+        while osc_drained < 100:
+            try:
+                measurement = self.osc_queue.get_nowait()
+            except queue.Empty:
+                break
+            self.osc_times.append(measurement.timestamp_ns)
+            self.osc_freqs.append(measurement.frequency_hz)
+            self.db.add_oscillator_sample(
+                self.session_id,
+                measurement.timestamp_ns,
+                measurement.frequency_hz,
+                source=measurement.source,
+                duty_cycle_percent=measurement.duty_cycle_percent,
+                quality="measured",
+            )
+            osc_drained += 1
 
         if len(self.timestamps) % 1000 < 60:
             self.db.flush()
@@ -861,13 +862,17 @@ class LabWindow(QMainWindow):
         mean = sum(intervals) / len(intervals)
         dev = [v - mean for v in intervals]
         osc = list(self.osc_freqs)
+        osc_times = list(self.osc_times)
         nominal = self.nominal_spin.value()
         oppm = [(f - nominal) / nominal * 1e6 for f in osc]
-        n = min(len(dev), len(oppm))
-        corr = pearson_correlation(dev[-n:], oppm[-n:])
+        aligned_dev, aligned_oppm = align_nearest(
+            ts[1:], dev, osc_times, oppm, max_delta_ns=1_000_000_000
+        )
+        corr = pearson_correlation(aligned_dev, aligned_oppm)
+        n = len(aligned_dev)
         self.corr_card.set_value(
             "—" if corr is None else f"{corr:+.4f}",
-            f"n={n:,} · descriptive only",
+            f"n={n:,} timestamp-aligned pairs · descriptive only",
         )
         self.corr_note.setText(
             "Positive/negative values describe linear alignment in the current windows. "
