@@ -56,6 +56,15 @@ class InstrumentAdapter:
     def measure_duty_cycle_percent(self) -> float | None:
         return None
 
+    def read_generator_state(self) -> dict:
+        return {
+            "output_enabled": self.output_enabled(),
+            "frequency_hz": None,
+            "amplitude_vpp": None,
+            "offset_v": None,
+            "waveform": None,
+        }
+
     def close(self) -> None:
         pass
 
@@ -79,6 +88,15 @@ class SimulatedInstrument(InstrumentAdapter):
 
     def output_enabled(self) -> bool:
         return self._output
+
+    def read_generator_state(self) -> dict:
+        return {
+            "output_enabled": self._output,
+            "frequency_hz": self.frequency_hz,
+            "amplitude_vpp": self.amplitude_vpp,
+            "offset_v": self.offset_v,
+            "waveform": self.waveform,
+        }
 
 
 class _VisaBase(InstrumentAdapter):
@@ -155,9 +173,46 @@ class VisaScpiGenerator(_VisaBase):
     def set_output(self, enabled: bool) -> None:
         self.resource.write("OUTP ON" if enabled else "OUTP OFF")
         self._output = bool(enabled)
+        try:
+            self._output = self.query("OUTP?").strip().upper() in {"1", "ON"}
+        except Exception:
+            pass
 
     def output_enabled(self) -> bool:
+        try:
+            self._output = self.query("OUTP?").strip().upper() in {"1", "ON"}
+        except Exception:
+            pass
         return self._output
+
+    def _query_first_float(self, commands: tuple[str, ...]) -> float | None:
+        for command in commands:
+            try:
+                value = float(self.query(command))
+                if value == value:
+                    return value
+            except Exception:
+                continue
+        return None
+
+    def _query_first_text(self, commands: tuple[str, ...]) -> str | None:
+        for command in commands:
+            try:
+                value = self.query(command).strip()
+                if value:
+                    return value
+            except Exception:
+                continue
+        return None
+
+    def read_generator_state(self) -> dict:
+        return {
+            "output_enabled": self.output_enabled(),
+            "frequency_hz": self._query_first_float(("FREQ?", "SOUR:FREQ?", "SOURce:FREQuency?")),
+            "amplitude_vpp": self._query_first_float(("VOLT?", "SOUR:VOLT?", "SOURce:VOLTage?")),
+            "offset_v": self._query_first_float(("VOLT:OFFS?", "SOUR:VOLT:OFFS?", "SOURce:VOLTage:OFFSet?")),
+            "waveform": self._query_first_text(("FUNC?", "SOUR:FUNC?", "SOURce:FUNCtion?")),
+        }
 
     def configure_generator(
         self, *, frequency_hz: float, amplitude_vpp: float, offset_v: float,
