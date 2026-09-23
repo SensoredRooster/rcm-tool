@@ -10,6 +10,7 @@ on:
       - "requirements*.txt"
       - "scripts/build_windows.ps1"
       - "scripts/smoke_gamepad_signal_lab.py"
+      - "scripts/capture_ui_preview.py"
       - "installer/**"
       - ".github/workflows/build-windows.yml"
       - "test_signal_lab.py"
@@ -48,6 +49,14 @@ jobs:
         with:
           name: GamepadSignalLab-ui-preview
           path: artifacts/ui-preview/*.png
+      - name: Capture native Windows UI preview
+        shell: powershell
+        run: python scripts/capture_ui_preview.py
+      - name: Upload native Windows UI preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: GamepadSignalLab-ui-preview-native
+          path: artifacts/ui-preview-native/*.png
       - name: Build portable application
         shell: powershell
         run: |
