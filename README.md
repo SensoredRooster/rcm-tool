@@ -31,6 +31,12 @@ Controller timestamps use Python's highest-resolution host monotonic clock avail
 
 The application labels data as simulated, measured, calculated, estimated, or unavailable rather than inventing unsupported values.
 
+Dashboard cards, oscillator readouts, comparison metrics, and graphs include short hover definitions describing what each value means and whether it is measured or derived. Controller timing uses the measured median report interval as the default jitter/late-report reference; a configured reference rate can be selected explicitly in Settings. Time-series plots use elapsed timestamps rather than treating sample number as time.
+
+Analog stick noise is only labeled as a stationary noise floor when all four stick axes remain within the configured stationary-excursion threshold for the analysis window. If movement exceeds that threshold, the noise-floor result is withheld instead of reporting motion as noise.
+
+Generic VISA/SCPI measurement capability is probed at connection time. Directly unsupported values remain unavailable; for example, period displayed from frequency samples is explicitly labeled as a calculated reciprocal-period result rather than a direct period measurement.
+
 ## Install from source
 
 The supported build target is 64-bit Windows.
@@ -206,9 +212,29 @@ Host-side gamepad timing can contain USB scheduling, driver/API buffering, Windo
 
 ## Existing support infrastructure
 
-The existing RCM support and tester-share infrastructure remains in place. See:
+The existing RCM support and tester-share infrastructure remains in place and is surfaced directly inside the Qt application under **Support & Diagnostics**.
+
+The tester support flow includes:
+
+- rotating JSONL runtime telemetry under `%LOCALAPPDATA%\\RCMTool\\logs`
+- session heartbeat and session IDs
+- uncaught Python and worker-thread exception logging
+- Gamepad Signal Lab experiment/event telemetry mirrored into the support log
+- a local health snapshot
+- explicit **Create Redacted Bundle**
+- explicit-confirm **Send Diagnostics to Developer**
+- **Open Logs Folder**
+- **Report GitHub Issue**
+- **Open Repository**
+- **Tester Share**
+- token/password/cookie/credential redaction
+- the dedicated `rcm-tool-support` Cloudflare Worker and private `rcm-tool-support-logs` R2 bucket
+
+Nothing is uploaded automatically. Support bundles intentionally exclude raw HID captures and raw controller sample streams; the tester explicitly chooses when to create or send diagnostics.
+
+See:
 
 - docs/SUPPORT.md
 - docs/TESTER_SHARE.md
 
-The original Cloudflare workflows remain alongside the new Windows application build workflow.
+The original Cloudflare workflows remain alongside the Windows application build workflow.
