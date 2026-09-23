@@ -13,6 +13,11 @@ on:
       - ".github/workflows/build-windows.yml"
       - "test_signal_lab.py"
 
+
+concurrency:
+  group: gamepad-signal-lab-windows-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test-and-build:
     runs-on: windows-latest
@@ -35,7 +40,7 @@ jobs:
       - name: Build portable application
         shell: powershell
         run: |
-          python -m PyInstaller --noconfirm --clean --windowed --name GamepadSignalLab --collect-all PySide6 gamepad_signal_lab.py
+          python -m PyInstaller --noconfirm --clean --windowed --name GamepadSignalLab --collect-all pyvisa_py gamepad_signal_lab.py
       - name: Install Inno Setup
         shell: powershell
         run: choco install innosetup -y --no-progress
