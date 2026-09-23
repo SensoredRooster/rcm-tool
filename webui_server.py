@@ -9,6 +9,9 @@ import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlparse
+
+from ble_observe import save as save_ble
 
 ROOT = Path(__file__).resolve().parent
 WEBUI = ROOT / "webui" / "index.html"
@@ -28,21 +31,42 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _json_body(self) -> dict:
+        length = int(self.headers.get("content-length") or "0")
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            data = json.loads(raw.decode() or "{}")
+        except json.JSONDecodeError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
     def do_GET(self) -> None:
-        if self.path in ("/", "/index.html"):
+        path = urlparse(self.path).path
+        if path in ("/", "/index.html"):
             self._send(200, WEBUI.read_bytes(), "text/html; charset=utf-8")
             return
-        if self.path == "/health":
-            payload = {"ok": True, "service": "rcm-tool-webui", "write_to_controller": False}
+        if path == "/health":
+            payload = {
+                "ok": True,
+                "service": "rcm-tool-webui",
+                "write_to_controller": False,
+                "ble_radio_in_process": False,
+            }
             self._send(200, json.dumps(payload).encode(), "application/json")
             return
         self._send(404, b"{\"error\":\"Not found.\"}", "application/json")
 
     def do_POST(self) -> None:
-        if self.path == "/api/launch-bench":
+        path = urlparse(self.path).path
+        if path == "/api/launch-bench":
             script = ROOT / "rcm_tool.py"
             subprocess.Popen([sys.executable, str(script)], cwd=str(ROOT))
             self._send(200, b"{\"ok\":true}", "application/json")
+            return
+        if path == "/api/ble-observe":
+            stored = save_ble(self._json_body())
+            body = json.dumps({"ok": True, "path": str(stored)}).encode()
+            self._send(200, body, "application/json")
             return
         self._send(404, b"{\"error\":\"Not found.\"}", "application/json")
 
