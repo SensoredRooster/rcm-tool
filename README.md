@@ -156,13 +156,13 @@ powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
 Portable folder output:
 
 ~~~text
-dist\GamepadSignalLab\GamepadSignalLab.exe
+dist\RcmTool\RcmTool.exe
 ~~~
 
 Standalone one-file output:
 
 ~~~text
-dist\standalone\GamepadSignalLab.exe
+dist\standalone\RcmTool.exe
 ~~~
 
 Installer definition:
