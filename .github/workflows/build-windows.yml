@@ -9,6 +9,7 @@ on:
       - "signal_lab/**"
       - "requirements*.txt"
       - "scripts/build_windows.ps1"
+      - "scripts/smoke_gamepad_signal_lab.py"
       - "installer/**"
       - ".github/workflows/build-windows.yml"
       - "test_signal_lab.py"
