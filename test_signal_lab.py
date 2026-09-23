@@ -50,6 +50,20 @@ class SignalLabTests(unittest.TestCase):
         self.assertEqual(metrics.peak_to_peak_period_jitter_s, 0.0)
         self.assertEqual(metrics.cycle_to_cycle_rms_s, 0.0)
 
+    def test_timing_metrics_8000hz(self):
+        interval_ns = 125_000
+        stamps = [i * interval_ns for i in range(8001)]
+        metrics = timing_metrics(stamps)
+        self.assertAlmostEqual(metrics.effective_rate_hz, 8000.0, places=6)
+        self.assertAlmostEqual(metrics.mean_interval_ms, 0.125, places=9)
+
+    def test_timing_metrics_32000hz(self):
+        interval_ns = 31_250
+        stamps = [i * interval_ns for i in range(32001)]
+        metrics = timing_metrics(stamps)
+        self.assertAlmostEqual(metrics.effective_rate_hz, 32000.0, places=6)
+        self.assertAlmostEqual(metrics.mean_interval_ms, 0.03125, places=9)
+
     def test_simulator_is_deterministic(self):
         cfg = SimulatedGamepadConfig(rate_hz=1000, jitter_ms=0.05, seed=9)
         a, b = GamepadSimulator(cfg), GamepadSimulator(cfg)

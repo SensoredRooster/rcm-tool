@@ -238,3 +238,10 @@ See:
 - docs/TESTER_SHARE.md
 
 The original Cloudflare workflows remain alongside the Windows application build workflow.
+
+
+## High-rate controller support
+
+Gamepad Signal Lab does not use 1 kHz as a measurement ceiling. The configured-reference and simulation controls accept **1 Hz through 100 kHz**, covering 8 kHz and higher-rate controllers. Effective polling rate is still calculated from observed report timestamps; selecting a reference value never makes the application report that rate unless the captured timing supports it.
+
+At very high physical rates, usable fidelity still depends on the controller, USB transport, backend, Windows scheduling, and timing source. Raw-HID arrival timing is preferred when available; host-poll backends remain labeled as estimates.

@@ -837,8 +837,11 @@ class MainWindow(QMainWindow):
         self.timing_reference_mode.setToolTip(
             "Measured median derives the timing reference from the capture itself. Configured reference uses the field below and should only be selected intentionally."
         )
-        self.expected_rate=QDoubleSpinBox(); self.expected_rate.setRange(1,8000); self.expected_rate.setValue(1000); self.expected_rate.setSuffix(" Hz")
-        self.expected_rate.setToolTip("Used only when Timing reference is set to Configured reference rate.")
+        self.expected_rate=QDoubleSpinBox(); self.expected_rate.setRange(1,100000); self.expected_rate.setDecimals(0); self.expected_rate.setSingleStep(125); self.expected_rate.setValue(1000); self.expected_rate.setSuffix(" Hz")
+        self.expected_rate.setToolTip(
+            "Optional reference only; supported range is 1 Hz to 100 kHz. "
+            "Measured polling rate always comes from observed report timestamps."
+        )
         self.late_factor=QDoubleSpinBox(); self.late_factor.setRange(1.01,10.0); self.late_factor.setDecimals(2); self.late_factor.setValue(1.50); self.late_factor.setSuffix(" × reference interval")
         self.outlier_sigma=QDoubleSpinBox(); self.outlier_sigma.setRange(0.5,20.0); self.outlier_sigma.setDecimals(2); self.outlier_sigma.setValue(4.0); self.outlier_sigma.setSuffix(" σ")
         self.stationary_excursion=QDoubleSpinBox(); self.stationary_excursion.setRange(0.0001,0.5000); self.stationary_excursion.setDecimals(4); self.stationary_excursion.setValue(0.0200)
@@ -866,7 +869,11 @@ class MainWindow(QMainWindow):
 
         simcard, siml=card("SIMULATION")
         simf=QFormLayout()
-        self.sim_rate=QDoubleSpinBox(); self.sim_rate.setRange(1,8000); self.sim_rate.setValue(self.gamepad_sim.config.rate_hz); self.sim_rate.setSuffix(" Hz")
+        self.sim_rate=QDoubleSpinBox(); self.sim_rate.setRange(1,100000); self.sim_rate.setDecimals(0); self.sim_rate.setSingleStep(125); self.sim_rate.setValue(self.gamepad_sim.config.rate_hz); self.sim_rate.setSuffix(" Hz")
+        self.sim_rate.setToolTip(
+            "Synthetic controller report rate. Supports high-rate validation through 100 kHz; "
+            "this does not imply a physical controller or Windows backend can achieve that rate."
+        )
         self.sim_jitter=QDoubleSpinBox(); self.sim_jitter.setRange(0,20); self.sim_jitter.setDecimals(4); self.sim_jitter.setValue(self.sim_base_jitter_ms); self.sim_jitter.setSuffix(" ms")
         self.sim_periodic_jitter=QDoubleSpinBox(); self.sim_periodic_jitter.setRange(0,20); self.sim_periodic_jitter.setDecimals(4); self.sim_periodic_jitter.setValue(self.gamepad_sim.config.periodic_jitter_ms); self.sim_periodic_jitter.setSuffix(" ms")
         self.sim_periodic_hz=QDoubleSpinBox(); self.sim_periodic_hz.setRange(0.01,5000); self.sim_periodic_hz.setDecimals(3); self.sim_periodic_hz.setValue(self.gamepad_sim.config.periodic_hz); self.sim_periodic_hz.setSuffix(" Hz")
@@ -985,7 +992,10 @@ class MainWindow(QMainWindow):
 
             rate=max(1.0,self.gamepad_sim.config.rate_hz)
             self.sim_sample_accum += elapsed*rate
-            count=min(400,int(self.sim_sample_accum)); self.sim_sample_accum -= count
+            # Do not silently clip high-rate simulation. The catch-up ceiling is
+            # proportional to requested rate and covers about 100 ms of backlog.
+            max_batch=max(400,int(rate*0.10))
+            count=min(max_batch,int(self.sim_sample_accum)); self.sim_sample_accum -= count
             for _ in range(count):
                 rel=self.gamepad_sim.next_timestamp_ns()
                 sample=self.gamepad_sim.sample()
@@ -1013,7 +1023,9 @@ class MainWindow(QMainWindow):
                 except queue.Empty:
                     break
                 self._add_event(event_name,event_payload)
-            for _ in range(1000):
+            # Drain enough queued hardware reports for high-rate controllers so
+            # this handoff queue does not become an artificial polling ceiling.
+            for _ in range(10000):
                 try:
                     m=self.controller_queue.get_nowait()
                 except queue.Empty:
