@@ -127,6 +127,7 @@ class SigrokCaptureWorker(QThread):
 class WelcomeDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setWindowTitle("Welcome to RcmTool")
         self.setMinimumWidth(560)
         layout = QVBoxLayout(self)
@@ -213,6 +214,9 @@ class MainWindow(QMainWindow):
         self.sweep_timer = QTimer(self)
         self.sweep_timer.setSingleShot(True)
         self.sweep_timer.timeout.connect(self._sweep_timer_tick)
+        self.refresh_once_timer = QTimer(self)
+        self.refresh_once_timer.setSingleShot(True)
+        self.refresh_once_timer.timeout.connect(self._refresh_ui)
 
         self.current_timing = timing_metrics([])
         self.current_osc = oscillator_metrics([], 12_000_000.0)
@@ -352,7 +356,14 @@ class MainWindow(QMainWindow):
         elif NAV[index] == "Instruments":
             self._refresh_capabilities()
         if hasattr(self, "ui_timer"):
-            QTimer.singleShot(0, self._refresh_ui)
+            self._schedule_ui_refresh()
+
+    def _schedule_ui_refresh(self) -> None:
+        """Coalesce deferred refreshes instead of creating one timer per click."""
+        if hasattr(self, "refresh_once_timer"):
+            self.refresh_once_timer.start(0)
+        else:
+            self._refresh_ui()
 
     @staticmethod
     def _scroll(widget: QWidget) -> QScrollArea:
@@ -1075,9 +1086,11 @@ class MainWindow(QMainWindow):
         self.support_upload_worker = SupportUploadWorker(bundle, self)
         self.support_upload_worker.completed.connect(self._support_upload_complete)
         self.support_upload_worker.failed.connect(self._support_upload_failed)
+        self.support_upload_worker.finished.connect(self.support_upload_worker.deleteLater)
         self.support_upload_worker.start()
 
     def _support_upload_complete(self, result: dict) -> None:
+        self.support_upload_worker = None
         self.send_support_button.setEnabled(True)
         self.support_status.setText(
             f"Diagnostics sent successfully • HTTP {result.get('status', '?')} • session {SUPPORT_SESSION_ID}"
@@ -1086,6 +1099,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Diagnostics sent", f"Upload completed successfully.\nHTTP status: {result.get('status')}")
 
     def _support_upload_failed(self, message: str) -> None:
+        self.support_upload_worker = None
         self.send_support_button.setEnabled(True)
         self.support_status.setText("Upload failed. A local support bundle can still be created and shared manually.")
         self._add_event("support_diagnostics_failed", {"error": message})
@@ -1307,6 +1321,7 @@ class MainWindow(QMainWindow):
             return
 
         dialog = QDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dialog.setWindowTitle("Raw HID smoothing evidence wizard")
         dialog.resize(720, 420)
         layout = QVBoxLayout(dialog)
@@ -1568,7 +1583,7 @@ class MainWindow(QMainWindow):
         return value
 
     def _start_trace_capture(self) -> None:
-        if self.trace_capture_active:
+        if self.trace_capture_active or (self.trace_worker is not None and self.trace_worker.isRunning()):
             return
         if self.controller_source_kind != "raw_hid" or not self.controller_source_path:
             QMessageBox.information(
@@ -1617,6 +1632,7 @@ class MainWindow(QMainWindow):
         self.trace_worker = SigrokCaptureWorker(config, self)
         self.trace_worker.completed.connect(self._trace_capture_completed)
         self.trace_worker.failed.connect(self._trace_capture_failed)
+        self.trace_worker.finished.connect(self.trace_worker.deleteLater)
         self.trace_worker.start()
 
     def _trace_capture_completed(self, process_result: dict) -> None:
@@ -2201,6 +2217,7 @@ class MainWindow(QMainWindow):
 
     def _show_chart_fullscreen(self,source:LineChart) -> None:
         dlg=QDialog(self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.setWindowTitle(source.title)
         dlg.resize(1280,760)
         layout=QVBoxLayout(dlg)
@@ -2218,6 +2235,7 @@ class MainWindow(QMainWindow):
 
     def _show_raw_data(self) -> None:
         dlg=QDialog(self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.setWindowTitle("Raw Capture Data")
         dlg.resize(960,700)
         layout=QVBoxLayout(dlg)
@@ -3057,7 +3075,7 @@ class MainWindow(QMainWindow):
             return
         self.settings.setValue("controller_skin",self.controller_skin_combo.currentData())
         if hasattr(self,"stack") and NAV[self.stack.currentIndex()]=="Controller Lab":
-            QTimer.singleShot(0,self._refresh_ui)
+            self._schedule_ui_refresh()
 
     def _reset_graphs(self) -> None:
         for ch in [
@@ -3073,14 +3091,16 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self,event:QCloseEvent) -> None:
         self._emergency_off()
+        for timer_name in ("sweep_timer", "refresh_once_timer", "sample_timer", "ui_timer", "db_flush_timer"):
+            timer = getattr(self, timer_name, None)
+            if timer is not None:
+                timer.stop()
         if self.controller_acquisition: self.controller_acquisition.stop()
         self._disconnect_instrument(quiet=True)
         try:
             support_log_event("gamepad_signal_lab_stop", version=__version__)
         except Exception:
             LOGGER.exception("Failed to write application shutdown event")
-        if hasattr(self, "db_flush_timer"):
-            self.db_flush_timer.stop()
         self.db.close(); event.accept()
 
 

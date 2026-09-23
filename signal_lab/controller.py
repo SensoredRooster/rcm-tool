@@ -226,6 +226,45 @@ class ControllerAcquisition:
         self.stop_event.set()
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=1.0)
+        # Stopping the Python thread does not close native HID/SDL handles.
+        # Release them whenever a source is refreshed or replaced.
+        self._close_backend()
+
+    def _close_backend(self) -> None:
+        backend = self.backend
+        if backend is None:
+            return
+
+        candidates = [backend]
+        for name in ("hid", "sdl", "active"):
+            child = getattr(backend, name, None)
+            if child is not None and child not in candidates:
+                candidates.append(child)
+
+        for candidate in candidates:
+            for name in ("close", "quit"):
+                close = getattr(candidate, name, None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        LOGGER.debug("Controller backend cleanup failed", exc_info=True)
+            device = getattr(candidate, "device", None)
+            close_device = getattr(device, "close", None)
+            if callable(close_device):
+                try:
+                    close_device()
+                except Exception:
+                    LOGGER.debug("HID device cleanup failed", exc_info=True)
+            joystick = getattr(candidate, "joystick", None)
+            quit_joystick = getattr(joystick, "quit", None)
+            if callable(quit_joystick):
+                try:
+                    quit_joystick()
+                except Exception:
+                    LOGGER.debug("SDL joystick cleanup failed", exc_info=True)
+
+        self.backend = None
 
     def _run(self) -> None:
         try:
@@ -277,6 +316,8 @@ class ControllerAcquisition:
                 if active is not None and active.__class__.__name__ == "HIDGamepad":
                     drain = getattr(active, "drain_raw_reports", None)
                     reports = drain() if callable(drain) else []
+                    if not isinstance(reports, list):
+                        reports = []
                     for report in reports:
                         raw_hex = bytes(report).hex()
                         duplicate = last_raw_hex == raw_hex
@@ -312,3 +353,4 @@ class ControllerAcquisition:
                     self._event("controller_backend_error", {"message": self.error})
                     last_error = self.error
             time.sleep(self.poll_sleep_s)
+        self._close_backend()
