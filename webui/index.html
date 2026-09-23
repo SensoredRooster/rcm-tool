@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RCMTool</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;font-family:Inter,system-ui,sans-serif;background:#080b12;color:#f5f7ff;min-height:100vh}
+header{position:sticky;top:0;z-index:3;background:#090d16ef;backdrop-filter:blur(16px);border-bottom:1px solid #222b3d;padding:14px 20px;display:flex;align-items:center;justify-content:space-between}
+.brand strong{display:block;font-size:18px}
+.brand span{color:#8fa1ba;font-size:12px}
+.wrap{max-width:1100px;margin:auto;padding:28px 20px}
+.eyebrow{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:#7dd3fc;font-weight:800}
+h1{margin:8px 0 6px;font-size:34px}
+.muted{color:#9da8bc;line-height:1.55}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:22px}
+.card{background:linear-gradient(180deg,#151b2a,#0e1320);border:1px solid #293246;border-radius:22px;padding:22px;box-shadow:0 24px 70px #0008}
+.card h2{margin:0 0 10px;font-size:18px}
+ol{margin:8px 0 0;padding-left:18px;color:#cbd5e1}
+button,a.btn{display:inline-block;border-radius:12px;border:1px solid #3b82f6;background:#2563eb;color:#fff;padding:12px 16px;font:inherit;font-weight:800;text-decoration:none;cursor:pointer}
+button.ghost,a.ghost{background:#0a0f19;border-color:#30394e;margin-left:8px}
+.actions{margin-top:16px}
+.status{min-height:22px;margin-top:12px;color:#93c5fd}
+@media(max-width:800px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><strong>RCMTool</strong><span>Read-only controller integrity bench</span></div>
+  <a class="btn ghost" href="https://rcm-tool-share.sensoredrooster-com.workers.dev" target="_blank" rel="noreferrer">Tester Share</a>
+</header>
+<div class="wrap">
+  <div class="eyebrow">Private session</div>
+  <h1>RCMTool</h1>
+  <p class="muted">Same visual system as Tester Share. The Python process only reads sticks and HID timing. It does not write to a pad, a game, or firmware.</p>
+  <div class="grid">
+    <section class="card">
+      <h2>Honest pair</h2>
+      <ol>
+        <li>Before: pad straight to the PC. Neutral hold, then Guided.</li>
+        <li>Unplug. Put the device under test in the path.</li>
+        <li>After: same protocol, same hands.</li>
+        <li>Compare HF RMS, sample rate, jitter, unique levels.</li>
+      </ol>
+      <p class="muted">Unchanged is not a clean bill. An idle box can sit quiet.</p>
+    </section>
+    <section class="card">
+      <h2>Capture bench</h2>
+      <p class="muted">Live HID still runs in the local capture window. This page is the operator shell. Injected recipes are tool self-tests only.</p>
+      <div class="actions">
+        <button id="bench">Open capture bench</button>
+        <a class="btn ghost" href="/health">Health</a>
+      </div>
+      <div class="status" id="status"></div>
+    </section>
+  </div>
+</div>
+<script>
+document.getElementById("bench").onclick = async () => {
+  const el = document.getElementById("status");
+  el.textContent = "Starting capture bench…";
+  try {
+    const r = await fetch("/api/launch-bench", {method:"POST"});
+    const d = await r.json();
+    el.textContent = d.ok ? "Capture bench launched." : (d.error || "Launch failed");
+  } catch (e) {
+    el.textContent = String(e);
+  }
+};
+</script>
+</body>
+</html>
