@@ -17,7 +17,7 @@ from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QMainWindow,
-    QMessageBox, QProgressBar, QPushButton, QScrollArea, QSpinBox, QStackedWidget,
+    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QStackedWidget,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 )
 
@@ -164,6 +164,7 @@ class MainWindow(QMainWindow):
         self.current_timing = timing_metrics([])
         self.current_osc = oscillator_metrics([], 12_000_000.0)
         self.current_corr: float | None = None
+        self.visualization_paused = False
 
         self._build_ui()
         self._apply_saved_settings()
@@ -306,10 +307,13 @@ class MainWindow(QMainWindow):
         self.baseline_state.setObjectName("Muted")
         self.baseline_progress = QProgressBar()
         self.baseline_progress.setRange(0,1000)
+        save_baseline = QPushButton("Save Baseline")
+        save_baseline.clicked.connect(self._save_baseline)
         set_ref = QPushButton("Set last baseline as reference")
         set_ref.clicked.connect(self._set_reference_baseline)
         row.addWidget(self.baseline_state,1)
         row.addWidget(self.baseline_progress,2)
+        row.addWidget(save_baseline)
         row.addWidget(set_ref)
         bl.addLayout(row)
         layout.addWidget(baseline)
@@ -330,26 +334,42 @@ class MainWindow(QMainWindow):
         return self._scroll(w)
 
     def _live_page(self) -> QWidget:
-        w, layout = page("Live Capture", "Raw observations are preserved. Display transformations never overwrite stored samples.")
+        w, layout = page("Live Capture", "Raw observations are preserved. Display transformations affect graphs only and never overwrite stored samples.")
         bar = QHBoxLayout()
+        self.pause_visualization = QCheckBox("Pause visualization")
+        self.pause_visualization.toggled.connect(lambda checked: setattr(self, "visualization_paused", bool(checked)))
+        self.smoothing_window = QSpinBox()
+        self.smoothing_window.setRange(1, 51)
+        self.smoothing_window.setValue(1)
+        self.smoothing_window.setPrefix("Display smoothing ")
+        self.smoothing_window.setSuffix(" samples")
         reset = QPushButton("Reset graph views")
         reset.clicked.connect(self._reset_graphs)
         export = QPushButton("Export timing graph PNG")
         export.clicked.connect(lambda: self.live_interval_chart.export_png(self))
+        fullscreen = QPushButton("Fullscreen timing graph")
+        fullscreen.clicked.connect(lambda: self._show_chart_fullscreen(self.live_interval_chart))
+        raw = QPushButton("Raw data")
+        raw.clicked.connect(self._show_raw_data)
+        bar.addWidget(self.pause_visualization)
+        bar.addWidget(self.smoothing_window)
         bar.addWidget(reset)
         bar.addWidget(export)
+        bar.addWidget(fullscreen)
+        bar.addWidget(raw)
         bar.addStretch(1)
         layout.addLayout(bar)
         grid = QGridLayout()
         self.live_interval_chart = LineChart("Report interval vs time (ms)")
         self.live_jitter_chart = LineChart("Timing deviation from expected interval (ms)")
         self.live_hist_chart = LineChart("Report interval histogram")
+        self.live_latency_chart = LineChart("Input latency distribution (requires device-origin timestamp)")
         self.live_analog_chart = LineChart("Analog stick stability (LX / LY)")
         self.live_osc_chart = LineChart("Oscillator frequency vs time (Hz)")
         self.live_osc_jitter_chart = LineChart("Oscillator frequency error (ppm)")
         charts = [
             self.live_interval_chart, self.live_jitter_chart, self.live_hist_chart,
-            self.live_analog_chart, self.live_osc_chart, self.live_osc_jitter_chart
+            self.live_latency_chart, self.live_analog_chart, self.live_osc_chart, self.live_osc_jitter_chart
         ]
         for i, ch in enumerate(charts):
             grid.addWidget(ch, i//2, i%2)
@@ -533,7 +553,7 @@ class MainWindow(QMainWindow):
     def _compare_page(self) -> QWidget:
         w, layout = page("Compare", "Compare the current capture against the selected baseline reference.")
         self.compare_state=QLabel("No reference baseline selected."); self.compare_state.setObjectName("Muted"); layout.addWidget(self.compare_state)
-        self.compare_table=QTableWidget(0,4); self.compare_table.setHorizontalHeaderLabels(["Metric","Reference","Current","Difference"]); layout.addWidget(self.compare_table)
+        self.compare_table=QTableWidget(0,5); self.compare_table.setHorizontalHeaderLabels(["Metric","Reference","Current","Difference","% Change"]); layout.addWidget(self.compare_table)
         return w
 
     def _reports_page(self) -> QWidget:
@@ -571,9 +591,10 @@ class MainWindow(QMainWindow):
         self.theme_combo=QComboBox(); self.theme_combo.addItems(["Dark","Light"]); self.theme_combo.setCurrentText(self.theme_name); self.theme_combo.currentTextChanged.connect(self._change_theme)
         self.baseline_seconds=QSpinBox(); self.baseline_seconds.setRange(5,3600); self.baseline_seconds.setValue(60); self.baseline_seconds.setSuffix(" s")
         self.expected_rate=QDoubleSpinBox(); self.expected_rate.setRange(1,8000); self.expected_rate.setValue(1000); self.expected_rate.setSuffix(" Hz")
+        self.late_factor=QDoubleSpinBox(); self.late_factor.setRange(1.01,10.0); self.late_factor.setDecimals(2); self.late_factor.setValue(1.50); self.late_factor.setSuffix(" × expected interval")
         self.graph_refresh=QSpinBox(); self.graph_refresh.setRange(33,1000); self.graph_refresh.setValue(100); self.graph_refresh.setSuffix(" ms")
         self.graph_refresh.valueChanged.connect(lambda v: self.ui_timer.setInterval(v) if hasattr(self,"ui_timer") else None)
-        form.addRow("Theme",self.theme_combo); form.addRow("Default baseline duration",self.baseline_seconds); form.addRow("Expected polling rate",self.expected_rate); form.addRow("Graph refresh interval",self.graph_refresh)
+        form.addRow("Theme",self.theme_combo); form.addRow("Default baseline duration",self.baseline_seconds); form.addRow("Expected polling rate",self.expected_rate); form.addRow("Late-report threshold",self.late_factor); form.addRow("Graph refresh interval",self.graph_refresh)
         gl.addLayout(form); layout.addWidget(g)
 
         s, sl=card("INSTRUMENT SAFETY LIMITS")
@@ -738,7 +759,7 @@ class MainWindow(QMainWindow):
     def _refresh_ui(self) -> None:
         timestamps=list(self.controller_ts)[-5000:]
         expected_ms=1000.0/max(self.expected_rate.value(),1.0)
-        self.current_timing=timing_metrics(timestamps,expected_interval_ms=expected_ms)
+        self.current_timing=timing_metrics(timestamps,expected_interval_ms=expected_ms,late_factor=self.late_factor.value())
         freqs=list(self.osc_freq)[-3000:]
         nominal=self.nominal_freq.value()
         self.current_osc=oscillator_metrics(freqs,nominal)
@@ -767,16 +788,20 @@ class MainWindow(QMainWindow):
         ppm_values=[(f-nominal)/nominal*1e6 for f in freqs] if nominal>0 else []
         self.dashboard_timing_chart.set_series([("interval",intervals[-500:],"#6AA2FF")])
         self.dashboard_osc_chart.set_series([("ppm",ppm_values[-500:],"#6DE0B1")])
-        self.live_interval_chart.set_series([("interval",intervals[-800:],"#6AA2FF")])
-        self.live_jitter_chart.set_series([("deviation",deviations[-800:],"#F0B862")])
-        self.live_hist_chart.set_series([("count",self._histogram(intervals[-3000:],32),"#A989FF")])
         samples=list(self.controller_samples)[-800:]
-        self.live_analog_chart.set_series([
-            ("LX",[float(s.get("lx",0)) for s in samples],"#6AA2FF"),
-            ("LY",[float(s.get("ly",0)) for s in samples],"#6DE0B1")
-        ])
-        self.live_osc_chart.set_series([("frequency",freqs[-800:],"#6DE0B1")])
-        self.live_osc_jitter_chart.set_series([("ppm",ppm_values[-800:],"#F0B862")])
+        if not self.visualization_paused:
+            smooth=max(1,self.smoothing_window.value()) if hasattr(self,"smoothing_window") else 1
+            smooth_fn=lambda values: self._moving_average(values,smooth)
+            self.live_interval_chart.set_series([("interval",smooth_fn(intervals[-800:]),"#6AA2FF")])
+            self.live_jitter_chart.set_series([("deviation",smooth_fn(deviations[-800:]),"#F0B862")])
+            self.live_hist_chart.set_series([("count",self._histogram(intervals[-3000:],32),"#A989FF")])
+            self.live_latency_chart.set_series([])
+            self.live_analog_chart.set_series([
+                ("LX",smooth_fn([float(item.get("lx",0)) for item in samples]),"#6AA2FF"),
+                ("LY",smooth_fn([float(item.get("ly",0)) for item in samples]),"#6DE0B1")
+            ])
+            self.live_osc_chart.set_series([("frequency",smooth_fn(freqs[-800:]),"#6DE0B1")])
+            self.live_osc_jitter_chart.set_series([("ppm",smooth_fn(ppm_values[-800:]),"#F0B862")])
         self.osc_stability_chart.set_series([("frequency",freqs[-1200:],"#6DE0B1")])
         self.osc_period_chart.set_series([("period ns",[(1/f)*1e9 for f in freqs[-1200:] if f>0],"#6AA2FF")])
 
@@ -839,6 +864,74 @@ class MainWindow(QMainWindow):
         self.db.flush()
 
     @staticmethod
+    def _moving_average(values:list[float],window:int) -> list[float]:
+        if window<=1 or len(values)<2:
+            return list(values)
+        output=[]
+        running=0.0
+        q=deque()
+        for value in values:
+            value=float(value)
+            q.append(value); running+=value
+            if len(q)>window:
+                running-=q.popleft()
+            output.append(running/len(q))
+        return output
+
+    def _show_chart_fullscreen(self,source:LineChart) -> None:
+        dlg=QDialog(self)
+        dlg.setWindowTitle(source.title)
+        dlg.resize(1280,760)
+        layout=QVBoxLayout(dlg)
+        chart=LineChart(source.title)
+        chart.set_series([(name,values,color.name()) for name,values,color in source.series])
+        layout.addWidget(chart)
+        close=QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close.rejected.connect(dlg.reject); close.accepted.connect(dlg.accept)
+        layout.addWidget(close)
+        dlg.exec()
+
+    def _show_raw_data(self) -> None:
+        dlg=QDialog(self)
+        dlg.setWindowTitle("Raw Capture Data")
+        dlg.resize(960,700)
+        layout=QVBoxLayout(dlg)
+        editor=QPlainTextEdit()
+        editor.setReadOnly(True)
+        payload={
+            "controller":[
+                {"timestamp_ns":ts,"sample":sample,"source":source[0],"timing_quality":source[1]}
+                for ts,sample,source in zip(list(self.controller_ts)[-200:],list(self.controller_samples)[-200:],list(self.controller_sources)[-200:])
+            ],
+            "oscillator":[
+                {"timestamp_ns":ts,"frequency_hz":freq}
+                for ts,freq in zip(list(self.osc_ts)[-100:],list(self.osc_freq)[-100:])
+            ],
+        }
+        editor.setPlainText(json.dumps(payload,indent=2))
+        layout.addWidget(editor)
+        buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dlg.reject); buttons.accepted.connect(dlg.accept)
+        layout.addWidget(buttons)
+        dlg.exec()
+
+    def _save_baseline(self) -> None:
+        if not self.last_baseline:
+            QMessageBox.information(self,"Baseline","Run a baseline first.")
+            return
+        path,_=QFileDialog.getSaveFileName(self,"Save Baseline",str(self.data_root/"baseline.json"),"JSON (*.json)")
+        if not path:
+            return
+        payload={
+            "saved_utc":time.time(),
+            "app_version":__version__,
+            "session_id":self.session_id,
+            "baseline":self.last_baseline,
+        }
+        Path(path).write_text(json.dumps(payload,indent=2),encoding="utf-8")
+        self._add_event("baseline_saved",{"path":str(path)})
+
+    @staticmethod
     def _histogram(values:list[float],bins:int) -> list[float]:
         if not values: return []
         lo,hi=min(values),max(values)
@@ -880,7 +973,7 @@ class MainWindow(QMainWindow):
 
     def _finish_baseline(self) -> None:
         self.baseline_active=False
-        t=timing_metrics(self.baseline_controller_ts,expected_interval_ms=1000.0/max(self.expected_rate.value(),1))
+        t=timing_metrics(self.baseline_controller_ts,expected_interval_ms=1000.0/max(self.expected_rate.value(),1),late_factor=self.late_factor.value())
         o=oscillator_metrics(self.baseline_osc_freq,self.nominal_freq.value())
         self.last_baseline={"timing":asdict(t),"oscillator":asdict(o)}
         self.baseline_progress.setValue(1000)
@@ -1027,7 +1120,13 @@ class MainWindow(QMainWindow):
                         frequency_hz=self.stim_freq.value(),amplitude_vpp=self.stim_amp.value(),
                         offset_v=self.stim_offset.value(),waveform=self.waveform_combo.currentText(),limits=self.safety_limits
                     )
-            self._add_event("stimulus_configured",{"frequency_hz":self.stim_freq.value(),"amplitude_vpp":self.stim_amp.value(),"offset_v":self.stim_offset.value(),"waveform":self.waveform_combo.currentText()})
+            requested={"frequency_hz":self.stim_freq.value(),"amplitude_vpp":self.stim_amp.value(),"offset_v":self.stim_offset.value(),"waveform":self.waveform_combo.currentText()}
+            try:
+                with self.instrument_lock:
+                    reported=self.instrument.read_generator_state()
+            except Exception:
+                reported={"output_enabled":self.instrument.output_enabled(),"frequency_hz":None,"amplitude_vpp":None,"offset_v":None,"waveform":None}
+            self._add_event("stimulus_configured",{"requested":requested,"instrument_reported":reported})
             return True
         except Exception as exc:
             QMessageBox.critical(self,"Stimulus settings rejected",str(exc)); return False
@@ -1040,8 +1139,10 @@ class MainWindow(QMainWindow):
             if answer!=QMessageBox.StandardButton.Yes:
                 self.output_button.setChecked(False); return
         try:
-            with self.instrument_lock: self.instrument.set_output(bool(checked))
-            self._add_event("instrument_output",{"enabled":bool(checked)})
+            with self.instrument_lock:
+                self.instrument.set_output(bool(checked))
+                reported=self.instrument.read_generator_state()
+            self._add_event("instrument_output",{"requested_enabled":bool(checked),"instrument_reported":reported})
         except Exception as exc:
             self.output_button.setChecked(False); QMessageBox.critical(self,"Instrument output",str(exc))
 
@@ -1203,6 +1304,7 @@ class MainWindow(QMainWindow):
         step_timing=timing_metrics(
             self.sweep_step_controller_ts,
             expected_interval_ms=1000.0/max(self.expected_rate.value(),1.0),
+            late_factor=self.late_factor.value(),
         )
         step_osc=oscillator_metrics(
             self.sweep_step_osc_freq,
@@ -1222,10 +1324,15 @@ class MainWindow(QMainWindow):
             self.sweep_table.setItem(row,col,QTableWidgetItem(str(val)))
 
         self._refresh_sweep_heatmap()
+        try:
+            with self.instrument_lock:
+                reported=self.instrument.read_generator_state()
+        except Exception:
+            reported={"output_enabled":self.instrument.output_enabled(),"frequency_hz":None,"amplitude_vpp":None,"offset_v":None,"waveform":None}
         self._add_event("sweep_result",{
             "index":self.sweep_index+1,
-            "frequency_hz":freq,
-            "amplitude_vpp":amp,
+            "requested":{"frequency_hz":freq,"amplitude_vpp":amp,"offset_v":self.stim_offset.value(),"waveform":self.waveform_combo.currentText()},
+            "instrument_reported":reported,
             "repetition":rep,
             "gamepad_rms_ms":gp,
             "clock_ppm":ppm,
@@ -1286,7 +1393,9 @@ class MainWindow(QMainWindow):
         self.compare_state.setText("Reference baseline loaded. Differences are descriptive measurements, not causal conclusions.")
         self.compare_table.setRowCount(len(metrics))
         for r,(name,ref,cur) in enumerate(metrics):
-            for c,val in enumerate([name,f"{ref:.9g}",f"{cur:.9g}",f"{cur-ref:+.9g}"]): self.compare_table.setItem(r,c,QTableWidgetItem(str(val)))
+            pct="Unavailable" if math.isclose(float(ref),0.0,abs_tol=1e-30) else f"{((cur-ref)/abs(ref))*100:+.3f}%"
+            for c,val in enumerate([name,f"{ref:.9g}",f"{cur:.9g}",f"{cur-ref:+.9g}",pct]):
+                self.compare_table.setItem(r,c,QTableWidgetItem(str(val)))
 
     def _ensure_session(self) -> bool:
         if not self.session_id:
@@ -1355,6 +1464,7 @@ class MainWindow(QMainWindow):
     def _apply_saved_settings(self) -> None:
         self.baseline_seconds.setValue(int(self.settings.value("baseline_seconds",60)))
         self.expected_rate.setValue(float(self.settings.value("expected_rate",1000)))
+        self.late_factor.setValue(float(self.settings.value("late_factor",1.5)))
         self.nominal_freq.setValue(float(self.settings.value("nominal_freq",12_000_000)))
         self.graph_refresh.setValue(int(self.settings.value("graph_refresh",100)))
         self.max_freq.setValue(float(self.settings.value("max_freq",20_000_000)))
@@ -1366,7 +1476,7 @@ class MainWindow(QMainWindow):
         self._sync_safety_limits()
         values={
             "theme":self.theme_combo.currentText(),"baseline_seconds":self.baseline_seconds.value(),
-            "expected_rate":self.expected_rate.value(),"nominal_freq":self.nominal_freq.value(),
+            "expected_rate":self.expected_rate.value(),"late_factor":self.late_factor.value(),"nominal_freq":self.nominal_freq.value(),
             "graph_refresh":self.graph_refresh.value(),"max_freq":self.max_freq.value(),
             "max_amp":self.max_amp.value(),"max_offset":self.max_offset.value()
         }
@@ -1385,7 +1495,7 @@ class MainWindow(QMainWindow):
     def _reset_graphs(self) -> None:
         for ch in [
             self.dashboard_timing_chart,self.dashboard_osc_chart,self.live_interval_chart,self.live_jitter_chart,
-            self.live_hist_chart,self.live_analog_chart,self.live_osc_chart,self.live_osc_jitter_chart,
+            self.live_hist_chart,self.live_latency_chart,self.live_analog_chart,self.live_osc_chart,self.live_osc_jitter_chart,
             self.osc_stability_chart,self.osc_period_chart,self.corr_stimulus_chart,self.corr_osc_chart,self.corr_gamepad_chart
         ]: ch.reset_view()
 
