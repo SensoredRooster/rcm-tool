@@ -839,6 +839,7 @@ class App(tk.Tk):
     def start_test(self) -> None:
         if self.test_thread and self.test_thread.is_alive():
             return
+        log_event("test_requested", mode="single", protocol=self.protocol_var.get(), phase=self.phase_var.get())
         self.pair_mode = False
         self.pair_results = {}
         self.pair_report_paths = {}
@@ -853,6 +854,7 @@ class App(tk.Tk):
     def start_pair_test(self) -> None:
         if self.test_thread and self.test_thread.is_alive():
             return
+        log_event("test_requested", mode="pair", protocol=self.protocol_var.get())
         self.pair_mode = True
         self.pair_results = {}
         self.pair_report_paths = {}
