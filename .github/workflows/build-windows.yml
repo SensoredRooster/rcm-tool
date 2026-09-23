@@ -1,0 +1,48 @@
+name: Build Windows App
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "gamepad_signal_lab.py"
+      - "signal_lab/**"
+      - "requirements*.txt"
+      - "scripts/build_windows.ps1"
+      - "installer/**"
+      - ".github/workflows/build-windows.yml"
+      - "test_signal_lab.py"
+
+jobs:
+  test-and-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Run tests
+        run: python -m unittest discover -v
+      - name: Build portable application
+        shell: powershell
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --name GamepadSignalLab --collect-all PySide6 gamepad_signal_lab.py
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup -y --no-progress
+      - name: Build installer
+        shell: powershell
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\GamepadSignalLab.iss"'
+      - name: Upload portable build
+        uses: actions/upload-artifact@v4
+        with:
+          name: GamepadSignalLab-portable
+          path: dist/GamepadSignalLab/**
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: GamepadSignalLab-installer
+          path: dist/installer/*.exe

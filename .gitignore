@@ -1,3 +1,11 @@
 __pycache__/
 *.py[cod]
 .venv/
+venv/
+build/
+dist/
+*.spec~
+reports/*.json
+reports/*.jsonl
+*.sqlite3
+*.db
