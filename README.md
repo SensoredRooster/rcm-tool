@@ -1,6 +1,6 @@
-# Gamepad Signal Lab
+# RcmTool
 
-Gamepad Signal Lab is the next-generation desktop application built on the original **RCM Tool** controller measurement code. It is a Windows laboratory workspace for measuring controller report timing, analog-input stability, oscillator/clock stability, controlled bench stimulus, sweep response, and synchronized timing relationships.
+RcmTool is the next-generation desktop application built on the original **RCM Tool** controller measurement code. It is a Windows laboratory workspace for measuring controller report timing, analog-input stability, oscillator/clock stability, controlled bench stimulus, sweep response, and synchronized timing relationships.
 
 The application is measurement-focused. It does not inject game inputs, modify controller firmware, or manufacture precision that the connected hardware cannot provide.
 
@@ -59,7 +59,7 @@ If PySide6 is not installed, the compatibility entry point falls back to the ori
 
 ## First-run workflow
 
-1. Launch Gamepad Signal Lab.
+1. Launch RcmTool.
 2. Leave Simulation selected initially.
 3. Start Capture and verify the timing and oscillator dashboard.
 4. Run a baseline.
@@ -135,7 +135,7 @@ Correlation is descriptive. A coefficient or visual time alignment can show that
 
 ## Data storage
 
-Gamepad Signal Lab uses SQLite with WAL journaling. Sessions contain controller samples, oscillator samples, controller backend-specific fields such as button/D-pad state where available, oscillator measurements, and experiment events. Hardware/controller metadata such as VID, PID, HID path, interface, firmware release, battery/power status, and connection method are shown only when the active backend can actually provide them.
+RcmTool uses SQLite with WAL journaling. Sessions contain controller samples, oscillator samples, controller backend-specific fields such as button/D-pad state where available, oscillator measurements, and experiment events. Hardware/controller metadata such as VID, PID, HID path, interface, firmware release, battery/power status, and connection method are shown only when the active backend can actually provide them.
 
 Exports include:
 
@@ -171,7 +171,7 @@ Installer definition:
 installer\GamepadSignalLab.iss
 ~~~
 
-The GitHub Actions workflow at .github/workflows/build-windows.yml runs the unit tests, an offscreen Qt window smoke test, and a full no-hardware simulation workflow smoke covering capture, baseline, reference selection, sweep, correlation/timeline activity, SQLite persistence, CSV/JSON exports, HTML reporting, and emergency output-off. It then creates a portable folder build, a true one-file standalone GamepadSignalLab.exe, and the Inno Setup installer, and uploads all three as workflow artifacts.
+The GitHub Actions workflow at .github/workflows/build-windows.yml runs the unit tests, an offscreen Qt window smoke test, and a full no-hardware simulation workflow smoke covering capture, baseline, reference selection, sweep, correlation/timeline activity, SQLite persistence, CSV/JSON exports, HTML reporting, and emergency output-off. It then creates a portable folder build, a true one-file standalone RcmTool.exe, and the Inno Setup installer, and uploads all three as workflow artifacts.
 
 ## Tests
 
@@ -219,7 +219,7 @@ The tester support flow includes:
 - rotating JSONL runtime telemetry under `%LOCALAPPDATA%\\RCMTool\\logs`
 - session heartbeat and session IDs
 - uncaught Python and worker-thread exception logging
-- Gamepad Signal Lab experiment/event telemetry mirrored into the support log
+- RcmTool experiment/event telemetry mirrored into the support log
 - a local health snapshot
 - explicit **Create Redacted Bundle**
 - explicit-confirm **Send Diagnostics to Developer**
@@ -242,7 +242,7 @@ The original Cloudflare workflows remain alongside the Windows application build
 
 ## High-rate controller support
 
-Gamepad Signal Lab does not use 1 kHz as a measurement ceiling. The configured-reference and simulation controls accept **1 Hz through 100 kHz**, covering 8 kHz and higher-rate controllers. Effective polling rate is still calculated from observed report timestamps; selecting a reference value never makes the application report that rate unless the captured timing supports it.
+RcmTool does not use 1 kHz as a measurement ceiling. The configured-reference and simulation controls accept **1 Hz through 100 kHz**, covering 8 kHz and higher-rate controllers. Effective polling rate is still calculated from observed report timestamps; selecting a reference value never makes the application report that rate unless the captured timing supports it.
 
 At very high physical rates, usable fidelity still depends on the controller, USB transport, backend, Windows scheduling, and timing source. Raw-HID arrival timing is preferred when available; host-poll backends remain labeled as estimates.
 
