@@ -175,6 +175,8 @@ def upload_support_bundle(url: str | None = None, token: str | None = None) -> d
     bundle = create_support_bundle()
     request = urllib.request.Request(endpoint, data=bundle.read_bytes(), method="POST")
     request.add_header("Content-Type", "application/zip")
+    request.add_header("Accept", "application/json")
+    request.add_header("User-Agent", "RCMTool/1.0 (+https://github.com/SensoredRooster/rcm-tool)")
     request.add_header("X-RCM-Session", SESSION_ID)
     request.add_header("X-RCM-Filename", bundle.name)
     bearer = (token or os.environ.get("RCM_SUPPORT_UPLOAD_TOKEN", "")).strip()
