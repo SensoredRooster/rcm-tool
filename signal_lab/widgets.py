@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Sequence
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFileDialog, QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 )
@@ -79,6 +79,24 @@ class MetricCard(QFrame):
         layout.addLayout(source_row)
 
         self.set_help(help_text)
+        self._fit_value_text()
+
+    def _fit_value_text(self) -> None:
+        text = self.value_label.text()
+        if not text:
+            return
+        available = max(110.0, float(self.width() - 34))
+        point_size = 18.0
+        font = self.value_label.font()
+        font.setPointSizeF(point_size)
+        while point_size > 12.5 and QFontMetricsF(font).horizontalAdvance(text) > available:
+            point_size -= 0.5
+            font.setPointSizeF(point_size)
+        self.value_label.setStyleSheet(f"font-size: {point_size:.1f}pt;")
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._fit_value_text()
 
     def set_help(self, help_text: str) -> None:
         self.help_text = help_text.strip()
@@ -96,6 +114,7 @@ class MetricCard(QFrame):
             self.subtitle_label.setText(subtitle)
         if source is not None:
             self.set_source(source)
+        self._fit_value_text()
 
 
 class LineChart(QWidget):
