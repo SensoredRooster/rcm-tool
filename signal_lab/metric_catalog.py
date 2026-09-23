@@ -64,8 +64,8 @@ METRIC_HELP: dict[str, str] = {
         "τ is not one second unless the measurement cadence is exactly 1 Hz."
     ),
     "analog_noise": (
-        "RMS deviation of recent stick-axis samples from their local mean. "
-        "Useful as an observed stationary noise floor when the physical control is not moving."
+        "Average RMS deviation across LX/LY/RX/RY, reported only when every axis stays within the configured stationary-excursion threshold for the analysis window. "
+        "If movement exceeds that threshold the noise-floor value is withheld."
     ),
     "correlation": (
         "Pearson correlation after nearest-time alignment of gamepad interval deviation and oscillator frequency error. "

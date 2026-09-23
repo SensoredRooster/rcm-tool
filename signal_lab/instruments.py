@@ -131,7 +131,21 @@ class VisaScpiMeasurementInstrument(_VisaBase):
     """Read-only role for counters/scopes/analyzers. Construction sends no OUTP command."""
 
     name = "VISA/SCPI measurement instrument"
-    capabilities = InstrumentCapabilities(frequency=True, period=True, duty_cycle=True)
+    capabilities = InstrumentCapabilities()
+
+    def __init__(self, resource_name: str, timeout_ms: int = 1500) -> None:
+        super().__init__(resource_name, timeout_ms)
+        frequency = self.measure_frequency_hz()
+        duty = self.measure_duty_cycle_percent()
+        self.capabilities = InstrumentCapabilities(
+            frequency=frequency is not None,
+            period=False,
+            duty_cycle=duty is not None,
+            waveform_capture=False,
+            phase_noise=False,
+            generator_output=False,
+            high_resolution_timestamps=False,
+        )
 
     def _query_float(self, commands: tuple[str, ...]) -> float | None:
         for command in commands:

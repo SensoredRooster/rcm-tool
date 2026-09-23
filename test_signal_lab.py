@@ -128,6 +128,25 @@ class SignalLabTests(unittest.TestCase):
         self.assertEqual(meta["usb_path"], "hid-path")
         self.assertEqual(meta["controller_name"], "Test Pad")
 
+    def test_measurement_capability_probe_reflects_actual_queries(self):
+        class FakeMeasurement:
+            def __init__(self):
+                self.capabilities = None
+            def measure_frequency_hz(self):
+                return 12_000_000.0
+            def measure_duty_cycle_percent(self):
+                return None
+
+        fake = FakeMeasurement()
+        caps = __import__("signal_lab.instruments", fromlist=["InstrumentCapabilities"]).InstrumentCapabilities(
+            frequency=fake.measure_frequency_hz() is not None,
+            period=False,
+            duty_cycle=fake.measure_duty_cycle_percent() is not None,
+        )
+        self.assertTrue(caps.frequency)
+        self.assertFalse(caps.period)
+        self.assertFalse(caps.duty_cycle)
+
     def test_measurement_role_cannot_enable_output(self):
         measurement = VisaScpiMeasurementInstrument.__new__(VisaScpiMeasurementInstrument)
         with self.assertRaises(RuntimeError):

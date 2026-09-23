@@ -832,6 +832,8 @@ class MainWindow(QMainWindow):
         self.expected_rate.setToolTip("Used only when Timing reference is set to Configured reference rate.")
         self.late_factor=QDoubleSpinBox(); self.late_factor.setRange(1.01,10.0); self.late_factor.setDecimals(2); self.late_factor.setValue(1.50); self.late_factor.setSuffix(" × reference interval")
         self.outlier_sigma=QDoubleSpinBox(); self.outlier_sigma.setRange(0.5,20.0); self.outlier_sigma.setDecimals(2); self.outlier_sigma.setValue(4.0); self.outlier_sigma.setSuffix(" σ")
+        self.stationary_excursion=QDoubleSpinBox(); self.stationary_excursion.setRange(0.0001,0.5000); self.stationary_excursion.setDecimals(4); self.stationary_excursion.setValue(0.0200)
+        self.stationary_excursion.setToolTip("Maximum max−min excursion allowed on every normalized stick axis before the window is considered moving rather than stationary.")
         self.graph_refresh=QSpinBox(); self.graph_refresh.setRange(33,1000); self.graph_refresh.setValue(100); self.graph_refresh.setSuffix(" ms")
         self.graph_refresh.valueChanged.connect(lambda v: self.ui_timer.setInterval(v) if hasattr(self,"ui_timer") else None)
         form.addRow("Theme",self.theme_combo)
@@ -840,6 +842,7 @@ class MainWindow(QMainWindow):
         form.addRow("Configured reference rate",self.expected_rate)
         form.addRow("Late-report threshold",self.late_factor)
         form.addRow("Oscillator outlier threshold",self.outlier_sigma)
+        form.addRow("Stationary stick max excursion",self.stationary_excursion)
         form.addRow("Graph refresh interval",self.graph_refresh)
         gl.addLayout(form); layout.addWidget(g)
 
@@ -921,6 +924,9 @@ class MainWindow(QMainWindow):
                 "timing_reference_mode":self.timing_reference_mode.currentData(),
                 "configured_reference_rate_hz":self.expected_rate.value(),
                 "host_timer_resolution_ns":self.host_timer_resolution_ns,
+                "stationary_excursion_threshold":self.stationary_excursion.value(),
+                "late_factor":self.late_factor.value(),
+                "oscillator_outlier_sigma":self.outlier_sigma.value(),
                 "late_factor":self.late_factor.value(),
                 "oscillator_outlier_sigma":self.outlier_sigma.value(),
             },
@@ -1246,13 +1252,18 @@ class MainWindow(QMainWindow):
             self.lt_bar.setValue(int(float(last.get("lt",0))*1000))
             self.rt_bar.setValue(int(float(last.get("rt",0))*1000))
             rolling=samples[-250:]
-            chunks=[]
-            for axis in ("lx","ly","rx","ry"):
-                vals=[float(item.get(axis,0)) for item in rolling]
-                mean=sum(vals)/len(vals)
-                rms=math.sqrt(sum((value-mean)**2 for value in vals)/len(vals))
-                chunks.append(f"{axis.upper()} {rms:.5f}")
-            self.axis_noise.setText("Stationary-window RMS: "+" • ".join(chunks))
+            stationary_noise,axis_spans=self._stationary_analog_noise(rolling,self.stationary_excursion.value())
+            if stationary_noise is None:
+                largest=max(axis_spans.items(),key=lambda item:item[1]) if axis_spans else ("—",0.0)
+                self.axis_noise.setText(
+                    f"Stationary noise: unavailable • movement detected • max excursion {largest[0].upper()} {largest[1]:.5f} "
+                    f"(limit {self.stationary_excursion.value():.5f})"
+                )
+            else:
+                self.axis_noise.setText(
+                    f"Stationary noise RMS: {stationary_noise:.6f} normalized units • "
+                    f"all-axis excursion ≤ {self.stationary_excursion.value():.5f}"
+                )
             self.axis_noise.setToolTip(METRIC_HELP["analog_noise"])
             if "buttons" in last:
                 parts=[f"Buttons mask: 0x{int(last.get('buttons',0)):04X}"]
@@ -1437,15 +1448,24 @@ class MainWindow(QMainWindow):
         self._add_event("baseline_saved",{"path":str(path)})
 
     @staticmethod
-    def _analog_noise_rms(samples:list[dict]) -> float | None:
+    def _stationary_analog_noise(samples:list[dict], max_excursion:float) -> tuple[float | None, dict[str,float]]:
         if len(samples)<2:
-            return None
+            return None, {}
         rms_values=[]
+        spans={}
         for axis in ("lx","ly","rx","ry"):
             values=[float(sample.get(axis,0.0)) for sample in samples]
+            span=max(values)-min(values)
+            spans[axis]=span
+            if span>max_excursion:
+                return None, spans
             mean=sum(values)/len(values)
             rms_values.append(math.sqrt(sum((value-mean)**2 for value in values)/len(values)))
-        return sum(rms_values)/len(rms_values)
+        return (sum(rms_values)/len(rms_values) if rms_values else None), spans
+
+    def _analog_noise_rms(self, samples:list[dict]) -> float | None:
+        value,_=self._stationary_analog_noise(samples,self.stationary_excursion.value())
+        return value
 
     @staticmethod
     def _histogram(values:list[float],bins:int) -> list[float]:
@@ -2205,6 +2225,7 @@ class MainWindow(QMainWindow):
         self.expected_rate.setValue(float(self.settings.value("expected_rate",1000)))
         self.late_factor.setValue(float(self.settings.value("late_factor",1.5)))
         self.outlier_sigma.setValue(float(self.settings.value("outlier_sigma",4.0)))
+        self.stationary_excursion.setValue(float(self.settings.value("stationary_excursion",0.02)))
         self.nominal_freq.setValue(float(self.settings.value("nominal_freq",12_000_000)))
         self.graph_refresh.setValue(int(self.settings.value("graph_refresh",100)))
         self.max_freq.setValue(float(self.settings.value("max_freq",20_000_000)))
@@ -2229,7 +2250,8 @@ class MainWindow(QMainWindow):
         values={
             "theme":self.theme_combo.currentText(),"baseline_seconds":self.baseline_seconds.value(),
             "timing_reference_mode":self.timing_reference_mode.currentData(),
-            "expected_rate":self.expected_rate.value(),"late_factor":self.late_factor.value(),"outlier_sigma":self.outlier_sigma.value(),"nominal_freq":self.nominal_freq.value(),
+            "expected_rate":self.expected_rate.value(),"late_factor":self.late_factor.value(),"outlier_sigma":self.outlier_sigma.value(),
+            "stationary_excursion":self.stationary_excursion.value(),"nominal_freq":self.nominal_freq.value(),
             "graph_refresh":self.graph_refresh.value(),"max_freq":self.max_freq.value(),
             "max_amp":self.max_amp.value(),"max_offset":self.max_offset.value(),
             "sim_rate":self.sim_rate.value(),"sim_jitter":self.sim_jitter.value(),
