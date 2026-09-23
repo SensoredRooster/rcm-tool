@@ -179,10 +179,9 @@ class VisaScpiGenerator(_VisaBase):
             pass
 
     def output_enabled(self) -> bool:
-        try:
-            self._output = self.query("OUTP?").strip().upper() in {"1", "ON"}
-        except Exception:
-            pass
+        # Return cached state so dashboard refreshes never introduce VISA I/O
+        # into the UI/timing path. Explicit readback is performed after state
+        # changes and at sweep measurement points.
         return self._output
 
     def _query_first_float(self, commands: tuple[str, ...]) -> float | None:
