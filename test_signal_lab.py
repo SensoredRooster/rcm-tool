@@ -102,7 +102,11 @@ class SignalLabTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             db = LabDatabase(Path(td)/"lab.sqlite3")
             sid = db.create_session("test","simulation","x")
-            db.add_controller_sample(sid,1,{"lx":0,"ly":0,"rx":0,"ry":0,"lt":0,"rt":0},source="sim")
+            db.add_controller_sample(
+                sid,1,
+                {"lx":0,"ly":0,"rx":0,"ry":0,"lt":0,"rt":0,"buttons":5,"dpad_x":1.0,"dpad_y":0.0},
+                source="sim",
+            )
             db.add_oscillator_sample(sid,1,12_000_000,source="sim",quality="simulated")
             db.add_event(sid,1,"baseline_started")
             db.flush()
@@ -115,6 +119,11 @@ class SignalLabTests(unittest.TestCase):
             self.assertEqual(sessions[0]["events"], 1)
             events = db.list_events(sid)
             self.assertEqual(events[0]["event_type"], "baseline_started")
+            json_path = db.export_json(sid, Path(td) / "export.json")
+            csv_path = db.export_controller_csv(sid, Path(td) / "export.csv")
+            exported = json_path.read_text(encoding="utf-8")
+            self.assertIn('"buttons": 5', exported)
+            self.assertIn("extra_json", csv_path.read_text(encoding="utf-8"))
             db.close()
 
 
