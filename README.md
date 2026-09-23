@@ -24,6 +24,14 @@ The application is measurement-focused. It does not inject game inputs, modify c
 
 ## Measurement integrity
 
+The primary UI is intentionally focused on the controller question: Raw HID
+noise, report timing jitter, and movement/settling behavior. Dashboard and
+Controller Lab provide the guided workflow; Reports, Support, and Settings
+remain available. The local SQLite database, raw samples, testing timeline,
+support logs, and app data are retained. The other lab implementations remain
+in the codebase for compatibility with existing sessions and reports but are
+not part of the primary navigation.
+
 Controller timestamps use Python's highest-resolution host monotonic clock available through time.perf_counter_ns. The meaning of those timestamps depends on the backend:
 
 - **Raw HID** reports are timestamped when the application receives/drains the HID report. This is still a host-observed timestamp.

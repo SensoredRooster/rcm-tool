@@ -55,6 +55,7 @@ NAV = [
     "Interference Lab", "Sweep Lab", "Correlation", "Experiments",
     "Compare", "Reports", "Instruments", "Support", "Settings",
 ]
+FOCUS_NAV = ("Dashboard", "Controller Lab", "Reports", "Support", "Settings")
 
 TESTER_SHARE_URL = "https://rcm-tool-share.sensoredrooster-com.workers.dev"
 
@@ -110,14 +111,12 @@ class WelcomeDialog(QDialog):
         title.setObjectName("Title")
         layout.addWidget(title)
         copy = QLabel(
-            "A measurement-first controller timing and oscillator workstation.\n\n"
-            "1  Detect gamepad\n"
-            "2  Verify timing engine\n"
-            "3  Configure oscillator measurement hardware\n"
-            "4  Run baseline\n"
-            "5  Optionally configure controlled stimulus\n"
-            "6  Start experiment\n\n"
-            "A physical controller is required for controller measurements."
+            "A hardware-only controller noise and jitter workstation.\n\n"
+            "1  Connect the controller by USB\n"
+            "2  Select a named Raw HID device\n"
+            "3  Run the guided neutral and movement tests\n"
+            "4  Export the measured evidence\n\n"
+            "No simulated controller values are used. A physical controller is required."
         )
         copy.setWordWrap(True)
         layout.addWidget(copy)
@@ -249,6 +248,8 @@ class MainWindow(QMainWindow):
 
         self.nav_buttons: dict[str, QPushButton] = {}
         for index, name in enumerate(NAV):
+            if name not in FOCUS_NAV:
+                continue
             button = QPushButton(name)
             button.setObjectName("Nav")
             button.setCheckable(True)
@@ -287,10 +288,7 @@ class MainWindow(QMainWindow):
         self.top_title.setObjectName("PageTitle")
         top.addWidget(self.top_title)
         top.addStretch(1)
-        self.baseline_button = QPushButton("Run Baseline")
-        self.baseline_button.clicked.connect(self._start_baseline)
-        top.addWidget(self.baseline_button)
-        self.capture_button = QPushButton("Start Capture")
+        self.capture_button = QPushButton("Record Session")
         self.capture_button.setObjectName("Primary")
         self.capture_button.clicked.connect(self._toggle_capture)
         top.addWidget(self.capture_button)
@@ -317,8 +315,8 @@ class MainWindow(QMainWindow):
         index = max(0, min(index, self.stack.count() - 1))
         self.stack.setCurrentIndex(index)
         self.top_title.setText(NAV[index])
-        for i, name in enumerate(NAV):
-            self.nav_buttons[name].setChecked(i == index)
+        for name, button in self.nav_buttons.items():
+            button.setChecked(NAV[index] == name)
         if NAV[index] == "Experiments":
             self._refresh_experiments()
         elif NAV[index] == "Compare":
@@ -341,7 +339,7 @@ class MainWindow(QMainWindow):
     def _dashboard_page(self) -> QWidget:
         w, layout = page(
             "Dashboard",
-            "Live measured state first; calculated interpretation second. Hover any metric or graph for its definition and measurement caveat.",
+            "Focused hardware view: controller noise, report jitter, and movement/settling behavior. No simulated values are used.",
         )
         grid = QGridLayout()
         grid.setHorizontalSpacing(12)
@@ -351,35 +349,56 @@ class MainWindow(QMainWindow):
         self.cards = {}
         specs = [
             ("rate","Gamepad rate","MEASURED"), ("interval","Report interval","MEASURED"),
-            ("jitter","Gamepad jitter","CALCULATED"), ("osc","Oscillator","MEASURED"),
-            ("ppm","Clock error","CALCULATED"), ("clock_jitter","Clock jitter","CALCULATED"),
-            ("late","Late reports","CALCULATED"), ("stimulus","Test stimulus","STATE"),
+            ("jitter","Report jitter","CALCULATED"), ("late","Duplicate / late reports","CALCULATED"),
+            ("osc","Oscillator","UNUSED"), ("ppm","Clock error","UNUSED"),
+            ("clock_jitter","Clock jitter","UNUSED"), ("stimulus","Test stimulus","UNUSED"),
         ]
-        for i, (key, title, source) in enumerate(specs):
+        for i, (key, title, source) in enumerate(specs[:4]):
             c = MetricCard(title, help_text=METRIC_HELP[key], source=source)
             self.cards[key] = c
             grid.addWidget(c, i // 4, i % 4)
+        for key, title, source in specs[4:]:
+            self.cards[key] = MetricCard(title, help_text=METRIC_HELP[key], source=source)
+            self.cards[key].setVisible(False)
         layout.addLayout(grid)
 
-        baseline, bl = card("BASELINE / REFERENCE")
+        evidence, evidence_layout = card("RC FILTER / NOISE EVIDENCE")
+        evidence_help = QLabel(
+            "Use the guided Raw HID test to measure stationary noise and movement settling. "
+            "The export keeps the paired timestamps, normalized samples, and raw HID bytes."
+        )
+        evidence_help.setWordWrap(True)
+        evidence_help.setObjectName("Muted")
+        evidence_layout.addWidget(evidence_help)
+        evidence_actions = QHBoxLayout()
+        guided = QPushButton("Guided smoothing test")
+        guided.clicked.connect(self._run_noise_wizard)
+        open_controller = QPushButton("Open Controller Lab")
+        open_controller.clicked.connect(lambda: self._navigate(NAV.index("Controller Lab")))
+        export_evidence = QPushButton("Export evidence")
+        export_evidence.clicked.connect(self._export_noise_evidence)
+        evidence_actions.addWidget(guided)
+        evidence_actions.addWidget(open_controller)
+        evidence_actions.addWidget(export_evidence)
+        evidence_actions.addStretch(1)
+        evidence_layout.addLayout(evidence_actions)
+        self.dashboard_noise_status = QLabel("No Raw HID smoothing evidence captured.")
+        self.dashboard_noise_status.setObjectName("Muted")
+        self.dashboard_noise_status.setWordWrap(True)
+        evidence_layout.addWidget(self.dashboard_noise_status)
+        layout.addWidget(evidence)
+
+        baseline, bl = card("SESSION RECORDING")
         state_row = QHBoxLayout()
-        self.baseline_state = QLabel("No baseline captured")
+        self.baseline_state = QLabel("Raw samples are acquired continuously. Record Session stores them in the local testing database.")
         self.baseline_state.setObjectName("Muted")
         self.baseline_state.setWordWrap(True)
         self.baseline_progress = QProgressBar()
         self.baseline_progress.setRange(0,1000)
+        self.baseline_progress.setVisible(False)
         state_row.addWidget(self.baseline_state,2)
         state_row.addWidget(self.baseline_progress,1)
         bl.addLayout(state_row)
-        actions = QHBoxLayout()
-        hint = QLabel("Baseline uses the same timing-reference rule selected in Settings.")
-        hint.setObjectName("SectionHint")
-        hint.setWordWrap(True)
-        save_baseline = QPushButton("Save Baseline"); save_baseline.clicked.connect(self._save_baseline)
-        set_ref = QPushButton("Set Reference"); set_ref.clicked.connect(self._set_reference_baseline)
-        compare = QPushButton("Compare"); compare.clicked.connect(lambda: self._navigate(NAV.index("Compare")))
-        actions.addWidget(hint,1); actions.addWidget(save_baseline); actions.addWidget(set_ref); actions.addWidget(compare)
-        bl.addLayout(actions)
         layout.addWidget(baseline)
 
         charts = QGridLayout()
@@ -390,12 +409,18 @@ class MainWindow(QMainWindow):
             x_label="Elapsed controller capture time (s)",
         )
         self.dashboard_osc_chart = LineChart(
-            "Oscillator frequency error",
+            "Unused oscillator chart",
             help_text=CHART_HELP["osc_ppm"],
-            x_label="Elapsed oscillator capture time (s)",
+            x_label="Elapsed time (s)",
+        )
+        self.dashboard_osc_chart.setVisible(False)
+        self.dashboard_noise_chart = LineChart(
+            "Raw HID analog output",
+            help_text=CHART_HELP["analog_stability"],
+            x_label="Elapsed controller capture time (s)",
         )
         charts.addWidget(self.dashboard_timing_chart,0,0)
-        charts.addWidget(self.dashboard_osc_chart,0,1)
+        charts.addWidget(self.dashboard_noise_chart,0,1)
         charts.setColumnStretch(0,1); charts.setColumnStretch(1,1)
         layout.addLayout(charts)
 
@@ -566,15 +591,9 @@ class MainWindow(QMainWindow):
         evidence_row = QHBoxLayout()
         guided_test = QPushButton("Guided smoothing test")
         guided_test.clicked.connect(self._run_noise_wizard)
-        neutral_test = QPushButton("Neutral noise • 10 s")
-        neutral_test.clicked.connect(lambda: self._start_noise_test("neutral"))
-        movement_test = QPushButton("Movement / settling • 20 s")
-        movement_test.clicked.connect(lambda: self._start_noise_test("movement"))
         export_evidence = QPushButton("Export evidence")
         export_evidence.clicked.connect(self._export_noise_evidence)
         evidence_row.addWidget(guided_test)
-        evidence_row.addWidget(neutral_test)
-        evidence_row.addWidget(movement_test)
         evidence_row.addWidget(export_evidence)
         evidence_row.addStretch(1)
         evidence_layout.addLayout(evidence_row)
@@ -1399,7 +1418,7 @@ class MainWindow(QMainWindow):
             },
         )
         self.capture_active=True
-        self.capture_button.setText("Stop Capture")
+        self.capture_button.setText("Stop Recording")
         self._add_event("capture_started",{
             "mode":mode,
             "timing_reference_mode":self.timing_reference_mode.currentData(),
@@ -1420,7 +1439,7 @@ class MainWindow(QMainWindow):
         })
         self.db.flush()
         self.capture_active=False
-        self.capture_button.setText("Start Capture")
+        self.capture_button.setText("Record Session")
 
     def _sample_tick(self) -> None:
         while True:
@@ -1605,11 +1624,28 @@ class MainWindow(QMainWindow):
                 x_values=interval_elapsed[-500:],
                 x_label="Elapsed controller capture time (s)",
             )
-            self.dashboard_osc_chart.set_series(
-                [("error ppm",ppm_values[-500:],"#6DE0B1")],
-                x_values=osc_elapsed[-500:],
-                x_label="Elapsed oscillator capture time (s)",
+            dashboard_samples = list(self.controller_samples)[-500:]
+            dashboard_sample_ts = list(self.controller_ts)[-len(dashboard_samples):] if dashboard_samples else []
+            dashboard_elapsed = self._elapsed_seconds(
+                dashboard_sample_ts,
+                dashboard_sample_ts[0] if dashboard_sample_ts else None,
             )
+            self.dashboard_noise_chart.set_series(
+                [
+                    ("LX", [float(item.get("lx", 0.0)) for item in dashboard_samples], "#6AA2FF"),
+                    ("LY", [float(item.get("ly", 0.0)) for item in dashboard_samples], "#6DE0B1"),
+                ],
+                x_values=dashboard_elapsed,
+                x_label="Elapsed controller capture time (s)",
+            )
+            if self.noise_test_result:
+                self.dashboard_noise_status.setText(
+                    f"Latest {self.noise_test_result['capture_kind']} capture: "
+                    f"{self.noise_test_result['sample_count']} samples • "
+                    "host-observed only; firmware attribution requires an upstream electrical trace."
+                )
+            else:
+                self.dashboard_noise_status.setText("No Raw HID smoothing evidence captured.")
 
         samples=list(self.controller_samples)[-800:] if current_page in {"Live Capture","Controller Lab"} else []
         sample_ts=list(self.controller_ts)[-len(samples):] if samples and current_page == "Live Capture" else []
@@ -2737,7 +2773,7 @@ class MainWindow(QMainWindow):
 
     def _reset_graphs(self) -> None:
         for ch in [
-            self.dashboard_timing_chart,self.dashboard_osc_chart,self.live_interval_chart,self.live_jitter_chart,
+            self.dashboard_timing_chart,self.dashboard_osc_chart,self.dashboard_noise_chart,self.live_interval_chart,self.live_jitter_chart,
             self.live_hist_chart,self.live_latency_chart,self.live_analog_chart,self.live_osc_chart,self.live_osc_jitter_chart,
             self.osc_stability_chart,self.osc_period_chart,self.corr_stimulus_chart,self.corr_osc_chart,self.corr_gamepad_chart
         ]: ch.reset_view()
