@@ -606,6 +606,29 @@ class MainWindow(QMainWindow):
         save=QPushButton("Save Settings"); save.clicked.connect(self._save_settings)
         sl.addLayout(sf); sl.addWidget(save,alignment=Qt.AlignmentFlag.AlignRight); layout.addWidget(s)
 
+        simcard, siml=card("SIMULATION")
+        simf=QFormLayout()
+        self.sim_rate=QDoubleSpinBox(); self.sim_rate.setRange(1,8000); self.sim_rate.setValue(self.gamepad_sim.config.rate_hz); self.sim_rate.setSuffix(" Hz")
+        self.sim_jitter=QDoubleSpinBox(); self.sim_jitter.setRange(0,20); self.sim_jitter.setDecimals(4); self.sim_jitter.setValue(self.sim_base_jitter_ms); self.sim_jitter.setSuffix(" ms")
+        self.sim_periodic_jitter=QDoubleSpinBox(); self.sim_periodic_jitter.setRange(0,20); self.sim_periodic_jitter.setDecimals(4); self.sim_periodic_jitter.setValue(self.gamepad_sim.config.periodic_jitter_ms); self.sim_periodic_jitter.setSuffix(" ms")
+        self.sim_periodic_hz=QDoubleSpinBox(); self.sim_periodic_hz.setRange(0.01,5000); self.sim_periodic_hz.setDecimals(3); self.sim_periodic_hz.setValue(self.gamepad_sim.config.periodic_hz); self.sim_periodic_hz.setSuffix(" Hz")
+        self.sim_spike_every=QSpinBox(); self.sim_spike_every.setRange(0,1000000); self.sim_spike_every.setValue(self.gamepad_sim.config.spike_every); self.sim_spike_every.setSpecialValueText("Off")
+        self.sim_spike_ms=QDoubleSpinBox(); self.sim_spike_ms.setRange(0,100); self.sim_spike_ms.setDecimals(4); self.sim_spike_ms.setValue(self.gamepad_sim.config.spike_ms); self.sim_spike_ms.setSuffix(" ms")
+        self.sim_drop_every=QSpinBox(); self.sim_drop_every.setRange(0,1000000); self.sim_drop_every.setValue(self.gamepad_sim.config.drop_every); self.sim_drop_every.setSpecialValueText("Off")
+        self.sim_osc_ppm=QDoubleSpinBox(); self.sim_osc_ppm.setRange(-100000,100000); self.sim_osc_ppm.setDecimals(5); self.sim_osc_ppm.setValue(self.sim_base_osc_ppm); self.sim_osc_ppm.setSuffix(" ppm")
+        self.sim_osc_random=QDoubleSpinBox(); self.sim_osc_random.setRange(0,100000); self.sim_osc_random.setDecimals(5); self.sim_osc_random.setValue(self.osc_sim.config.random_jitter_ppm); self.sim_osc_random.setSuffix(" ppm")
+        self.sim_osc_periodic=QDoubleSpinBox(); self.sim_osc_periodic.setRange(0,100000); self.sim_osc_periodic.setDecimals(5); self.sim_osc_periodic.setValue(self.osc_sim.config.periodic_jitter_ppm); self.sim_osc_periodic.setSuffix(" ppm")
+        self.sim_osc_drift=QDoubleSpinBox(); self.sim_osc_drift.setRange(-10000,10000); self.sim_osc_drift.setDecimals(6); self.sim_osc_drift.setValue(self.osc_sim.config.drift_ppm_per_second); self.sim_osc_drift.setSuffix(" ppm/s")
+        for label_text,widget in [
+            ("Gamepad rate",self.sim_rate),("Random jitter",self.sim_jitter),("Periodic jitter",self.sim_periodic_jitter),
+            ("Periodic jitter frequency",self.sim_periodic_hz),("Spike every N reports",self.sim_spike_every),("Spike size",self.sim_spike_ms),
+            ("Missing-report cadence",self.sim_drop_every),("Oscillator offset",self.sim_osc_ppm),("Oscillator random jitter",self.sim_osc_random),
+            ("Oscillator periodic jitter",self.sim_osc_periodic),("Oscillator drift",self.sim_osc_drift),
+        ]:
+            simf.addRow(label_text,widget)
+        apply_sim=QPushButton("Apply Simulation Settings"); apply_sim.clicked.connect(self._apply_simulation_settings)
+        siml.addLayout(simf); siml.addWidget(apply_sim,alignment=Qt.AlignmentFlag.AlignRight); layout.addWidget(simcard)
+
         dbcard, dbl=card("DATA")
         label=QLabel(f"SQLite database:\n{self.db.path}\n\nRaw samples are retained and can be exported from Reports.")
         label.setWordWrap(True); dbl.addWidget(label); layout.addWidget(dbcard); layout.addStretch(1)
@@ -1461,6 +1484,34 @@ class MainWindow(QMainWindow):
             ]
         )
 
+    def _apply_simulation_settings(self) -> None:
+        self.gamepad_sim.config.rate_hz=self.sim_rate.value()
+        self.sim_base_jitter_ms=self.sim_jitter.value()
+        self.gamepad_sim.config.jitter_ms=self.sim_base_jitter_ms
+        self.gamepad_sim.config.periodic_jitter_ms=self.sim_periodic_jitter.value()
+        self.gamepad_sim.config.periodic_hz=self.sim_periodic_hz.value()
+        self.gamepad_sim.config.spike_every=self.sim_spike_every.value()
+        self.gamepad_sim.config.spike_ms=self.sim_spike_ms.value()
+        self.gamepad_sim.config.drop_every=self.sim_drop_every.value()
+        self.sim_base_osc_ppm=self.sim_osc_ppm.value()
+        self.osc_sim.config.ppm_offset=self.sim_base_osc_ppm
+        self.osc_sim.config.random_jitter_ppm=self.sim_osc_random.value()
+        self.osc_sim.config.periodic_jitter_ppm=self.sim_osc_periodic.value()
+        self.osc_sim.config.drift_ppm_per_second=self.sim_osc_drift.value()
+        self._add_event("simulation_settings",{
+            "gamepad_rate_hz":self.sim_rate.value(),
+            "random_jitter_ms":self.sim_jitter.value(),
+            "periodic_jitter_ms":self.sim_periodic_jitter.value(),
+            "periodic_hz":self.sim_periodic_hz.value(),
+            "spike_every":self.sim_spike_every.value(),
+            "spike_ms":self.sim_spike_ms.value(),
+            "drop_every":self.sim_drop_every.value(),
+            "oscillator_ppm_offset":self.sim_osc_ppm.value(),
+            "oscillator_random_jitter_ppm":self.sim_osc_random.value(),
+            "oscillator_periodic_jitter_ppm":self.sim_osc_periodic.value(),
+            "oscillator_drift_ppm_per_second":self.sim_osc_drift.value(),
+        })
+
     def _apply_saved_settings(self) -> None:
         self.baseline_seconds.setValue(int(self.settings.value("baseline_seconds",60)))
         self.expected_rate.setValue(float(self.settings.value("expected_rate",1000)))
@@ -1470,7 +1521,19 @@ class MainWindow(QMainWindow):
         self.max_freq.setValue(float(self.settings.value("max_freq",20_000_000)))
         self.max_amp.setValue(float(self.settings.value("max_amp",1.0)))
         self.max_offset.setValue(float(self.settings.value("max_offset",0.5)))
+        self.sim_rate.setValue(float(self.settings.value("sim_rate",1000.0)))
+        self.sim_jitter.setValue(float(self.settings.value("sim_jitter",0.05)))
+        self.sim_periodic_jitter.setValue(float(self.settings.value("sim_periodic_jitter",0.0)))
+        self.sim_periodic_hz.setValue(float(self.settings.value("sim_periodic_hz",60.0)))
+        self.sim_spike_every.setValue(int(self.settings.value("sim_spike_every",0)))
+        self.sim_spike_ms.setValue(float(self.settings.value("sim_spike_ms",1.0)))
+        self.sim_drop_every.setValue(int(self.settings.value("sim_drop_every",0)))
+        self.sim_osc_ppm.setValue(float(self.settings.value("sim_osc_ppm",-1.5)))
+        self.sim_osc_random.setValue(float(self.settings.value("sim_osc_random",0.25)))
+        self.sim_osc_periodic.setValue(float(self.settings.value("sim_osc_periodic",0.15)))
+        self.sim_osc_drift.setValue(float(self.settings.value("sim_osc_drift",0.01)))
         self._sync_safety_limits()
+        self._apply_simulation_settings()
 
     def _save_settings(self) -> None:
         self._sync_safety_limits()
@@ -1478,7 +1541,13 @@ class MainWindow(QMainWindow):
             "theme":self.theme_combo.currentText(),"baseline_seconds":self.baseline_seconds.value(),
             "expected_rate":self.expected_rate.value(),"late_factor":self.late_factor.value(),"nominal_freq":self.nominal_freq.value(),
             "graph_refresh":self.graph_refresh.value(),"max_freq":self.max_freq.value(),
-            "max_amp":self.max_amp.value(),"max_offset":self.max_offset.value()
+            "max_amp":self.max_amp.value(),"max_offset":self.max_offset.value(),
+            "sim_rate":self.sim_rate.value(),"sim_jitter":self.sim_jitter.value(),
+            "sim_periodic_jitter":self.sim_periodic_jitter.value(),"sim_periodic_hz":self.sim_periodic_hz.value(),
+            "sim_spike_every":self.sim_spike_every.value(),"sim_spike_ms":self.sim_spike_ms.value(),
+            "sim_drop_every":self.sim_drop_every.value(),"sim_osc_ppm":self.sim_osc_ppm.value(),
+            "sim_osc_random":self.sim_osc_random.value(),"sim_osc_periodic":self.sim_osc_periodic.value(),
+            "sim_osc_drift":self.sim_osc_drift.value()
         }
         for key,val in values.items(): self.settings.setValue(key,val)
         QMessageBox.information(self,"Settings","Settings saved.")
