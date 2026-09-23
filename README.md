@@ -1,10 +1,20 @@
 # RCM Tool
 
-Windows controller integrity prototype. It **reads** stick axes. It does **not** write to the controller, inject into a game, or flash firmware.
+Windows controller integrity prototype. It **reads** stick axes and HID timing. It does **not** write to the controller, inject into a game, or flash firmware.
 
 Repository: https://github.com/SensoredRooster/rcm-tool
 
-Working prototype: capture, RC high-frequency RMS, auto-export JSON, Before/After pair-delta, injected self-test, 2026 dark lab UI.
+## Honest Before / After
+
+Same PC, same protocol, same hands. Only the **hardware path** changes.
+
+1. **Before** — pad straight to the PC. No pass-through box.
+2. Unplug. Put the suspected device in the cable path.
+3. **After** — same Neutral hold or same Guided moves.
+
+Pair-delta plus HID signal metrics compare rest HF RMS, sample rate, inter-sample jitter, and how many distinct axis levels showed up. That is a **change detector**, not a cheat verdict. An idle box can look identical at rest.
+
+**After noise** and **Injected** protocols are tool self-tests only. Files tagged `INJECTED_` are not a pad screen.
 
 ## 1. Install once
 
@@ -28,47 +38,30 @@ python apply_all.py
 
 ## 2. UI
 
-Dark graphite (`#0E1116`) with mint accent (`#3DDC97`). Segoe UI / Cascadia Mono. Start is the mint button. Theme lives in `rcm_theme.py` and is applied last by `apply_theme.py`.
-
-Windows ttk still owns some native combo chrome. The rest of the window is themed.
+Portal navy (`#070B14`) with cyan labels and blue primary (`#3B82F6`), same language as Tester Share. Theme is `rcm_theme.py`. ttk still owns native combo chrome.
 
 ## 3. Session order
 
-Tool check first: Injected HF sine, then Injected slow sine, thumbs off. Files tagged `INJECTED_`.
-
-Then Neutral Before+After pair. Then Guided pair. Pair is blocked while an Injected protocol is selected.
+1. Tool check: Injected HF sine / slow sine, thumbs off. `INJECTED_` files.
+2. Neutral Before + After with hardware out, then hardware in.
+3. Guided pair the same way.
 
 ## 4. Pair delta
 
-`unchanged` / `increased_at_rest` / `increased_high_freq` / `unsupported`. Change detector only. Not organic vs non-organic.
+`unchanged` / `increased_at_rest` / `increased_high_freq` / `unsupported`.
+Reports also include `hid_signal_metrics` and `hidSignalDelta` (rate, timing jitter, unique levels).
 
 ## 5. RC filter
 
-`tau = 0.05 s`. HF RMS = RMS(raw minus trend). `reportVersion` 0.2.
+`tau = 0.05 s`. HF RMS = RMS(raw minus trend).
 
 ## 6. After a run
 
 JSON writes itself. **Submit Reports.bat**, type YES. Do not submit `INJECTED_` files as a pad screen.
 
-## Support, diagnostics, and tester sharing
+## Support and Tester Share
 
-RCMTool includes a local-first diagnostics system plus two isolated Cloudflare services.
-
-### Support diagnostics
-
-- Worker: `https://rcm-tool-support.sensoredrooster-com.workers.dev`
-- Upload endpoint: `https://rcm-tool-support.sensoredrooster-com.workers.dev/upload`
-- R2 bucket: `rcm-tool-support-logs`
-- The Support & Diagnostics window creates redacted ZIP bundles and sends them only after explicit confirmation.
-- `RCM_SUPPORT_UPLOAD_URL` is supported as a development override.
-
-### Tester Share
-
-- Portal: `https://rcm-tool-share.sensoredrooster-com.workers.dev`
-- R2 bucket: `rcm-tool-share`
-- Open it from **Support & Diagnostics → Tester Share**.
-- Folders: `Releases`, `Tester Uploads`, `Screenshots`, `Bug Reports`, `Logs`, `Archived`
-
-Testers can browse/download and upload to tester-facing folders. Admin access can upload releases, mark **Latest**, delete files, and manage archived content.
+- Support worker: `https://rcm-tool-support.sensoredrooster-com.workers.dev`
+- Tester Share: `https://rcm-tool-share.sensoredrooster-com.workers.dev`
 
 See [docs/SUPPORT.md](docs/SUPPORT.md) and [docs/TESTER_SHARE.md](docs/TESTER_SHARE.md).
