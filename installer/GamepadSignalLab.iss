@@ -1,17 +1,17 @@
-#define MyAppName "Gamepad Signal Lab"
+#define MyAppName "RcmTool"
 #define MyAppVersion "0.5.0"
 #define MyAppPublisher "SensoredRooster"
-#define MyAppExeName "GamepadSignalLab.exe"
+#define MyAppExeName "RcmTool.exe"
 
 [Setup]
 AppId={{E51620C4-3372-4BCE-9A2B-963D9DB6A460}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\Gamepad Signal Lab
+DefaultDirName={autopf}\RcmTool
 DefaultGroupName={#MyAppName}
 OutputDir=..\dist\installer
-OutputBaseFilename=GamepadSignalLab-Setup-{#MyAppVersion}
+OutputBaseFilename=RcmTool-Setup-{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
