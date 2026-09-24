@@ -135,6 +135,29 @@ def timing_metrics(
     )
 
 
+def window_rate_hz(timestamps_ns: Sequence[int], window_s: float = 0.25) -> float | None:
+    """Return the observed report rate in the most recent time window.
+
+    The result is derived only from supplied monotonic timestamps.  It never
+    substitutes a configured or advertised controller rate, so an unavailable
+    or stalled stream remains unavailable instead of looking healthy.
+    """
+    if len(timestamps_ns) < 2 or window_s <= 0:
+        return None
+    ordered = [int(value) for value in timestamps_ns if int(value) >= 0]
+    if len(ordered) < 2:
+        return None
+    end_ns = ordered[-1]
+    start_limit_ns = end_ns - int(float(window_s) * 1_000_000_000.0)
+    window = [value for value in ordered if value >= start_limit_ns]
+    if len(window) < 2:
+        window = ordered[-2:]
+    duration_ns = window[-1] - window[0]
+    if duration_ns <= 0:
+        return None
+    return (len(window) - 1) * 1_000_000_000.0 / duration_ns
+
+
 def allan_deviation(frequencies_hz: Sequence[float], nominal_frequency_hz: float) -> float | None:
     """Overlapping two-sample Allan deviation at one sample interval (tau = 1 sample)."""
     if nominal_frequency_hz <= 0 or len(frequencies_hz) < 3:

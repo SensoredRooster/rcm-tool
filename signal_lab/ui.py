@@ -40,6 +40,7 @@ from .trace_capture import (
     run_sigrok_capture,
     scan_sigrok,
 )
+from .stick_cleaner_page import StickCleanerPage
 from .theme import DARK, LIGHT
 from .widgets import ControllerView, HeatMapWidget, LineChart, MetricCard
 from support import (
@@ -58,11 +59,11 @@ from support import (
 LOGGER = logging.getLogger(__name__)
 
 NAV = [
-    "Dashboard", "Live Capture", "Controller Lab", "Electrical Trace", "Oscillator Lab",
+    "Dashboard", "Live Capture", "Controller Lab", "Stick Cleaner", "Electrical Trace", "Oscillator Lab",
     "Interference Lab", "Sweep Lab", "Correlation", "Experiments",
     "Compare", "Reports", "Instruments", "Support", "Settings",
 ]
-FOCUS_NAV = ("Dashboard", "Controller Lab", "Electrical Trace", "Reports", "Support", "Settings")
+FOCUS_NAV = ("Dashboard", "Controller Lab", "Stick Cleaner", "Electrical Trace", "Reports", "Support", "Settings")
 
 TESTER_SHARE_URL = "https://rcm-tool-share.sensoredrooster-com.workers.dev"
 
@@ -333,7 +334,7 @@ class MainWindow(QMainWindow):
 
         self.stack = QStackedWidget()
         for builder in [
-            self._dashboard_page, self._live_page, self._controller_page, self._trace_page, self._oscillator_page,
+            self._dashboard_page, self._live_page, self._controller_page, self._stick_cleaner_page, self._trace_page, self._oscillator_page,
             self._interference_page, self._sweep_page, self._correlation_page,
             self._experiments_page, self._compare_page, self._reports_page,
             self._instruments_page, self._support_page, self._settings_page,
@@ -656,6 +657,10 @@ class MainWindow(QMainWindow):
         self._refresh_controller_sources()
         layout.addStretch(1)
         return self._scroll(w)
+
+    def _stick_cleaner_page(self) -> QWidget:
+        self.stick_cleaner = StickCleanerPage()
+        return self._scroll(self.stick_cleaner)
 
     def _trace_page(self) -> QWidget:
         w, layout = page(
@@ -2020,7 +2025,7 @@ class MainWindow(QMainWindow):
             else:
                 self.dashboard_noise_status.setText("No Raw HID smoothing evidence captured.")
 
-        samples=list(self.controller_samples)[-800:] if current_page in {"Live Capture","Controller Lab"} else []
+        samples=list(self.controller_samples)[-800:] if current_page in {"Live Capture","Controller Lab","Stick Cleaner"} else []
         sample_ts=list(self.controller_ts)[-len(samples):] if samples and current_page == "Live Capture" else []
         sample_elapsed=self._elapsed_seconds(sample_ts,sample_ts[0] if sample_ts else None)
         hist_x,hist_y=self._histogram_xy(intervals[-3000:],32) if current_page == "Live Capture" else ([],[])
@@ -2104,6 +2109,14 @@ class MainWindow(QMainWindow):
                 source="MEASURED" if o.duty_cycle_percent is not None else "UNAVAILABLE",
             )
             self.osc_labels["allan"].set_value(f"{o.allan_deviation_tau1:.3e}" if o.allan_deviation_tau1 is not None else "Unavailable","τ = one sample interval",source="CALCULATED")
+
+        if current_page == "Stick Cleaner" and hasattr(self, "stick_cleaner"):
+            self.stick_cleaner.update_from_lab(
+                timestamps,
+                list(self.controller_samples)[-800:],
+                evidence_class=evidence_class,
+                timing=t,
+            )
 
         if current_page == "Controller Lab" and samples:
             last=samples[-1]
