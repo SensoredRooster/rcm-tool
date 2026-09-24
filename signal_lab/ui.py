@@ -2370,7 +2370,7 @@ class MainWindow(QMainWindow):
                     corr_ppm.append((freqs[nearest]-nominal)/nominal*1e6 if nominal>0 else float("nan"))
                 else:
                     corr_ppm.append(float("nan"))
-            corr_stimulus=[self.stim_freq.value() if output else 0.0]*len(self.corr_time_axis)
+            corr_stimulus=[self.stim_freq.value() if self.instrument.output_enabled() else 0.0]*len(self.corr_time_axis)
             self.corr_osc_chart.set_series([("osc error ppm",corr_ppm,"#6DE0B1")],x_values=corr_elapsed,x_label="Elapsed correlated time (s)")
             self.corr_gamepad_chart.set_series([("report deviation ms",corr_game,"#6AA2FF")],x_values=corr_elapsed,x_label="Elapsed correlated time (s)")
             self.corr_stimulus_chart.set_series([("stimulus Hz",corr_stimulus,"#F0B862")],x_values=corr_elapsed,x_label="Elapsed correlated time (s)")
