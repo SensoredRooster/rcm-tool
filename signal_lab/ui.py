@@ -212,6 +212,9 @@ class MainWindow(QMainWindow):
         self.refresh_once_timer = QTimer(self)
         self.refresh_once_timer.setSingleShot(True)
         self.refresh_once_timer.timeout.connect(self._refresh_ui)
+        self.sweep_timer = QTimer(self)
+        self.sweep_timer.setSingleShot(True)
+        self.sweep_timer.timeout.connect(self._sweep_timer_tick)
 
         self.current_timing = timing_metrics([])
         self.current_osc = oscillator_metrics([], 12_000_000.0)
