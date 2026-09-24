@@ -332,7 +332,24 @@ class SignalLabTests(unittest.TestCase):
             @staticmethod
             def enumerate():
                 return [
-                    {"path": b"vader-path", "product_string": "Vader 5 Pro"},
+                    {
+                        "path": b"vader-gamepad",
+                        "product_string": "Vader 5 Pro",
+                        "usage_page": 0x01,
+                        "usage": 0x05,
+                    },
+                    {
+                        "path": b"vader-mouse",
+                        "product_string": "Vader 5 Pro",
+                        "usage_page": 0x01,
+                        "usage": 0x02,
+                    },
+                    {
+                        "path": b"vader-vendor-interface",
+                        "product_string": "Vader 5 Pro",
+                        "usage_page": 0xFFEE,
+                        "usage": 0x00,
+                    },
                     {"path": b"keyboard-path", "product_string": "USB Keyboard"},
                 ]
 
@@ -346,7 +363,7 @@ class SignalLabTests(unittest.TestCase):
                 devices = ControllerAcquisition.enumerate_raw_hid_devices()
         finally:
             controller_integrity.hid = original_hid
-        self.assertEqual([device["path"] for device in devices], [b"vader-path"])
+        self.assertEqual([device["path"] for device in devices], [b"vader-gamepad"])
 
     def test_raw_hid_batch_drain_keeps_report_timestamps_distinct(self):
         from signal_lab.controller import ControllerAcquisition
@@ -712,3 +729,4 @@ class SignalLabTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
