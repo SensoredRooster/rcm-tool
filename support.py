@@ -136,6 +136,30 @@ def health_snapshot() -> dict:
     }
 
 
+def windows_gui_resource_counts() -> dict[str, int] | None:
+    """Read this process's Windows USER/GDI object counts for leak diagnosis."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        get_current_process = kernel32.GetCurrentProcess
+        get_current_process.restype = ctypes.c_void_p
+        get_gui_resources = user32.GetGuiResources
+        get_gui_resources.argtypes = (ctypes.c_void_p, ctypes.c_uint)
+        get_gui_resources.restype = ctypes.c_uint
+        process = get_current_process()
+        return {
+            "user_objects": int(get_gui_resources(process, 1)),
+            "gdi_objects": int(get_gui_resources(process, 0)),
+        }
+    except Exception:
+        LOGGER.debug("Could not read Windows GUI resource counts", exc_info=True)
+        return None
+
+
 def _module_available(name: str) -> bool:
     try:
         __import__(name)

@@ -9,7 +9,12 @@ TARGET = ROOT / "signal_lab" / "ui.py"
 
 
 def apply_one(text: str, old: str, new: str, label: str) -> str:
-    if new.strip() and new in text and old not in text:
+    # Some replacements deliberately include the original anchor at the end
+    # (for example, inserting a refresh hook immediately before an existing
+    # block).  In those cases checking ``old not in text`` can never succeed,
+    # so each updater run inserts another copy.  The full replacement being
+    # present is enough to identify an already-wired block.
+    if new.strip() and new in text:
         print(f"skip {label}: already applied")
         return text
     if old not in text:

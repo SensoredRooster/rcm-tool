@@ -78,6 +78,7 @@ class MetricCard(QFrame):
         layout.addLayout(source_row)
 
         self.set_help(help_text)
+        self._applied_font_size: float | None = None
         self._fit_value_text()
 
     def _fit_value_text(self) -> None:
@@ -91,7 +92,9 @@ class MetricCard(QFrame):
         while point_size > 12.5 and QFontMetricsF(font).horizontalAdvance(text) > available:
             point_size -= 0.5
             font.setPointSizeF(point_size)
-        self.value_label.setStyleSheet(f"font-size: {point_size:.1f}pt;")
+        if self._applied_font_size != point_size:
+            self.value_label.setStyleSheet(f"font-size: {point_size:.1f}pt;")
+            self._applied_font_size = point_size
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -105,11 +108,14 @@ class MetricCard(QFrame):
                 child.setToolTip(self.help_text)
 
     def set_source(self, source: str) -> None:
-        self.source_label.setText(source.upper())
+        text = source.upper()
+        if self.source_label.text() != text:
+            self.source_label.setText(text)
 
     def set_value(self, value: str, subtitle: str | None = None, source: str | None = None) -> None:
-        self.value_label.setText(value)
-        if subtitle is not None:
+        if self.value_label.text() != value:
+            self.value_label.setText(value)
+        if subtitle is not None and self.subtitle_label.text() != subtitle:
             self.subtitle_label.setText(subtitle)
         if source is not None:
             self.set_source(source)

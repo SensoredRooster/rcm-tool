@@ -15,7 +15,8 @@ SCRIPTS = (
     "apply_after_noise.py",
     "apply_hid_signal.py",
     "apply_theme.py",
-    "apply_stick_cleaner.py",
+    # Stick Cleaner is now part of the tracked Qt UI. Do not rewrite ui.py
+    # during launch; doing so dirties every checkout and can duplicate hooks.
 )
 
 

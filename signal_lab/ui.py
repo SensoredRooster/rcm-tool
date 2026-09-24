@@ -54,6 +54,7 @@ from support import (
     start_heartbeat,
     support_bundle_preview,
     upload_support_bundle,
+    windows_gui_resource_counts,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -243,6 +244,8 @@ class MainWindow(QMainWindow):
         self.trace_controller_timestamps: list[int] = []
         self.trace_controller_samples: list[dict] = []
         self.trace_controller_raw_reports: list[str | None] = []
+        self._last_gui_resource_audit = 0.0
+        self._last_gui_resource_count: int | None = None
 
         start_heartbeat()
         support_log_event("gamepad_signal_lab_start", version=__version__)
@@ -1801,7 +1804,42 @@ class MainWindow(QMainWindow):
         self.capture_active=False
         self.capture_button.setText("Record Session")
 
+    def _audit_gui_resource_usage(self) -> None:
+        """Record rising Windows GUI-object use before the USER quota is hit."""
+        now = time.monotonic()
+        if now - self._last_gui_resource_audit < 5.0:
+            return
+        self._last_gui_resource_audit = now
+        counts = windows_gui_resource_counts()
+        if not counts:
+            return
+
+        user_objects = counts["user_objects"]
+        previous = self._last_gui_resource_count
+        self._last_gui_resource_count = user_objects
+        if user_objects < 1000 and (previous is None or previous < 1000):
+            return
+
+        timers = self.findChildren(QTimer)
+        support_log_event(
+            "windows_gui_resource_snapshot",
+            user_objects=user_objects,
+            user_object_delta=(user_objects - previous) if previous is not None else None,
+            gdi_objects=counts["gdi_objects"],
+            qt_timer_objects=len(timers),
+            qt_timers_active=sum(timer.isActive() for timer in timers),
+            top_level_widgets=len(QApplication.topLevelWidgets()),
+            current_page=NAV[self.stack.currentIndex()] if hasattr(self, "stack") else "startup",
+        )
+        if user_objects >= 8000 and hasattr(self, "error_banner"):
+            self.error_banner.setText(
+                f"Windows UI resource use is critically high ({user_objects:,} USER objects). "
+                "Stop testing, save/export if possible, then close and reopen RcmTool."
+            )
+            self.error_banner.show()
+
     def _sample_tick(self) -> None:
+        self._audit_gui_resource_usage()
         while True:
             try:
                 event_name,event_payload=self.controller_event_queue.get_nowait()
