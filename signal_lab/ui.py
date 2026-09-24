@@ -30,7 +30,7 @@ from .instruments import SafetyLimits, UnavailableInstrument, VisaScpiGenerator,
 from .metric_catalog import CHART_HELP, METRIC_HELP
 from .noise_attribution import analyze_noise_capture
 from .oscillator import OscillatorAcquisition, OscillatorMeasurement
-from .reporting import write_html_report
+from .reporting import write_html_report, write_noise_evidence_report, write_trace_evidence_report
 from .storage import LabDatabase
 from .sweep import make_sweep
 from .trace_capture import (
@@ -231,11 +231,17 @@ class MainWindow(QMainWindow):
         self.noise_test_start_timestamp_ns = 0
         self.noise_test_result: dict | None = None
         self.noise_test_results: dict[str, dict] = {}
+        self.noise_capture_timestamps: list[int] = []
+        self.noise_capture_samples: list[dict] = []
+        self.noise_capture_raw_reports: list[str | None] = []
         self.noise_wizard: dict | None = None
         self.trace_worker: SigrokCaptureWorker | None = None
         self.trace_capture_active = False
         self.trace_capture_start_timestamp_ns = 0
         self.trace_capture_result: dict | None = None
+        self.trace_controller_timestamps: list[int] = []
+        self.trace_controller_samples: list[dict] = []
+        self.trace_controller_raw_reports: list[str | None] = []
 
         start_heartbeat()
         support_log_event("gamepad_signal_lab_start", version=__version__)
@@ -413,7 +419,7 @@ class MainWindow(QMainWindow):
         guided.clicked.connect(self._run_noise_wizard)
         open_controller = QPushButton("Open Controller Lab")
         open_controller.clicked.connect(lambda: self._navigate(NAV.index("Controller Lab")))
-        export_evidence = QPushButton("Export evidence")
+        export_evidence = QPushButton("Export + open results report")
         export_evidence.clicked.connect(self._export_noise_evidence)
         evidence_actions.addWidget(guided)
         evidence_actions.addWidget(open_controller)
@@ -614,7 +620,7 @@ class MainWindow(QMainWindow):
         source_row.addWidget(diagnose_sources)
         source_layout.addLayout(source_row)
         self.controller_source_status = QLabel(
-            "Automatic backend selection. Hardware acquisition is always active when the app is running."
+            "Automatic mode reads an API state estimate. Select a named Raw HID device for measured USB-report timing."
         )
         self.controller_source_status.setObjectName("Muted")
         self.controller_source_status.setWordWrap(True)
@@ -632,7 +638,7 @@ class MainWindow(QMainWindow):
         evidence_row = QHBoxLayout()
         guided_test = QPushButton("Guided smoothing test")
         guided_test.clicked.connect(self._run_noise_wizard)
-        export_evidence = QPushButton("Export evidence")
+        export_evidence = QPushButton("Export + open results report")
         export_evidence.clicked.connect(self._export_noise_evidence)
         evidence_row.addWidget(guided_test)
         evidence_row.addWidget(export_evidence)
@@ -688,9 +694,12 @@ class MainWindow(QMainWindow):
         self.trace_driver = QLineEdit()
         self.trace_driver.setPlaceholderText("Example: fx2lafw or saleae-logic-pro")
         self.trace_channels = QLineEdit()
-        self.trace_channels.setPlaceholderText("Optional channel list, for example A0 or 0-3")
+        self.trace_channels.setPlaceholderText("Required for a real capture, for example A0 or 0-3")
         self.trace_samplerate = QLineEdit("1m")
-        self.trace_samplerate.setToolTip("sigrok sample-rate syntax, for example 1m, 10m, or 500k")
+        self.trace_samplerate.setToolTip(
+            "Requested sigrok rate, not a guarantee. Choose at least 10× the highest electrical frequency of interest; "
+            "the report records the timestamp-derived rate actually present in the CSV."
+        )
         self.trace_duration = QDoubleSpinBox()
         self.trace_duration.setRange(1.0, 600.0)
         self.trace_duration.setDecimals(1)
@@ -707,8 +716,10 @@ class MainWindow(QMainWindow):
         config_form.addRow("Trigger expression", self.trace_triggers)
         config_layout.addLayout(config_form)
         sync_help = QLabel(
-            "Best evidence uses a physical trigger or marker shared by the trace device and the movement. "
-            "If no hardware trigger is configured, the report is labeled host-start-aligned and cannot prove electrical-to-USB causation."
+            "Recommended procedure: select Raw HID first, connect the probe to the upstream sensor node, choose the "
+            "actual driver/channel from Scan devices, and use a physical trigger or marker shared by the trace and "
+            "the movement. If no hardware trigger is configured, the report is labeled host-start-aligned and cannot "
+            "prove electrical-to-USB causation. Requested sample rate is never treated as measured."
         )
         sync_help.setObjectName("Muted")
         sync_help.setWordWrap(True)
@@ -1162,6 +1173,12 @@ class MainWindow(QMainWindow):
         self.duplicate_raw_reports = 0
         self.noise_test_result = None
         self.noise_test_results.clear()
+        self.noise_capture_timestamps.clear()
+        self.noise_capture_samples.clear()
+        self.noise_capture_raw_reports.clear()
+        self.trace_controller_timestamps.clear()
+        self.trace_controller_samples.clear()
+        self.trace_controller_raw_reports.clear()
         if hasattr(self, "noise_test_status"):
             self.noise_test_status.setText("No attribution capture has been run.")
         while True:
@@ -1193,11 +1210,11 @@ class MainWindow(QMainWindow):
         if self.controller_source_kind == "raw_hid":
             name = self.controller_source_info.get("product_string") or "selected device"
             self.controller_source_status.setText(
-                f"Raw HID selected: {name}. Reports are timestamped when received by Windows."
+                f"Raw HID selected: {name}. The reader drains the available HID queue and timestamps each report at host arrival."
             )
         else:
             self.controller_source_status.setText(
-                "Automatic backend selection active: XInput → SDL → Raw HID → DirectInput."
+                "Automatic mode active: XInput/SDL/DirectInput are host-poll estimates. Select a named Raw HID device to measure report cadence."
             )
 
     def _refresh_controller_sources(self) -> None:
@@ -1302,6 +1319,9 @@ class MainWindow(QMainWindow):
         self.noise_test_kind = capture_kind
         self.noise_test_deadline = time.monotonic() + (10.0 if capture_kind == "neutral" else 20.0)
         self.noise_test_start_timestamp_ns = time.perf_counter_ns()
+        self.noise_capture_timestamps.clear()
+        self.noise_capture_samples.clear()
+        self.noise_capture_raw_reports.clear()
         if capture_kind == "neutral":
             instruction = "Leave every stick untouched for 10 seconds."
         else:
@@ -1337,8 +1357,11 @@ class MainWindow(QMainWindow):
             "This wizard runs only against the selected Raw HID device. It does not simulate input, inject noise, "
             "or modify the controller.\n\n"
             f"Selected source: {self.controller_source_combo.currentText()}\n"
-            "You will leave the sticks untouched for 10 seconds, then perform one repeatable movement for 20 seconds. "
-            "The export contains the paired host timestamps, normalized samples, and Raw HID report bytes."
+            "Before starting: keep one physical controller connected, do not change USB ports or input modes, and "
+            "close other tools that read the same controller.\n\n"
+            "Step 2 leaves the sticks untouched for 10 seconds. Step 3 uses one stick: slowly center → full deflection "
+            "→ center, then one quick reversal, for 20 seconds. The export contains every dedicated-test timestamp, "
+            "normalized sample, and Raw HID report byte captured during each step."
         )
         intro_text.setWordWrap(True)
         intro_layout.addWidget(intro_text)
@@ -1482,17 +1505,9 @@ class MainWindow(QMainWindow):
     def _finish_noise_test(self) -> None:
         if not self.noise_test_active:
             return
-        samples = list(self.controller_samples)
-        timestamps = list(self.controller_ts)
-        raw_reports = list(self.controller_raw_report_hex)
-        window = [
-            (timestamp, sample, raw_report)
-            for timestamp, sample, raw_report in zip(timestamps, samples, raw_reports)
-            if timestamp >= self.noise_test_start_timestamp_ns
-        ]
-        window_timestamps = [item[0] for item in window]
-        window_samples = [item[1] for item in window]
-        window_reports = [item[2] for item in window]
+        window_timestamps = list(self.noise_capture_timestamps)
+        window_samples = list(self.noise_capture_samples)
+        window_reports = list(self.noise_capture_raw_reports)
         self.noise_test_active = False
         if not window_samples:
             self.noise_test_result = None
@@ -1507,12 +1522,18 @@ class MainWindow(QMainWindow):
             capture_kind=self.noise_test_kind,
             source_label=self.controller_source_combo.currentText(),
             device_metadata=self.controller_metadata,
+            stationary_excursion=self.stationary_excursion.value(),
+            reference_rate_hz=self.expected_rate.value(),
         )
         result = self.noise_test_result
         self.noise_test_results[self.noise_test_kind] = result
+        quality = result.get("capture_quality", {})
+        stationary = result.get("stationary_check", {}).get("is_stationary", False)
+        stationarity_text = "stationary check passed" if stationary else "movement exceeded stationary threshold"
         self.noise_test_status.setText(
             f"Complete • {result['sample_count']} Raw HID samples • "
-            f"{result['raw_hid_report_count']} reports • attribution remains undetermined without an electrical trace."
+            f"{result['raw_hid_report_count']} reports • {result['sample_rate_hz']:.2f} reports/s • "
+            f"{stationarity_text} • data quality {quality.get('score_percent', 0)}%."
         )
         self._add_event("noise_attribution_completed", result)
         if self.noise_wizard is not None:
@@ -1520,17 +1541,19 @@ class MainWindow(QMainWindow):
             state[f"{self.noise_test_kind}_done"] = True
             if self.noise_test_kind == "neutral":
                 self.noise_wizard["neutral_status"].setText(
-                    f"Complete • {result['sample_count']} samples • {result['raw_hid_report_count']} Raw HID reports."
+                    f"Complete • {result['sample_count']} samples • {result['sample_rate_hz']:.2f} reports/s • "
+                    f"{'stationary check passed' if stationary else 'movement detected; review this capture'}."
                 )
                 self.noise_wizard["movement_start"].setEnabled(True)
             else:
                 self.noise_wizard["movement_status"].setText(
-                    f"Complete • {result['sample_count']} samples • {result['raw_hid_report_count']} Raw HID reports."
+                    f"Complete • {result['sample_count']} samples • {result['sample_rate_hz']:.2f} reports/s • "
+                    f"data quality {quality.get('score_percent', 0)}%."
                 )
             self.noise_wizard["next"].setEnabled(True)
             captures = self.noise_test_results
             self.noise_wizard["review_status"].setText(
-                f"Evidence ready: {len(captures)} capture(s). Use Export evidence in Controller Lab to save the paired records."
+                f"Evidence ready: {len(captures)} capture(s). Use Export + open results report to save and explain the paired records."
             )
 
     def _export_noise_evidence(self) -> None:
@@ -1553,6 +1576,14 @@ class MainWindow(QMainWindow):
                 ),
             }
             Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            report_path = Path(path).with_suffix(".html")
+            write_noise_evidence_report(report_path, self.noise_test_result, captures=self.noise_test_results)
+            webbrowser.open(report_path.resolve().as_uri())
+            QMessageBox.information(
+                self,
+                "Evidence exported",
+                f"JSON evidence saved to:\n{path}\n\nThe plain-language results report was opened:\n{report_path}",
+            )
 
     def _check_trace_tool(self) -> None:
         result = check_sigrok_cli(self.trace_executable.text().strip() or "sigrok-cli")
@@ -1560,6 +1591,15 @@ class MainWindow(QMainWindow):
             ("AVAILABLE" if result.get("available") else "UNAVAILABLE")
             + f" • {result.get('message', '')}"
         )
+        if not result.get("available"):
+            self.trace_scan_output.setPlainText(
+                "Electrical Trace setup\n"
+                "1. Install PulseView/sigrok-cli for your analyzer or scope.\n"
+                "2. Add the folder containing sigrok-cli.exe to PATH, or enter its full path above.\n"
+                "3. Click Check sigrok, then Scan devices.\n"
+                "4. Use the exact driver and channel names returned by Scan devices.\n\n"
+                "RcmTool cannot invent an electrical trace when no instrument is connected."
+            )
 
     def _scan_trace_devices(self) -> None:
         result = scan_sigrok(self.trace_executable.text().strip() or "sigrok-cli")
@@ -1617,6 +1657,9 @@ class MainWindow(QMainWindow):
         self.trace_capture_result = None
         self.trace_capture_active = True
         self.trace_capture_start_timestamp_ns = time.perf_counter_ns()
+        self.trace_controller_timestamps.clear()
+        self.trace_controller_samples.clear()
+        self.trace_controller_raw_reports.clear()
         sync_method = "hardware-trigger-assisted" if config.wait_trigger and config.triggers.strip() else "host-start/finish-aligned"
         self.trace_capture_status.setText(
             f"RUNNING • {config.duration_s:g}s sigrok capture • synchronization: {sync_method}"
@@ -1640,14 +1683,11 @@ class MainWindow(QMainWindow):
         self.trace_capture_active = False
         try:
             trace_result = analyze_sigrok_csv(Path(process_result["output_path"]))
-            timestamps = list(self.controller_ts)
-            samples = list(self.controller_samples)
-            raw_reports = list(self.controller_raw_report_hex)
-            window = [
-                (timestamp, sample, raw_report)
-                for timestamp, sample, raw_report in zip(timestamps, samples, raw_reports)
-                if self.trace_capture_start_timestamp_ns <= timestamp <= end_timestamp_ns
-            ]
+            window = list(zip(
+                self.trace_controller_timestamps,
+                self.trace_controller_samples,
+                self.trace_controller_raw_reports,
+            ))
             sync_method = "hardware-trigger-assisted" if self.trace_wait_trigger.isChecked() and self.trace_triggers.text().strip() else "host-start/finish-aligned"
             trace_result["synchronization"] = {
                 "method": sync_method,
@@ -1666,6 +1706,8 @@ class MainWindow(QMainWindow):
                     capture_kind="electrical-trace-window",
                     source_label=self.controller_source_combo.currentText(),
                     device_metadata=self.controller_metadata,
+                    stationary_excursion=self.stationary_excursion.value(),
+                    reference_rate_hz=self.expected_rate.value(),
                 )
                 trace_result["controller_raw_hid"] = hid_result
             else:
@@ -1676,6 +1718,7 @@ class MainWindow(QMainWindow):
             self.trace_capture_status.setText(
                 f"Complete • {trace_result['sample_count']} instrument samples • "
                 f"{trace_result['controller_raw_hid'].get('sample_count', 0)} Raw HID samples • "
+                f"instrument rate {trace_result.get('sample_rate_hz', 0.0):.3f} Hz • "
                 f"{sync_method}. Export the evidence package for review."
             )
             self._add_event("electrical_trace_completed", trace_result)
@@ -1704,6 +1747,14 @@ class MainWindow(QMainWindow):
         )
         if path:
             Path(path).write_text(json.dumps(self.trace_capture_result, indent=2), encoding="utf-8")
+            report_path = Path(path).with_suffix(".html")
+            write_trace_evidence_report(report_path, self.trace_capture_result)
+            webbrowser.open(report_path.resolve().as_uri())
+            QMessageBox.information(
+                self,
+                "Trace evidence exported",
+                f"JSON evidence saved to:\n{path}\n\nThe plain-language trace report was opened:\n{report_path}",
+            )
 
     def _start_capture(self) -> None:
         if self.capture_active:
@@ -1757,8 +1808,16 @@ class MainWindow(QMainWindow):
                     f"Controller backend error: {event_payload.get('message', 'unknown error')}"
                 )
             elif event_name == "controller_connected":
+                metadata = event_payload.get("metadata") or {}
+                evidence_class = metadata.get("evidence_class")
+                if evidence_class == "measured-host-observed-raw-hid":
+                    message = "Controller connected: Raw HID measured report stream active."
+                else:
+                    message = (
+                        "Controller connected: API state polling active; this is not a bus-rate measurement."
+                    )
                 self.controller_source_status.setText(
-                    f"Controller connected: {event_payload.get('source', 'hardware input')}"
+                    message + f" Source: {event_payload.get('source', 'hardware input')}"
                 )
             elif event_name == "controller_disconnected":
                 self.controller_source_status.setText(
@@ -1815,6 +1874,14 @@ class MainWindow(QMainWindow):
             self.sweep_step_controller_samples.append(dict(sample))
         if self.capture_active and self.session_id:
             self.db.add_controller_sample(self.session_id,timestamp_ns,sample,source=f"{source} [{quality}]",raw_report_hex=raw_hex)
+        if self.noise_test_active and timestamp_ns >= self.noise_test_start_timestamp_ns:
+            self.noise_capture_timestamps.append(int(timestamp_ns))
+            self.noise_capture_samples.append(dict(sample))
+            self.noise_capture_raw_reports.append(raw_hex)
+        if self.trace_capture_active and timestamp_ns >= self.trace_capture_start_timestamp_ns:
+            self.trace_controller_timestamps.append(int(timestamp_ns))
+            self.trace_controller_samples.append(dict(sample))
+            self.trace_controller_raw_reports.append(raw_hex)
 
     def _accept_oscillator(self,timestamp_ns:int,frequency_hz:float,source:str,quality:str,duty_cycle_percent:float|None=None) -> None:
         self.osc_ts.append(int(timestamp_ns)); self.osc_freq.append(float(frequency_hz)); self.osc_duty.append(duty_cycle_percent)
@@ -1860,17 +1927,19 @@ class MainWindow(QMainWindow):
         reference_name="configured" if expected_override is not None else "measured median"
         osc_source="MEASURED" if self.measurement_instrument is not None else "UNAVAILABLE"
         controller_samples_available = t.sample_count > 0
+        evidence_class=str(self.controller_metadata.get("evidence_class") or "unavailable")
+        rate_source="MEASURED" if evidence_class == "measured-host-observed-raw-hid" else "ESTIMATE"
 
         if current_page == "Dashboard":
             self.cards["rate"].set_value(
                 f"{t.effective_rate_hz:,.2f} Hz" if controller_samples_available else "Unavailable",
                 f"{t.sample_count:,} observed report timestamps" if controller_samples_available else "No controller reports received",
-                source="MEASURED",
+                source=rate_source,
             )
             self.cards["interval"].set_value(
                 f"{t.mean_interval_ms:.3f} ms" if controller_samples_available else "Unavailable",
                 f"min {t.min_interval_ms:.3f} • max {t.max_interval_ms:.3f}" if controller_samples_available else "Requires controller reports",
-                source="MEASURED",
+                source=rate_source,
             )
             self.cards["jitter"].set_value(
                 f"{t.rms_deviation_ms:.3f} ms" if t.sample_count >= 2 else "Unavailable",
@@ -2142,9 +2211,10 @@ class MainWindow(QMainWindow):
         if current_page == "Dashboard":
             self.quality_label.setText(
                 f"Controller samples {t.sample_count:,} • duration {t.duration_s:.3f} s • timing source {timing_source} • "
+                f"evidence class {evidence_class} • "
                 f"host monotonic timer resolution {self.host_timer_resolution_ns:.0f} ns • reference {reference_name} • "
                 f"effective rate {t.effective_rate_hz:.2f} Hz • consecutive identical raw HID payloads {self.duplicate_raw_reports}.\n"
-                "Host-arrival timestamps include Windows/USB scheduling unless dedicated on-wire timing hardware supplies the timestamp."
+                "Raw HID is measured at host arrival after USB. XInput/SDL/DirectInput are API polling estimates and must not be presented as the controller's bus rate."
             )
         if current_page == "Interference Lab":
             self.safety_label.setText(
@@ -2988,7 +3058,7 @@ class MainWindow(QMainWindow):
         nominal=self.nominal_freq.value()
         ppm=[(value-nominal)/nominal*1e6 for value in freqs] if nominal>0 else []
         timeline=self.db.list_events(self.session_id,limit=250)
-        write_html_report(
+        report_path = write_html_report(
             path,title="RcmTool Engineering Report",
             controller_metrics=asdict(self.current_timing),
             oscillator_metrics=asdict(self.current_osc),
@@ -3027,6 +3097,8 @@ class MainWindow(QMainWindow):
                 "Correlation between signals does not by itself demonstrate causation."
             ]
         )
+        webbrowser.open(report_path.resolve().as_uri())
+        QMessageBox.information(self, "Report exported", f"The results report was saved and opened:\n{report_path}")
 
     def _apply_saved_settings(self) -> None:
         self.baseline_seconds.setValue(int(self.settings.value("baseline_seconds",60)))

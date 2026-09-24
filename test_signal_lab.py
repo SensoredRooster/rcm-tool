@@ -7,7 +7,7 @@ from signal_lab.controller import detect_controller_family
 from signal_lab.instruments import InstrumentAdapter, SafetyLimits, VisaScpiMeasurementInstrument
 from signal_lab.noise_attribution import analyze_noise_capture
 from signal_lab.storage import LabDatabase
-from signal_lab.reporting import write_html_report
+from signal_lab.reporting import write_html_report, write_noise_evidence_report, write_trace_evidence_report
 from signal_lab.sweep import make_sweep
 from signal_lab.trace_capture import SigrokCaptureConfig, analyze_sigrok_csv
 
@@ -176,6 +176,9 @@ class SignalLabTests(unittest.TestCase):
         self.assertEqual(len(result["records"]), len(samples))
         self.assertEqual(result["records"][1]["raw_report_hex"], "01")
         self.assertGreater(result["axes"]["lx"]["noise_rms"], 0.0)
+        self.assertIn("high_frequency_energy_percent", result["axes"]["lx"])
+        self.assertIn("capture_quality", result)
+        self.assertIn("host-observed Raw HID", result["interpretation"])
 
     def test_safety_limits_reject_non_finite_offset(self):
         with self.assertRaises(ValueError):
@@ -199,6 +202,37 @@ class SignalLabTests(unittest.TestCase):
         self.assertEqual(meta["pid"], 0x5678)
         self.assertEqual(meta["usb_path"], "hid-path")
         self.assertEqual(meta["controller_name"], "Test Pad")
+
+    def test_raw_hid_batch_drain_keeps_report_timestamps_distinct(self):
+        from signal_lab.controller import ControllerAcquisition
+
+        class FakeDevice:
+            def __init__(self):
+                self.pending = [[4, 5, 6, 7, 8, 9], [5, 6, 7, 8, 9, 10]]
+
+            def read(self, _size):
+                return self.pending.pop(0) if self.pending else []
+
+        class FakeHID:
+            last_sample = {"lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0}
+
+            def __init__(self):
+                self.pending = [[1, 2, 3, 4, 5, 6]]
+                self.device = FakeDevice()
+
+            def drain_raw_reports(self):
+                reports, self.pending = self.pending, []
+                return reports
+
+            def _parse_report(self, report):
+                return {"lx": report[0] / 10.0, "ly": 0.0, "rx": 0.0, "ry": 0.0}
+
+        reports = ControllerAcquisition._raw_hid_reports(FakeHID(), 100, {"lx": 0.0})
+        timestamps = [item[0] for item in reports]
+        self.assertEqual(len(reports), 3)
+        self.assertEqual(timestamps[0], 100)
+        self.assertEqual(timestamps, sorted(set(timestamps)))
+        self.assertEqual([item[2][0] for item in reports], [1, 4, 5])
 
     def test_raw_hid_filter_keeps_known_vendor_generic_controller(self):
         import controller_integrity
@@ -368,6 +402,44 @@ class SignalLabTests(unittest.TestCase):
             html = target.read_text(encoding="utf-8")
             self.assertIn("Unavailable", html)
             self.assertIn("200", html)
+
+    def test_plain_language_evidence_reports_explain_percentages(self):
+        noise = analyze_noise_capture(
+            timestamps_ns=[0, 1_000_000, 2_000_000],
+            samples=[
+                {"lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0},
+                {"lx": 0.01, "ly": 0.0, "rx": 0.0, "ry": 0.0},
+                {"lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0},
+            ],
+            raw_report_hex=["00", "01", "00"],
+            capture_kind="neutral",
+        )
+        trace = {
+            "evidence_class": "instrument-measured-electrical-trace",
+            "source": "sigrok-cli/libsigrok",
+            "sample_count": 3,
+            "duration_s": 0.002,
+            "raw_capture_path": "trace.csv",
+            "synchronization": {"method": "host-start/finish-aligned"},
+            "channels": {
+                "CH1": {
+                    "samples": 3,
+                    "sample_rate_hz": 1000.0,
+                    "mean": 0.5,
+                    "noise_rms": 0.5,
+                    "peak_to_peak": 1.0,
+                    "edge_rate_hz": 500.0,
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as td:
+            noise_path = write_noise_evidence_report(Path(td) / "noise.html", noise)
+            trace_path = write_trace_evidence_report(Path(td) / "trace.html", trace)
+            noise_html = noise_path.read_text(encoding="utf-8")
+            trace_html = trace_path.read_text(encoding="utf-8")
+        self.assertIn("High-frequency energy", noise_html)
+        self.assertIn("not probabilities", noise_html)
+        self.assertIn("hardware-synchronized", trace_html)
 
     def test_database_buffers_rows_until_flush(self):
         with tempfile.TemporaryDirectory() as td:

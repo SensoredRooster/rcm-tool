@@ -9,3 +9,4 @@ reports/*.json
 reports/*.jsonl
 *.sqlite3
 *.db
+artifacts/

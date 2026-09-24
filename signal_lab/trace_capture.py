@@ -163,27 +163,66 @@ def load_sigrok_csv(path: Path) -> tuple[list[float], list[list[float]], list[st
 
 def _channel_metrics(timestamps: list[float], values: list[float]) -> dict:
     if not values:
-        return {"samples": 0, "sample_rate_hz": 0.0, "mean": 0.0, "noise_rms": 0.0, "peak_to_peak": 0.0, "adjacent_delta_rms": 0.0}
+        return {
+            "samples": 0,
+            "sample_rate_hz": 0.0,
+            "mean": 0.0,
+            "minimum": 0.0,
+            "maximum": 0.0,
+            "noise_rms": 0.0,
+            "peak_to_peak": 0.0,
+            "adjacent_delta_rms": 0.0,
+            "signal_kind": "unavailable",
+            "edge_count": 0,
+            "edge_rate_hz": "n/a",
+            "duty_cycle_percent": "n/a",
+        }
     duration = timestamps[-1] - timestamps[0] if len(timestamps) >= 2 else 0.0
     mean = statistics.fmean(values)
     deltas = [after - before for before, after in zip(values, values[1:])]
+    minimum, maximum = min(values), max(values)
+    digital_like = all(
+        math.isclose(value, round(value), abs_tol=1e-9) and round(value) in (0, 1)
+        for value in values
+    )
+    edge_count = 0
+    duty_cycle: float | str = "n/a"
+    edge_rate: float | str = "n/a"
+    signal_kind = "digital-like" if digital_like else "analog"
+    if digital_like and len(values) >= 2:
+        edge_count = sum(before != after for before, after in zip(values, values[1:]))
+        edge_rate = edge_count / duration if duration > 0 else 0.0
+        duty_cycle = 100.0 * statistics.fmean(values)
     return {
         "samples": len(values),
         "sample_rate_hz": (len(values) - 1) / duration if duration > 0 else 0.0,
         "mean": mean,
+        "minimum": minimum,
+        "maximum": maximum,
         "noise_rms": math.sqrt(statistics.fmean((value - mean) ** 2 for value in values)),
-        "peak_to_peak": max(values) - min(values),
+        "peak_to_peak": maximum - minimum,
         "adjacent_delta_rms": math.sqrt(statistics.fmean(value * value for value in deltas)) if deltas else 0.0,
+        "signal_kind": signal_kind,
+        "edge_count": edge_count,
+        "edge_rate_hz": edge_rate,
+        "duty_cycle_percent": duty_cycle,
     }
 
 
 def analyze_sigrok_csv(path: Path) -> dict:
     timestamps, channels, headers = load_sigrok_csv(path)
+    timestamp_intervals = [
+        after - before for before, after in zip(timestamps, timestamps[1:]) if after > before
+    ]
+    timestamp_pairs = max(0, len(timestamps) - 1)
     return {
         "evidence_class": "instrument-measured-electrical-trace",
         "source": "sigrok-cli/libsigrok",
         "raw_capture_path": str(path),
         "sample_count": len(timestamps),
+        "timestamp_monotonic_percent": 100.0 * len(timestamp_intervals) / timestamp_pairs if timestamp_pairs else 0.0,
+        "sample_rate_hz": (len(timestamps) - 1) / (timestamps[-1] - timestamps[0])
+        if len(timestamps) >= 2 and timestamps[-1] > timestamps[0] else 0.0,
         "channel_names": headers,
         "duration_s": timestamps[-1] - timestamps[0] if len(timestamps) >= 2 else 0.0,
         "channels": {

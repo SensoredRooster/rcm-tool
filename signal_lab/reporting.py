@@ -167,3 +167,174 @@ code,pre{{font-family:Cascadia Mono,monospace}}pre{{white-space:pre-wrap;color:#
 </main></body></html>"""
     destination.write_text(html, encoding="utf-8")
     return destination
+
+
+def _report_shell(title: str, body: str) -> str:
+    return f"""<!doctype html><html><head><meta charset='utf-8'><title>{escape(title)}</title>
+<style>
+body{{font-family:Segoe UI,Arial,sans-serif;background:#080b12;color:#eef2ff;margin:0;padding:36px}}
+main{{max-width:1100px;margin:auto}}h1{{font-size:32px;margin:0 0 6px}}h2{{color:#8bd8ff;margin:0 0 14px}}
+.card{{background:#111827;border:1px solid #263247;border-radius:16px;padding:20px;margin:16px 0;overflow:auto}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}}
+.metric{{background:#0d1420;border:1px solid #243047;border-radius:12px;padding:14px}}
+.metric b{{display:block;color:#91a4bf;font-size:12px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}}
+table{{border-collapse:collapse;width:100%}}th,td{{text-align:left;border-bottom:1px solid #243047;padding:9px;vertical-align:top}}th{{color:#9fb0c9}}
+.small{{color:#93a4bc;font-size:13px}}.ok{{color:#6de0b1}}.warn{{color:#f0b862}}code,pre{{font-family:Cascadia Mono,monospace}}pre{{white-space:pre-wrap;color:#b9c7db}}
+</style></head><body><main><h1>{escape(title)}</h1>{body}</main></body></html>"""
+
+
+def _metric_grid(metrics: dict[str, object]) -> str:
+    return "<div class='grid'>" + "".join(
+        f"<div class='metric'><b>{escape(str(key))}</b><span>{escape(str(value))}</span></div>"
+        for key, value in metrics.items()
+    ) + "</div>"
+
+
+def write_noise_evidence_report(
+    destination: str | Path,
+    result: dict,
+    *,
+    captures: dict[str, dict] | None = None,
+    title: str = "RcmTool Raw HID Smoothing Evidence",
+) -> Path:
+    """Write a plain-language report for a real Raw HID noise capture."""
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    quality = result.get("capture_quality") or {}
+    stationary = result.get("stationary_check") or {}
+    rate_reference = result.get("rate_vs_reference_percent")
+    rate_reference_text = (
+        f"{float(rate_reference):.1f}%"
+        if isinstance(rate_reference, (int, float)) else "Not configured"
+    )
+    summary = _metric_grid({
+        "Evidence class": result.get("evidence_class", "Unavailable"),
+        "Capture": result.get("capture_kind", "Unavailable"),
+        "Observed reports": result.get("raw_hid_report_count", 0),
+        "Observed rate": f"{float(result.get('sample_rate_hz', 0.0)):.2f} reports/s",
+        "Rate vs configured reference": rate_reference_text,
+        "Duration": f"{float(result.get('duration_s', 0.0)):.3f} s",
+        "Raw report coverage": f"{float(result.get('raw_report_coverage_percent', 0.0)):.1f}%",
+        "Duplicate payloads": f"{float(result.get('duplicate_report_percent', 0.0)):.2f}%",
+        "Capture quality": f"{quality.get('score_percent', 0)}% ({quality.get('label', 'unavailable')})",
+    })
+    axis_rows = []
+    for axis, metrics in (result.get("axes") or {}).items():
+        axis_rows.append(
+            "<tr>"
+            f"<td>{escape(str(axis).upper())}</td>"
+            f"<td>{float(metrics.get('noise_rms', 0.0)):.8f}</td>"
+            f"<td>{float(metrics.get('peak_to_peak', 0.0)):.8f}</td>"
+            f"<td>{float(metrics.get('slow_trend_residual_rms', 0.0)):.8f}</td>"
+            f"<td>{float(metrics.get('high_frequency_energy_percent', 0.0)):.2f}%</td>"
+            f"<td>{int(metrics.get('unique_levels', 0))}</td>"
+            "</tr>"
+        )
+    axis_table = (
+        "<table><thead><tr><th>Axis</th><th>Total RMS</th><th>Peak-to-peak</th>"
+        "<th>50 ms residual RMS</th><th>High-frequency energy</th><th>Unique levels</th></tr></thead>"
+        f"<tbody>{''.join(axis_rows) or '<tr><td colspan=6>Unavailable</td></tr>'}</tbody></table>"
+    )
+    capture_rows = []
+    for name, capture in (captures or {}).items():
+        capture_rows.append(
+            "<tr>"
+            f"<td>{escape(str(name))}</td>"
+            f"<td>{int(capture.get('sample_count', 0))}</td>"
+            f"<td>{float(capture.get('sample_rate_hz', 0.0)):.2f}</td>"
+            f"<td>{float(capture.get('duration_s', 0.0)):.3f}</td>"
+            f"<td>{float((capture.get('capture_quality') or {}).get('score_percent', 0)):.1f}%</td>"
+            f"<td>{escape(str((capture.get('stationary_check') or {}).get('is_stationary', 'Unavailable')))}</td>"
+            "</tr>"
+        )
+    capture_table = ""
+    if capture_rows:
+        capture_table = (
+            "<div class='card'><h2>All guided captures</h2>"
+            "<table><thead><tr><th>Capture</th><th>Samples</th><th>Rate</th><th>Duration</th><th>Quality</th><th>Stationary check</th></tr></thead>"
+            f"<tbody>{''.join(capture_rows)}</tbody></table></div>"
+        )
+    interpretation = escape(str(result.get("interpretation", "No interpretation available.")))
+    stationary_text = (
+        "The capture stayed within the stationary threshold."
+        if stationary.get("is_stationary")
+        else "The capture exceeded the stationary threshold; do not call this a stationary noise floor."
+    )
+    body = (
+        "<div class='card'><h2>Bottom line</h2>"
+        f"<p>{interpretation}</p><p class='small'>{escape(stationary_text)} "
+        "These percentages describe the captured signal; they are not probabilities that firmware is cheating or filtering.</p></div>"
+        f"<div class='card'><h2>Capture summary</h2>{summary}</div>"
+        f"{capture_table}"
+        "<div class='card'><h2>How to read the numbers</h2>"
+        "<ul><li><b>Total RMS</b> is the axis variation around its mean during this capture.</li>"
+        "<li><b>Rate vs configured reference</b> compares the observed Raw HID arrival rate with the reference you entered. It is a warning signal, not proof that the controller or firmware dropped reports.</li>"
+        "<li><b>50 ms residual RMS</b> subtracts a documented slow trend. It is a repeatable comparison metric, not a direct firmware measurement.</li>"
+        "<li><b>High-frequency energy</b> is the squared residual RMS as a percentage of total AC energy. Higher means more captured variation remains above the slow trend.</li>"
+        "<li><b>Duplicate payloads</b> is the percentage of adjacent Raw HID reports with identical bytes. It is not automatically bad: a centered stick can legitimately repeat.</li>"
+        "<li><b>Capture quality</b> is a data-quality score based on duration, sample count, timestamp monotonicity, and raw-report coverage. It is not a confidence percentage for firmware attribution.</li></ul></div>"
+        f"<div class='card'><h2>Axis results</h2>{axis_table}</div>"
+        "<div class='card'><h2>What this test can prove</h2>"
+        "<p>This is a host-observed Raw HID result downstream of the controller firmware and USB transport. It can document report cadence, repeated bytes, output noise, and the amount of variation left after the slow-trend comparison.</p>"
+        "<p>It cannot identify whether smoothing was introduced by the sensor, analog circuit, firmware, USB transport, or the host. Use the Electrical Trace test with a real upstream probe and a hardware trigger to support that attribution.</p></div>"
+        f"<div class='card'><h2>Source metadata</h2><pre>{escape(json.dumps(result.get('device_metadata') or {}, indent=2, default=str))}</pre></div>"
+    )
+    destination.write_text(_report_shell(title, body), encoding="utf-8")
+    return destination
+
+
+def write_trace_evidence_report(
+    destination: str | Path,
+    result: dict,
+    *,
+    title: str = "RcmTool Electrical Trace Evidence",
+) -> Path:
+    """Write a plain-language report for a sigrok instrument capture."""
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    synchronization = result.get("synchronization") or {}
+    method = synchronization.get("method", "not recorded")
+    synchronized = method == "hardware-trigger-assisted"
+    channel_rows = []
+    for name, metrics in (result.get("channels") or {}).items():
+        channel_rows.append(
+            "<tr>"
+            f"<td>{escape(str(name))}</td>"
+            f"<td>{int(metrics.get('samples', 0))}</td>"
+            f"<td>{float(metrics.get('sample_rate_hz', 0.0)):.3f}</td>"
+            f"<td>{float(metrics.get('mean', 0.0)):.8g}</td>"
+            f"<td>{float(metrics.get('noise_rms', 0.0)):.8g}</td>"
+            f"<td>{float(metrics.get('peak_to_peak', 0.0)):.8g}</td>"
+            f"<td>{escape(str(metrics.get('edge_rate_hz', 'n/a')))}</td>"
+            "</tr>"
+        )
+    channel_table = (
+        "<table><thead><tr><th>Channel</th><th>Samples</th><th>Sample rate</th><th>Mean</th>"
+        "<th>Noise RMS</th><th>Peak-to-peak</th><th>Edge rate</th></tr></thead>"
+        f"<tbody>{''.join(channel_rows) or '<tr><td colspan=7>Unavailable</td></tr>'}</tbody></table>"
+    )
+    if synchronized:
+        bottom_line = "A hardware-trigger-assisted capture was requested. Verify the physical trigger wiring and pretrigger configuration before making a causal claim."
+    else:
+        bottom_line = "This capture is not hardware-synchronized with the Raw HID stream. It can describe the electrical trace, but it cannot establish electrical-to-USB timing or firmware causation."
+    body = (
+        f"<div class='card'><h2>Bottom line</h2><p>{escape(bottom_line)}</p></div>"
+        f"<div class='card'><h2>Capture summary</h2>{_metric_grid({
+            'Evidence class': result.get('evidence_class', 'Unavailable'),
+            'Source': result.get('source', 'Unavailable'),
+            'Instrument samples': result.get('sample_count', 0),
+            'Duration': f"{float(result.get('duration_s', 0.0)):.6f} s",
+            'Synchronization': method,
+            'Raw capture': result.get('raw_capture_path', 'Unavailable'),
+        })}</div>"
+        "<div class='card'><h2>How to read the numbers</h2>"
+        "<ul><li><b>Sample rate</b> is the rate represented by the timestamps in the exported sigrok CSV, not merely the requested device setting.</li>"
+        "<li><b>Noise RMS</b> is the channel variation around its mean. For a digital channel, it is usually less useful than edge timing and duty cycle.</li>"
+        "<li><b>Peak-to-peak</b> is the observed minimum-to-maximum span in the captured window.</li>"
+        "<li><b>Edge rate</b> is reported only for channels that look digital-like. Analog sensor channels require probe-specific step and spectrum analysis.</li></ul></div>"
+        f"<div class='card'><h2>Channel results</h2>{channel_table}</div>"
+        f"<div class='card'><h2>Synchronization record</h2><pre>{escape(json.dumps(synchronization, indent=2, default=str))}</pre></div>"
+        "<div class='card'><h2>Required attribution boundary</h2><p>A trace can support a firmware-filtering claim only when the upstream electrical signal, the Raw HID output, and their timing relationship are captured with a known physical connection and a valid shared trigger. Software host-start alignment alone is not enough.</p></div>"
+    )
+    destination.write_text(_report_shell(title, body), encoding="utf-8")
+    return destination

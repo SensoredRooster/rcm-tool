@@ -266,6 +266,87 @@ class ControllerAcquisition:
 
         self.backend = None
 
+    @staticmethod
+    def _raw_hid_reports(
+        active,
+        first_timestamp_ns: int,
+        first_sample: dict | None,
+    ) -> list[tuple[int, dict, list[int]]]:
+        """Drain every available Raw HID report with a host-arrival timestamp.
+
+        hidapi is configured non-blocking by the backend.  Reading only once
+        per acquisition loop artificially caps high-rate devices at the loop
+        cadence, and stamping a drained batch with one timestamp destroys the
+        interval information needed for rate/jitter analysis.  The first
+        report comes from ``HIDGamepad.read``; the remaining reports are
+        drained directly from its non-blocking device handle.
+        """
+        reports: list[tuple[int, dict, list[int]]] = []
+        last_timestamp_ns = first_timestamp_ns - 1
+        parse_report = getattr(active, "_parse_report", None)
+        drain = getattr(active, "drain_raw_reports", None)
+        pending = drain() if callable(drain) else []
+        if not isinstance(pending, list):
+            pending = []
+
+        for report in pending:
+            raw_report = ControllerAcquisition._coerce_raw_report(report)
+            if raw_report is None:
+                continue
+            sample = parse_report(raw_report) if callable(parse_report) else None
+            if sample is None:
+                sample = getattr(active, "last_sample", None) or first_sample
+            sample_dict = ControllerAcquisition._coerce_sample(sample)
+            if sample_dict is not None:
+                timestamp_ns = max(
+                    first_timestamp_ns if not reports else time.perf_counter_ns(),
+                    last_timestamp_ns + 1,
+                )
+                last_timestamp_ns = timestamp_ns
+                reports.append((timestamp_ns, sample_dict, raw_report))
+
+        device = getattr(active, "device", None)
+        read = getattr(device, "read", None)
+        if not callable(read):
+            return reports
+
+        # Keep draining until hidapi says the non-blocking queue is empty.
+        # The bound prevents a continuously misbehaving device from starving
+        # the stop event indefinitely while still covering high-rate bursts.
+        for _ in range(4096):
+            report = read(128)
+            if not report:
+                break
+            raw_report = ControllerAcquisition._coerce_raw_report(report)
+            if raw_report is None:
+                continue
+            timestamp_ns = max(time.perf_counter_ns(), last_timestamp_ns + 1)
+            sample = parse_report(raw_report) if callable(parse_report) else None
+            if sample is None:
+                sample = getattr(active, "last_sample", None) or first_sample
+            sample_dict = ControllerAcquisition._coerce_sample(sample)
+            if sample_dict is not None:
+                last_timestamp_ns = timestamp_ns
+                reports.append((timestamp_ns, sample_dict, raw_report))
+        return reports
+
+    @staticmethod
+    def _coerce_raw_report(report) -> list[int] | None:
+        if isinstance(report, (bytes, bytearray)):
+            return list(report)
+        if not isinstance(report, list):
+            return None
+        values: list[int] = []
+        for value in report:
+            if not isinstance(value, int):
+                return None
+            values.append(value)
+        return values
+
+    @staticmethod
+    def _coerce_sample(sample) -> dict | None:
+        return dict(sample) if isinstance(sample, dict) else None
+
     def _run(self) -> None:
         try:
             from controller_integrity import AutomaticControllerBackend, HIDGamepad
@@ -297,11 +378,19 @@ class ControllerAcquisition:
                     if active is not None else "Controller"
                 )
 
+                metadata = self._backend_metadata(active)
+                if active is not None and active.__class__.__name__ == "HIDGamepad":
+                    metadata["evidence_class"] = "measured-host-observed-raw-hid"
+                    metadata["capture_timestamp"] = "host-arrival-per-report"
+                elif active is not None:
+                    metadata["evidence_class"] = "host-poll-estimate"
+                    metadata["capture_timestamp"] = "host-poll"
+
                 if sample is not None:
                     last_seen = time.monotonic()
                     if not connected:
                         connected = True
-                        self._event("controller_connected", {"source": source, "metadata": self._backend_metadata(active)})
+                        self._event("controller_connected", {"source": source, "metadata": metadata})
                     if "buttons" in sample:
                         buttons = int(sample.get("buttons", 0))
                         if last_buttons is not None and buttons != last_buttons:
@@ -313,23 +402,22 @@ class ControllerAcquisition:
                             })
                         last_buttons = buttons
 
+                raw_report_count = 0
                 if active is not None and active.__class__.__name__ == "HIDGamepad":
-                    drain = getattr(active, "drain_raw_reports", None)
-                    reports = drain() if callable(drain) else []
-                    if not isinstance(reports, list):
-                        reports = []
-                    for report in reports:
+                    reports = self._raw_hid_reports(active, now, sample)
+                    raw_report_count = len(reports)
+                    for report_timestamp_ns, report_sample, report in reports:
                         raw_hex = bytes(report).hex()
                         duplicate = last_raw_hex == raw_hex
                         last_raw_hex = raw_hex
                         self.callback(ControllerMeasurement(
-                            timestamp_ns=now,
-                            sample=dict(sample or {}),
+                            timestamp_ns=report_timestamp_ns,
+                            sample=report_sample,
                             source=source,
                             timing_quality="measured-at-host-read",
                             raw_report_hex=raw_hex,
                             duplicate_raw_report=duplicate,
-                            metadata=self._backend_metadata(active),
+                            metadata=metadata,
                         ))
                 elif sample is not None and now - last_host_sample_ns >= int(self.poll_sleep_s * 1e9):
                     last_host_sample_ns = now
@@ -338,7 +426,7 @@ class ControllerAcquisition:
                         sample=dict(sample),
                         source=getattr(active, "name", "Host controller API") if active is not None else "Host controller API",
                         timing_quality="host-poll-estimate",
-                        metadata=self._backend_metadata(active),
+                        metadata=metadata,
                     ))
 
                 if connected and sample is None and time.monotonic() - last_seen >= 0.5:
@@ -352,5 +440,10 @@ class ControllerAcquisition:
                 if self.error != last_error:
                     self._event("controller_backend_error", {"message": self.error})
                     last_error = self.error
-            time.sleep(self.poll_sleep_s)
+            if raw_report_count:
+                # A short yield prevents a hot loop from starving the rest of
+                # the process without imposing a 1 ms ceiling on Raw HID.
+                time.sleep(min(self.poll_sleep_s, 0.00005))
+            else:
+                self.stop_event.wait(self.poll_sleep_s)
         self._close_backend()
