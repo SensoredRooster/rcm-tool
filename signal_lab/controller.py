@@ -125,7 +125,15 @@ class ControllerAcquisition:
                         for key in ("product_string", "manufacturer_string")
                     ).casefold()
                     path = info.get("path")
-                    if path and path not in known_paths and ("flydigi" in product or "vader" in product):
+                    usage_page = info.get("usage_page")
+                    usage = info.get("usage")
+                    gamepad_usage = usage_page == 0x01 and usage in (0x00, 0x04, 0x05)
+                    if (
+                        path
+                        and path not in known_paths
+                        and gamepad_usage
+                        and ("flydigi" in product or "vader" in product)
+                    ):
                         devices.append(info)
                         known_paths.add(path)
             return devices
@@ -561,3 +569,4 @@ class ControllerAcquisition:
             else:
                 self.stop_event.wait(self.poll_sleep_s)
         self._close_backend()
+
