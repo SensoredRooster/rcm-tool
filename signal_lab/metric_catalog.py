@@ -7,20 +7,19 @@ from __future__ import annotations
 
 METRIC_HELP: dict[str, str] = {
     "rate": (
-        "Observed Raw HID arrival rate: (reports received - 1) / elapsed host time. "
-        "It is downstream of USB, not the controller's guaranteed firmware polling rate; a virtual HID device may still appear."
+        "Reports per second during the most recent 1-second burst. Windows timestamps reports after USB, so this is a host-observed rate—not a guarantee of the controller's internal polling rate. "
+        "If the controller sends nothing while idle, the card waits for fresh reports instead of turning silence into a low rate."
     ),
     "interval": (
-        "Mean interval between consecutive reports from the selected Raw HID entry. "
-        "Host timestamps include Windows and USB scheduling and do not reveal the upstream sensor or firmware timing."
+        "Average time between fresh reports in the same recent 1-second window. Long quiet periods are shown separately from active report cadence. "
+        "Host timing includes Windows and USB scheduling."
     ),
     "jitter": (
-        "RMS variation in host-observed report arrival intervals. This is timing jitter, not a stick-noise or smoothing percentage. "
-        "The default reference is the measured median interval; a configured reference is optional."
+        "How much the spacing between fresh reports varied during the same 1-second window. This is timing variation—not stick noise or a smoothing percentage. "
+        "The comparison rate can be a configured reference or the measured median."
     ),
     "late": (
-        "Late report count: intervals greater than the selected reference interval multiplied by the configured late threshold. "
-        "Missing reports are an estimate based on interval length."
+        "Long gaps are intervals that exceeded the selected reference by the chosen threshold. The missing-report count is an estimate; repeated payloads mean adjacent HID messages carried identical bytes and may be normal when a stick is still."
     ),
     "osc": (
         "Mean oscillator frequency from positive frequency samples returned by the active measurement source. "

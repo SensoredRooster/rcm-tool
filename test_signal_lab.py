@@ -3,8 +3,14 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from signal_lab.analysis import align_nearest, oscillator_metrics, pearson_correlation, timing_metrics
-from signal_lab.controller import detect_controller_family
+from signal_lab.analysis import (
+    align_nearest,
+    oscillator_metrics,
+    pearson_correlation,
+    recent_window_timing_metrics,
+    timing_metrics,
+)
+from signal_lab.controller import detect_controller_family, detect_controller_layout
 from signal_lab.instruments import InstrumentAdapter, SafetyLimits, VisaScpiMeasurementInstrument
 from signal_lab.noise_attribution import analyze_noise_capture
 from signal_lab.storage import LabDatabase
@@ -46,6 +52,32 @@ class SignalLabTests(unittest.TestCase):
             detect_controller_family({"controller_name":"USB Gamepad","vid":0x1234,"pid":0x5678},"SDL"),
             "generic",
         )
+
+    def test_flydigi_layout_detection_does_not_claim_a_button_mapping(self):
+        metadata = {"controller_name": "Controller (Flydigi Vader 5 Pro)"}
+        self.assertEqual(detect_controller_layout(metadata, "Raw HID"), "vader5pro")
+        self.assertEqual(detect_controller_family(metadata, "Raw HID"), "generic")
+
+    def test_recent_rate_uses_fresh_burst_not_older_idle_gap(self):
+        burst_start_ns = 3_000_000_000
+        timestamps = [0, *[burst_start_ns + i * 1_000_000 for i in range(1001)]]
+        metrics = recent_window_timing_metrics(
+            timestamps,
+            now_ns=timestamps[-1] + 10_000_000,
+            window_s=1.0,
+            stale_after_s=0.5,
+            expected_interval_ms=1.0,
+        )
+        self.assertEqual(metrics.sample_count, 1001)
+        self.assertAlmostEqual(metrics.effective_rate_hz, 1000.0, places=6)
+
+    def test_recent_rate_is_unavailable_when_reports_are_stale(self):
+        metrics = recent_window_timing_metrics(
+            [1_000_000_000, 1_001_000_000],
+            now_ns=2_000_000_000,
+            stale_after_s=0.5,
+        )
+        self.assertEqual(metrics.sample_count, 0)
 
     def test_timing_metrics_1000hz(self):
         stamps = [i * 1_000_000 for i in range(1001)]

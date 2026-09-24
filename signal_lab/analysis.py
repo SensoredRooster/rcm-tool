@@ -158,6 +158,40 @@ def window_rate_hz(timestamps_ns: Sequence[int], window_s: float = 0.25) -> floa
     return (len(window) - 1) * 1_000_000_000.0 / duration_ns
 
 
+def recent_window_timing_metrics(
+    timestamps_ns: Sequence[int],
+    *,
+    now_ns: int,
+    window_s: float = 1.0,
+    stale_after_s: float = 0.5,
+    expected_interval_ms: float | None = None,
+    late_factor: float = 1.5,
+) -> TimingMetrics:
+    """Measure a fresh report burst without folding older idle time into its rate."""
+    if not timestamps_ns or window_s <= 0 or stale_after_s < 0:
+        return TimingMetrics()
+
+    last_ns = int(timestamps_ns[-1])
+    if last_ns < 0 or int(now_ns) - last_ns > stale_after_s * 1_000_000_000.0:
+        return TimingMetrics()
+
+    cutoff_ns = last_ns - int(window_s * 1_000_000_000.0)
+    recent_reversed: list[int] = []
+    for timestamp_ns in reversed(timestamps_ns):
+        value = int(timestamp_ns)
+        if value < cutoff_ns:
+            break
+        recent_reversed.append(value)
+    recent = list(reversed(recent_reversed))
+    if len(recent) < 2:
+        return TimingMetrics(sample_count=len(recent))
+    return timing_metrics(
+        recent,
+        expected_interval_ms=expected_interval_ms,
+        late_factor=late_factor,
+    )
+
+
 def allan_deviation(frequencies_hz: Sequence[float], nominal_frequency_hz: float) -> float | None:
     """Overlapping two-sample Allan deviation at one sample interval (tau = 1 sample)."""
     if nominal_frequency_hz <= 0 or len(frequencies_hz) < 3:

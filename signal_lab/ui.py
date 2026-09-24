@@ -24,8 +24,13 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
-from .analysis import oscillator_metrics, pearson_correlation, timing_metrics
-from .controller import ControllerAcquisition, ControllerMeasurement, detect_controller_family
+from .analysis import oscillator_metrics, pearson_correlation, recent_window_timing_metrics, timing_metrics
+from .controller import (
+    ControllerAcquisition,
+    ControllerMeasurement,
+    detect_controller_family,
+    detect_controller_layout,
+)
 from .instruments import SafetyLimits, UnavailableInstrument, VisaScpiGenerator, VisaScpiMeasurementInstrument, list_visa_resources
 from .metric_catalog import CHART_HELP, METRIC_HELP
 from .noise_attribution import analyze_noise_capture
@@ -379,7 +384,7 @@ class MainWindow(QMainWindow):
     def _dashboard_page(self) -> QWidget:
         w, layout = page(
             "Dashboard",
-            "Focused hardware view: controller noise, report jitter, and movement/settling behavior. No simulated values are used.",
+            "Start here: select your controller, move a stick, then run the guided test. Readings show what this PC received—not a firmware guarantee.",
         )
         grid = QGridLayout()
         grid.setHorizontalSpacing(12)
@@ -388,10 +393,10 @@ class MainWindow(QMainWindow):
             grid.setColumnStretch(column, 1)
         self.cards = {}
         specs = [
-            ("rate", "Observed Raw HID rate", "MEASURED"),
-            ("interval", "Report interval", "MEASURED"),
-            ("jitter", "Report timing jitter", "CALCULATED"),
-            ("late", "Duplicate / late reports", "CALCULATED"),
+            ("rate", "Recent report rate", "MEASURED"),
+            ("interval", "Average time between reports", "MEASURED"),
+            ("jitter", "Timing variation", "CALCULATED"),
+            ("late", "Long gaps / repeats", "CALCULATED"),
         ]
         for i, (key, title, source) in enumerate(specs):
             c = MetricCard(title, help_text=METRIC_HELP[key], source=source)
@@ -399,21 +404,21 @@ class MainWindow(QMainWindow):
             grid.addWidget(c, i // 4, i % 4)
         layout.addLayout(grid)
 
-        evidence, evidence_layout = card("RC FILTER / NOISE EVIDENCE")
+        evidence, evidence_layout = card("NOISE & SMOOTHING TEST")
         evidence_help = QLabel(
-            "Use the guided Raw HID test to measure stationary noise and movement settling. "
-            "The export keeps the paired timestamps, normalized samples, and raw HID bytes."
+            "The guided test checks stick noise while still, then compares movement before and after an offline smoother. "
+            "It analyzes a copy only; controller input is never changed."
         )
         evidence_help.setWordWrap(True)
         evidence_help.setObjectName("Muted")
         evidence_layout.addWidget(evidence_help)
         evidence_actions = QHBoxLayout()
-        guided = QPushButton("Guided smoothing test")
+        guided = QPushButton("Start guided test")
         guided.clicked.connect(self._run_noise_wizard)
         self.guided_test_buttons.append(guided)
         open_controller = QPushButton("Open Controller Lab")
         open_controller.clicked.connect(lambda: self._navigate(NAV.index("Controller Lab")))
-        export_evidence = QPushButton("Export + open results report")
+        export_evidence = QPushButton("Open results report")
         export_evidence.clicked.connect(self._export_noise_evidence)
         evidence_actions.addWidget(guided)
         evidence_actions.addWidget(open_controller)
@@ -426,9 +431,9 @@ class MainWindow(QMainWindow):
         evidence_layout.addWidget(self.dashboard_noise_status)
         layout.addWidget(evidence)
 
-        baseline, bl = card("SESSION RECORDING")
+        baseline, bl = card("SAVE A RAW SESSION")
         state_row = QHBoxLayout()
-        self.baseline_state = QLabel("Raw samples are acquired continuously. Record Session stores them in the local testing database.")
+        self.baseline_state = QLabel("Record Session saves incoming controller reports and measurements on this PC for review or export.")
         self.baseline_state.setObjectName("Muted")
         self.baseline_state.setWordWrap(True)
         self.baseline_progress = QProgressBar()
@@ -442,12 +447,12 @@ class MainWindow(QMainWindow):
         charts = QGridLayout()
         charts.setHorizontalSpacing(14)
         self.dashboard_timing_chart = LineChart(
-            "Controller report interval",
+            "Report gaps over recent history",
             help_text=CHART_HELP["report_interval"],
             x_label="Elapsed controller capture time (s)",
         )
         self.dashboard_noise_chart = LineChart(
-            "Raw HID analog output",
+            "Stick position received by this PC",
             help_text=CHART_HELP["analog_stability"],
             x_label="Elapsed controller capture time (s)",
         )
@@ -456,8 +461,8 @@ class MainWindow(QMainWindow):
         charts.setColumnStretch(0,1); charts.setColumnStretch(1,1)
         layout.addLayout(charts)
 
-        q, ql = card("MEASUREMENT QUALITY / PROVENANCE")
-        self.quality_label = QLabel("Waiting for samples")
+        q, ql = card("ABOUT THESE READINGS (DETAILS)")
+        self.quality_label = QLabel("Connect a controller and move a stick to see recent readings.")
         self.quality_label.setWordWrap(True)
         self.quality_label.setToolTip(
             "Timing source, host timer resolution, sample count, capture duration, duplicate/raw-report information, and instrument limitations."
@@ -523,7 +528,7 @@ class MainWindow(QMainWindow):
     def _controller_page(self) -> QWidget:
         w, layout = page(
             "Controller Lab",
-            "Live controller state first; backend and measurement diagnostics stay separate so unavailable data is never implied.",
+            "The picture follows the connected model when recognized. Stick dots use live readings; button names are shown only when their mapping is known.",
         )
 
         identity, il = card("CONNECTED CONTROLLER")
@@ -534,20 +539,20 @@ class MainWindow(QMainWindow):
         identity_row.addWidget(self.controller_meta, 1)
 
         selector_box = QVBoxLayout()
-        selector_label = QLabel("CONTROLLER VIEW")
+        selector_label = QLabel("CONTROLLER SHAPE")
         selector_label.setObjectName("Eyebrow")
         self.controller_skin_combo = QComboBox()
-        self.controller_skin_combo.addItem("Auto", "auto")
+        self.controller_skin_combo.addItem("Match connected controller", "auto")
+        self.controller_skin_combo.addItem("Flydigi Vader 5 Pro", "vader5pro")
         self.controller_skin_combo.addItem("Xbox", "xbox")
         self.controller_skin_combo.addItem("DualSense", "dualsense")
-        self.controller_skin_combo.addItem("Generic", "generic")
+        self.controller_skin_combo.addItem("Standard gamepad", "generic")
         self.controller_skin_combo.setMinimumWidth(170)
         self.controller_skin_combo.setToolTip(
-            "Auto selects the shell from backend and USB identity. Manual override changes only the visual shell; "
-            "it does not invent button mappings."
+            "Automatic mode matches a known controller name to its outline. Choosing a shape manually changes only the drawing; it does not guess how buttons are encoded."
         )
         self.controller_skin_combo.currentIndexChanged.connect(self._controller_skin_changed)
-        self.controller_skin_status = QLabel("Auto detection: Generic")
+        self.controller_skin_status = QLabel("Waiting for a named controller")
         self.controller_skin_status.setObjectName("Muted")
         selector_box.addWidget(selector_label)
         selector_box.addWidget(self.controller_skin_combo)
@@ -556,7 +561,7 @@ class MainWindow(QMainWindow):
         il.addLayout(identity_row)
         layout.addWidget(identity)
 
-        visual, vl = card("LIVE CONTROLLER STATE")
+        visual, vl = card("LIVE STICK POSITION")
         self.controller_view = ControllerView()
         vl.addWidget(self.controller_view)
         self.controller_axes_readout = QLabel("LX unavailable  •  LY unavailable  •  RX unavailable  •  RY unavailable  •  LT unavailable  •  RT unavailable")
@@ -570,14 +575,14 @@ class MainWindow(QMainWindow):
         diagnostics.setHorizontalSpacing(14)
         diagnostics.setVerticalSpacing(14)
 
-        input_card, input_layout = card("BUTTONS / D-PAD")
+        input_card, input_layout = card("BUTTONS & D-PAD")
         self.button_capability = QLabel("Waiting for a decoded input sample")
         self.button_capability.setObjectName("Muted")
         self.button_capability.setWordWrap(True)
         input_layout.addWidget(self.button_capability)
         diagnostics.addWidget(input_card,0,0)
 
-        signal_card, signal_layout = card("ANALOG SIGNAL")
+        signal_card, signal_layout = card("STICK SIGNAL QUALITY")
         self.axis_noise = QLabel("Stationary noise: waiting for samples")
         self.axis_noise.setObjectName("Muted")
         self.axis_noise.setWordWrap(True)
@@ -606,7 +611,7 @@ class MainWindow(QMainWindow):
         self.refresh_controller_button = refresh_sources
         source_layout.addLayout(source_row)
         self.controller_source_status = QLabel(
-            "No controller data is read until a named Raw HID device is selected. Windows HID descriptors do not prove that a device is physical rather than virtual."
+            "Choose the named controller above, then move a stick to confirm live readings. This tool reads controller reports; it does not change controller settings."
         )
         self.controller_source_status.setObjectName("Muted")
         self.controller_source_status.setWordWrap(True)
@@ -1162,6 +1167,48 @@ class MainWindow(QMainWindow):
         label.setWordWrap(True); dbl.addWidget(label); layout.addWidget(dbcard); layout.addStretch(1)
         return self._scroll(w)
 
+    def _set_controller_visual(self, sample: dict | None = None, source: str = "") -> None:
+        """Show a known or manually selected shell without fabricating live input."""
+        if not hasattr(self, "controller_view"):
+            return
+        metadata = self.controller_metadata or self.controller_source_info
+        visual_source = source or str(
+            self.controller_source_info.get("product_string")
+            or self.controller_source_info.get("controller_name")
+            or ""
+        )
+        detected_family = detect_controller_family(metadata, visual_source)
+        detected_layout = detect_controller_layout(metadata, visual_source)
+        requested_skin = (
+            self.controller_skin_combo.currentData()
+            if hasattr(self, "controller_skin_combo") else "auto"
+        )
+        visual_skin = detected_layout if requested_skin == "auto" else str(requested_skin)
+        self.controller_view.set_state(
+            sample or {}, visual_source, skin=visual_skin, mapping_family=detected_family
+        )
+        if hasattr(self, "controller_skin_status"):
+            layout_names = {
+                "vader5pro": "Flydigi Vader 5 Pro",
+                "dualsense": "PlayStation DualSense",
+                "xbox": "Xbox-style controller",
+                "generic": "standard gamepad",
+            }
+            mode_text = "Auto match" if requested_skin == "auto" else "Manual shape"
+            mapping_text = (
+                "button map unverified" if detected_family == "generic"
+                else "button map available"
+            )
+            if sample:
+                status = f"{mode_text}: {layout_names[visual_skin]} • {mapping_text}"
+            elif visual_source:
+                status = f"{layout_names[visual_skin]} outline • waiting for live input"
+            elif requested_skin != "auto":
+                status = f"{layout_names[visual_skin]} outline • connect a controller for live input"
+            else:
+                status = "Waiting for a named controller • standard outline shown"
+            self.controller_skin_status.setText(status)
+
     def _clear_controller_state(self, identity: str) -> None:
         """Prevent samples from one acquisition mode being shown as another."""
         self.controller_connected = False
@@ -1190,7 +1237,7 @@ class MainWindow(QMainWindow):
             except queue.Empty:
                 break
         self.controller_meta.setText(identity)
-        self.controller_view.set_state({}, "")
+        self._set_controller_visual()
         self.controller_axes_readout.setText(
             "LX unavailable  •  LY unavailable  •  RX unavailable  •  RY unavailable  •  LT unavailable  •  RT unavailable"
         )
@@ -2233,6 +2280,32 @@ class MainWindow(QMainWindow):
             expected_interval_ms=expected_override,
             late_factor=self.late_factor.value(),
         )
+        recent_timing = recent_window_timing_metrics(
+            timestamps,
+            now_ns=time.perf_counter_ns(),
+            window_s=1.0,
+            stale_after_s=0.5,
+            expected_interval_ms=expected_override,
+            late_factor=self.late_factor.value(),
+        )
+        recent_intervals = [
+            (after - before) / 1_000_000.0
+            for before, after in zip(timestamps, timestamps[1:])
+            if after > before and after >= (timestamps[-1] - 1_000_000_000 if timestamps else 0)
+        ]
+        recent_reference_ms = expected_override if expected_override is not None else self._median(recent_intervals)
+        recent_report_count = recent_timing.sample_count
+        recent_rate_available = recent_report_count >= 2
+        raw_history = list(self.controller_raw_report_hex)[-len(timestamps):] if timestamps else []
+        recent_payloads = [
+            payload
+            for timestamp_ns, payload in zip(timestamps, raw_history)
+            if timestamps and timestamp_ns >= timestamps[-1] - 1_000_000_000
+        ]
+        recent_repeats = sum(
+            1 for before, after in zip(recent_payloads, recent_payloads[1:])
+            if before and after and before == after
+        )
 
         nominal = 12_000_000.0  # Retained only for the legacy, non-visible report schema.
         osc_times: list[int] = []
@@ -2244,7 +2317,6 @@ class MainWindow(QMainWindow):
         if current_page not in {"Dashboard", "Controller Lab"}:
             return
 
-        reference_name="configured" if expected_override is not None else "measured median"
         osc_source="UNAVAILABLE"
         controller_samples_available = t.sample_count > 0
         evidence_class=str(self.controller_metadata.get("evidence_class") or "unavailable")
@@ -2256,24 +2328,51 @@ class MainWindow(QMainWindow):
         )
 
         if current_page == "Dashboard":
+            if live_raw_hid and recent_rate_available:
+                rate_text = f"{recent_timing.effective_rate_hz:,.1f} Hz"
+                rate_note = f"Last 1 s • {recent_report_count:,} fresh reports received"
+                interval_text = f"{recent_timing.mean_interval_ms:.3f} ms"
+                interval_note = "Average gap in that same 1 s window"
+                jitter_text = f"{recent_timing.rms_deviation_ms:.3f} ms"
+                jitter_note = (
+                    f"Variation around {recent_reference_ms:.3f} ms reference • "
+                    f"range {recent_timing.peak_to_peak_jitter_ms:.3f} ms"
+                )
+                late_text = str(recent_timing.late_reports)
+                late_note = (
+                    f"estimated missing {recent_timing.missing_reports_estimate} • "
+                    f"repeated payloads {recent_repeats} in last 1 s"
+                )
+            elif live_raw_hid:
+                rate_text = "Waiting for fresh reports"
+                rate_note = (
+                    f"{recent_report_count} report in the last second; move a stick to measure its active rate"
+                    if recent_report_count else "No report in the last 0.5 s; the controller may be idle"
+                )
+                interval_text = jitter_text = late_text = "Need fresh reports"
+                interval_note = jitter_note = late_note = "Move a stick; these readings need at least two recent reports"
+            else:
+                rate_text = interval_text = jitter_text = late_text = "Unavailable"
+                rate_note = "Select a named controller and move a stick"
+                interval_note = jitter_note = late_note = "Requires fresh Raw HID reports"
             self.cards["rate"].set_value(
-                f"{t.effective_rate_hz:,.2f} Hz" if live_raw_hid else "Unavailable",
-                f"{t.sample_count:,} live report timestamps" if live_raw_hid else "No active Raw HID stream; prior session data remains saved",
+                rate_text,
+                rate_note,
                 source=rate_source,
             )
             self.cards["interval"].set_value(
-                f"{t.mean_interval_ms:.3f} ms" if live_raw_hid else "Unavailable",
-                f"min {t.min_interval_ms:.3f} • max {t.max_interval_ms:.3f}" if live_raw_hid else "Requires an active Raw HID stream",
+                interval_text,
+                interval_note,
                 source=rate_source,
             )
             self.cards["jitter"].set_value(
-                f"{t.rms_deviation_ms:.3f} ms" if live_raw_hid and t.sample_count >= 2 else "Unavailable",
-                f"RMS vs {reference_name} {reference_ms:.3f} ms • p2p {t.peak_to_peak_jitter_ms:.3f}" if live_raw_hid and t.sample_count >= 2 else "Requires an active Raw HID stream with at least two reports",
+                jitter_text,
+                jitter_note,
                 source="CALCULATED",
             )
             self.cards["late"].set_value(
-                str(t.late_reports) if live_raw_hid else "Unavailable",
-                f"missing estimate {t.missing_reports_estimate} • raw duplicates {self.duplicate_raw_reports}" if live_raw_hid else "Requires an active Raw HID stream",
+                late_text,
+                late_note,
                 source="CALCULATED",
             )
 
@@ -2407,16 +2506,7 @@ class MainWindow(QMainWindow):
         if current_page == "Controller Lab" and samples and self.controller_connected:
             last=samples[-1]
             visual_source=self.controller_sources[-1][0] if self.controller_sources else ""
-            detected_family=detect_controller_family(self.controller_metadata,visual_source)
-            requested_skin=self.controller_skin_combo.currentData() if hasattr(self,"controller_skin_combo") else "auto"
-            visual_skin=detected_family if requested_skin=="auto" else str(requested_skin)
-            self.controller_view.set_state(
-                last,visual_source,skin=visual_skin,mapping_family=detected_family
-            )
-            mode_text="Auto" if requested_skin=="auto" else "Manual"
-            self.controller_skin_status.setText(
-                f"{mode_text} view: {visual_skin.title()} • detected {detected_family.title()}"
-            )
+            self._set_controller_visual(last, visual_source)
             self.controller_axes_readout.setText(
                 f"LX {float(last.get('lx',0)):+.4f}  •  LY {float(last.get('ly',0)):+.4f}  •  "
                 f"RX {float(last.get('rx',0)):+.4f}  •  RY {float(last.get('ry',0)):+.4f}  •  "
@@ -2450,7 +2540,7 @@ class MainWindow(QMainWindow):
             elif "dpad_pov" in last:
                 pov=int(last.get("dpad_pov",65535))
                 input_parts.append("D-pad centered" if pov in (65535,4294967295) else f"D-pad {pov/100:.1f}°")
-            elif detected_family=="xbox" and "buttons" in last:
+            elif detect_controller_family(self.controller_metadata, visual_source)=="xbox" and "buttons" in last:
                 mask=int(last.get("buttons",0))
                 dx=(1 if mask&0x0008 else 0)-(1 if mask&0x0004 else 0)
                 dy=(1 if mask&0x0001 else 0)-(1 if mask&0x0002 else 0)
@@ -2463,8 +2553,14 @@ class MainWindow(QMainWindow):
             source,quality=self.controller_sources[-1]
             meta=self.controller_metadata
             name=meta.get("controller_name") or source
-            detected=detect_controller_family(meta,source)
-            identity=[str(name),f"Family: {detected.title()}",f"Source: {source}",f"Timing: {quality}"]
+            layout=detect_controller_layout(meta,source)
+            layout_names = {
+                "vader5pro": "Flydigi Vader 5 Pro",
+                "dualsense": "PlayStation DualSense",
+                "xbox": "Xbox-style",
+                "generic": "standard gamepad",
+            }
+            identity=[str(name),f"Outline: {layout_names[layout]}",f"Input: {source}",f"Timing: {quality}"]
             vid,pid=meta.get("vid"),meta.get("pid")
             if vid is not None and pid is not None:
                 identity.append(f"VID:PID {int(vid):04X}:{int(pid):04X}")
@@ -2506,14 +2602,20 @@ class MainWindow(QMainWindow):
             self.corr_gamepad_chart.set_series([("report deviation ms",corr_game,"#6AA2FF")],x_values=corr_elapsed,x_label="Elapsed correlated time (s)")
             self.corr_stimulus_chart.set_series([("stimulus Hz",corr_stimulus,"#F0B862")],x_values=corr_elapsed,x_label="Elapsed correlated time (s)")
 
-        timing_source=self.controller_sources[-1][1] if self.controller_sources else "none"
         if current_page == "Dashboard":
+            history_note = (
+                f"The retained history contains {t.sample_count:,} reports across {t.duration_s:.2f} s "
+                f"(overall average {t.effective_rate_hz:.1f} reports/s)."
+                if live_raw_hid else "No active controller stream; previous test data remains saved."
+            )
+            freshness_note = (
+                f"The cards above use only fresh reports from the last second ({recent_report_count:,} reports)."
+                if live_raw_hid and recent_rate_available
+                else "The cards above need two fresh reports; move a stick if the controller is idle."
+            )
             self.quality_label.setText(
-                f"Stream {'LIVE' if live_raw_hid else 'NOT LIVE'} • retained session samples {t.sample_count:,} • duration {t.duration_s:.3f} s • timing source {timing_source} • "
-                f"evidence class {evidence_class} • "
-                f"host monotonic timer resolution {self.host_timer_resolution_ns:.0f} ns • reference {reference_name} • "
-                f"effective rate {t.effective_rate_hz:.2f} Hz • consecutive identical raw HID payloads {self.duplicate_raw_reports}.\n"
-                "Raw HID timestamps are observed after USB at the host. They do not prove the controller's sensor-side or firmware filtering behavior; that needs a synchronized upstream electrical trace."
+                f"{'Connected' if live_raw_hid else 'Not connected'} • {history_note} {freshness_note} "
+                "All report times are observed by this PC after USB; they are not internal firmware timestamps."
             )
 
         if current_page == "Dashboard" and self.baseline_active:
@@ -3434,7 +3536,11 @@ class MainWindow(QMainWindow):
             return
         self.settings.setValue("controller_skin",self.controller_skin_combo.currentData())
         if hasattr(self,"stack") and NAV[self.stack.currentIndex()]=="Controller Lab":
-            self._schedule_ui_refresh()
+            if self.controller_connected and self.controller_samples:
+                source = self.controller_sources[-1][0] if self.controller_sources else ""
+                self._set_controller_visual(self.controller_samples[-1], source)
+            else:
+                self._set_controller_visual()
 
     def _reset_graphs(self) -> None:
         for name in ("dashboard_timing_chart", "dashboard_noise_chart"):

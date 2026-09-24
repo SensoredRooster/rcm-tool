@@ -379,7 +379,7 @@ class StickView(QWidget):
 
 
 class ControllerView(QWidget):
-    """Live controller visual with Xbox, DualSense, and generic skins."""
+    """Live controller visual with model-aware shells and conservative input mapping."""
 
     XINPUT_BUTTONS = {
         0x0001: "D-UP", 0x0002: "D-DOWN", 0x0004: "D-LEFT", 0x0008: "D-RIGHT",
@@ -411,7 +411,7 @@ class ControllerView(QWidget):
     ) -> None:
         self.sample = dict(sample or {})
         self.source = str(source or "")
-        self.skin = skin if skin in {"xbox", "dualsense", "generic"} else "generic"
+        self.skin = skin if skin in {"xbox", "dualsense", "vader5pro", "generic"} else "generic"
         self.mapping_family = mapping_family if mapping_family in {"xbox", "dualsense", "generic"} else "generic"
         self.update()
 
@@ -451,7 +451,7 @@ class ControllerView(QWidget):
 
     def _draw_stick(
         self, painter: QPainter, center: QPointF, radius: float,
-        x: float, y: float, label: str,
+        x: float | None, y: float | None, label: str,
     ) -> None:
         painter.setPen(QPen(QColor("#344761"), 1.4))
         painter.setBrush(QColor("#0A121E"))
@@ -459,13 +459,14 @@ class ControllerView(QWidget):
         painter.setPen(QPen(QColor("#23354C"), 1))
         painter.drawLine(QPointF(center.x() - radius, center.y()), QPointF(center.x() + radius, center.y()))
         painter.drawLine(QPointF(center.x(), center.y() - radius), QPointF(center.x(), center.y() + radius))
-        dot = QPointF(
-            center.x() + self._clamp(x) * radius * 0.72,
-            center.y() - self._clamp(y) * radius * 0.72,
-        )
-        painter.setPen(QPen(QColor("#9EC0FF"), 2))
-        painter.setBrush(QColor("#5D93FF"))
-        painter.drawEllipse(dot, radius * 0.18, radius * 0.18)
+        if x is not None and y is not None:
+            dot = QPointF(
+                center.x() + self._clamp(x) * radius * 0.72,
+                center.y() - self._clamp(y) * radius * 0.72,
+            )
+            painter.setPen(QPen(QColor("#9EC0FF"), 2))
+            painter.setBrush(QColor("#5D93FF"))
+            painter.drawEllipse(dot, radius * 0.18, radius * 0.18)
         painter.setPen(QColor("#8FA4BE"))
         painter.drawText(
             QRectF(center.x() - radius, center.y() + radius + 6, radius * 2, 18),
@@ -501,6 +502,8 @@ class ControllerView(QWidget):
         self, painter: QPainter, left: float, top: float, body_w: float,
         left_label: str, right_label: str,
     ) -> None:
+        if "lt" not in self.sample and "rt" not in self.sample:
+            return
         lt = self._trigger(self.sample.get("lt", 0.0))
         rt = self._trigger(self.sample.get("rt", 0.0))
         bar_w = body_w * 0.20
@@ -552,11 +555,11 @@ class ControllerView(QWidget):
         stick_r = min(38.0, body_w * 0.055)
         self._draw_stick(
             painter, QPointF(left + body_w * 0.30, top + body_h * 0.37), stick_r,
-            self.sample.get("lx", 0.0), self.sample.get("ly", 0.0), "LEFT",
+            self.sample.get("lx"), self.sample.get("ly"), "LEFT",
         )
         self._draw_stick(
             painter, QPointF(left + body_w * 0.61, top + body_h * 0.66), stick_r,
-            self.sample.get("rx", 0.0), self.sample.get("ry", 0.0), "RIGHT",
+            self.sample.get("rx"), self.sample.get("ry"), "RIGHT",
         )
         self._draw_dpad(painter, QPointF(left + body_w * 0.35, top + body_h * 0.66), 54)
 
@@ -589,11 +592,11 @@ class ControllerView(QWidget):
         stick_r = min(37.0, body_w * 0.054)
         self._draw_stick(
             painter, QPointF(left + body_w * 0.42, top + body_h * 0.66), stick_r,
-            self.sample.get("lx", 0.0), self.sample.get("ly", 0.0), "LEFT",
+            self.sample.get("lx"), self.sample.get("ly"), "LEFT",
         )
         self._draw_stick(
             painter, QPointF(left + body_w * 0.58, top + body_h * 0.66), stick_r,
-            self.sample.get("rx", 0.0), self.sample.get("ry", 0.0), "RIGHT",
+            self.sample.get("rx"), self.sample.get("ry"), "RIGHT",
         )
         self._draw_dpad(painter, QPointF(left + body_w * 0.25, top + body_h * 0.42), 54)
 
@@ -606,19 +609,72 @@ class ControllerView(QWidget):
         self._draw_button(painter, QPointF(face.x() - gap, face.y()), 13, "□", False)
         self._draw_button(painter, QPointF(face.x(), face.y() - gap), 13, "△", False)
 
+    def _paint_vader5pro(self, painter: QPainter, left: float, top: float, body_w: float, body_h: float) -> None:
+        """Vader 5 Pro-style asymmetric layout; button highlighting stays off until mapped."""
+        painter.setPen(QPen(QColor("#46566A"), 2))
+        painter.setBrush(QColor("#20252B"))
+        painter.drawPath(self._shell_path(left, top, body_w, body_h))
+        self._draw_trigger_bars(painter, left, top, body_w, "LT", "RT")
+
+        # Shoulder buttons, center mark, and the model's rear-button row.
+        painter.setBrush(QColor("#151B22"))
+        painter.setPen(QPen(QColor("#596575"), 1.2))
+        for x in (left + body_w * 0.22, left + body_w * 0.72):
+            painter.drawRoundedRect(QRectF(x, top + body_h * 0.09, body_w * 0.07, body_h * 0.07), 5, 5)
+        logo = QPainterPath()
+        logo.moveTo(left + body_w * 0.50, top + body_h * 0.12)
+        logo.lineTo(left + body_w * 0.47, top + body_h * 0.23)
+        logo.lineTo(left + body_w * 0.50, top + body_h * 0.20)
+        logo.lineTo(left + body_w * 0.53, top + body_h * 0.23)
+        logo.closeSubpath()
+        painter.setBrush(QColor("#8D99A8"))
+        painter.drawPath(logo)
+
+        stick_r = min(34.0, body_w * 0.052)
+        self._draw_stick(
+            painter, QPointF(left + body_w * 0.30, top + body_h * 0.39), stick_r,
+            self.sample.get("lx"), self.sample.get("ly"), "LEFT STICK",
+        )
+        self._draw_stick(
+            painter, QPointF(left + body_w * 0.65, top + body_h * 0.64), stick_r,
+            self.sample.get("rx"), self.sample.get("ry"), "RIGHT STICK",
+        )
+        self._draw_dpad(painter, QPointF(left + body_w * 0.34, top + body_h * 0.65), 48)
+
+        # The labels describe the model's face layout only; unknown HID bit maps are never highlighted.
+        face = QPointF(left + body_w * 0.76, top + body_h * 0.38)
+        gap = 23.0
+        for label, x, y in (
+            ("Y", face.x(), face.y() - gap),
+            ("B", face.x() + gap, face.y()),
+            ("A", face.x(), face.y() + gap),
+            ("C", face.x() - gap, face.y()),
+            ("Z", face.x() + gap * 1.7, face.y() + gap * 1.4),
+        ):
+            self._draw_button(painter, QPointF(x, y), 11, label, False)
+
+        painter.setPen(QPen(QColor("#596575"), 1.1))
+        for label, x, y in (("M2", .39, .78), ("M1", .61, .78), ("M4", .39, .91), ("M3", .61, .91)):
+            tab = QRectF(left + body_w * (x - .045), top + body_h * (y - .035), body_w * .09, body_h * .07)
+            painter.setBrush(QColor("#171D24"))
+            painter.drawRoundedRect(tab, 5, 5)
+            painter.setPen(QColor("#C1CBD6"))
+            painter.drawText(tab, Qt.AlignmentFlag.AlignCenter, label)
+            painter.setPen(QPen(QColor("#596575"), 1.1))
+
     def _paint_generic(self, painter: QPainter, left: float, top: float, body_w: float, body_h: float) -> None:
         painter.setPen(QPen(QColor("#30445F"), 2))
         painter.setBrush(QColor("#0E1826"))
-        painter.drawRoundedRect(QRectF(left + body_w * 0.08, top + body_h * 0.12, body_w * 0.84, body_h * 0.70), 50, 50)
+        painter.drawPath(self._shell_path(left, top, body_w, body_h))
         self._draw_trigger_bars(painter, left, top, body_w, "L", "R")
         stick_r = min(37.0, body_w * 0.054)
         self._draw_stick(
             painter, QPointF(left + body_w * 0.38, top + body_h * 0.55), stick_r,
-            self.sample.get("lx", 0.0), self.sample.get("ly", 0.0), "LEFT",
+            self.sample.get("lx"), self.sample.get("ly"), "LEFT",
         )
         self._draw_stick(
             painter, QPointF(left + body_w * 0.62, top + body_h * 0.55), stick_r,
-            self.sample.get("rx", 0.0), self.sample.get("ry", 0.0), "RIGHT",
+            self.sample.get("rx"), self.sample.get("ry"), "RIGHT",
         )
         self._draw_dpad(painter, QPointF(left + body_w * 0.23, top + body_h * 0.43), 50)
         face = QPointF(left + body_w * 0.77, top + body_h * 0.43)
@@ -636,23 +692,33 @@ class ControllerView(QWidget):
         top = max(62.0, (h - body_h) * 0.43)
 
         painter.setPen(QColor("#70D6FF"))
-        label = {"xbox":"XBOX LAYOUT","dualsense":"DUALSENSE LAYOUT","generic":"GENERIC LAYOUT"}[self.skin]
+        label = {
+            "xbox": "XBOX LAYOUT",
+            "dualsense": "DUALSENSE LAYOUT",
+            "vader5pro": "FLYDIGI VADER 5 PRO LAYOUT",
+            "generic": "GENERIC GAMEPAD LAYOUT",
+        }[self.skin]
         painter.drawText(QRectF(0, 14, w, 22), Qt.AlignmentFlag.AlignHCenter, label)
 
         if self.skin == "xbox":
             self._paint_xbox(painter,left,top,body_w,body_h)
         elif self.skin == "dualsense":
             self._paint_dualsense(painter,left,top,body_w,body_h)
+        elif self.skin == "vader5pro":
+            self._paint_vader5pro(painter,left,top,body_w,body_h)
         else:
             self._paint_generic(painter,left,top,body_w,body_h)
 
         painter.setPen(QColor("#7F93AC"))
-        if self.mapping_family == "xbox":
+        if not all(axis in self.sample for axis in ("lx", "ly", "rx", "ry")):
+            mapping = "Outline only • waiting for the first live controller report"
+        elif self.mapping_family == "xbox":
             mapping = "Xbox/XInput mapping active"
         elif self.mapping_family == "dualsense":
             mapping = "DualSense detected • named button mapping unavailable from current backend"
         else:
             mapping = "Generic/source-specific button mapping"
+        mapping += " • button labels are visual only" if self.skin == "vader5pro" and self.mapping_family != "xbox" else ""
         painter.drawText(
             QRectF(left, top + body_h + 28, body_w, 22),
             Qt.AlignmentFlag.AlignHCenter, mapping,

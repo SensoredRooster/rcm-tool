@@ -223,7 +223,7 @@ def analyze_noise_capture(
         )
     if len(samples) < 100:
         interpretation = (
-            f"Only {len(samples)} Raw HID sample(s) were captured, below the 100-sample screening minimum. "
+            f"Only {len(samples)} host-observed Raw HID sample(s) were captured, below the 100-sample screening minimum. "
             "Variation metrics are unavailable or preliminary; no noise-floor or smoothing conclusion is valid."
         )
     elif capture_kind == "neutral" and not stationary:

@@ -56,6 +56,19 @@ def detect_controller_family(metadata: dict | None = None, source: str = "") -> 
     return "generic"
 
 
+def detect_controller_layout(metadata: dict | None = None, source: str = "") -> str:
+    """Choose a visual shell from an explicit model name, without guessing its button map."""
+    meta = metadata or {}
+    evidence = " ".join(
+        str(meta.get(key) or "")
+        for key in ("controller_name", "product_string", "manufacturer", "manufacturer_string")
+    ) + " " + str(source or "")
+    compact = "".join(character for character in evidence.casefold() if character.isalnum())
+    if "vader5pro" in compact or ("flydigi" in compact and "vader5" in compact):
+        return "vader5pro"
+    return detect_controller_family(meta, source)
+
+
 @dataclass(frozen=True)
 class ControllerMeasurement:
     timestamp_ns: int
