@@ -1,6 +1,7 @@
 import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from signal_lab.analysis import align_nearest, oscillator_metrics, pearson_correlation, timing_metrics
 from signal_lab.controller import detect_controller_family
@@ -9,7 +10,7 @@ from signal_lab.noise_attribution import analyze_noise_capture
 from signal_lab.storage import LabDatabase
 from signal_lab.reporting import write_html_report, write_noise_evidence_report, write_trace_evidence_report
 from signal_lab.sweep import make_sweep
-from signal_lab.trace_capture import SigrokCaptureConfig, analyze_sigrok_csv
+from signal_lab.trace_capture import SigrokCaptureConfig, analyze_sigrok_csv, scan_sigrok
 
 
 class SignalLabTests(unittest.TestCase):
@@ -177,6 +178,9 @@ class SignalLabTests(unittest.TestCase):
         self.assertEqual(result["records"][1]["raw_report_hex"], "01")
         self.assertGreater(result["axes"]["lx"]["noise_rms"], 0.0)
         self.assertIn("high_frequency_energy_percent", result["axes"]["lx"])
+        self.assertIsNotNone(result["axes"]["lx"]["variation_rms_after_smoothing"])
+        self.assertGreater(result["axes"]["lx"]["variation_change_percent"], 0.0)
+        self.assertTrue(result["smoothing_comparison"]["does_not_modify_controller_or_game_input"])
         self.assertIn("capture_quality", result)
         self.assertIn("host-observed Raw HID", result["interpretation"])
 
@@ -285,7 +289,7 @@ class SignalLabTests(unittest.TestCase):
             path.write_text("# sigrok\nTime,CH1,CH2\n0,0.0,1\n0.001,0.1,0\n0.002,0.0,1\n", encoding="utf-8")
             config = SigrokCaptureConfig(
                 executable="sigrok-cli",
-                driver="demo",
+                driver="fx2lafw",
                 samplerate_hz=1_000_000,
                 duration_s=1.0,
                 output_path=path,
@@ -301,6 +305,61 @@ class SignalLabTests(unittest.TestCase):
         self.assertEqual(result["sample_count"], 3)
         self.assertEqual(result["channel_names"], ["CH1", "CH2"])
         self.assertGreater(result["channels"]["CH1"]["peak_to_peak"], 0.0)
+
+    def test_sigrok_capture_requires_real_driver_and_channels(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "trace.csv"
+            with self.assertRaisesRegex(ValueError, "software-generated"):
+                SigrokCaptureConfig(
+                    executable="sigrok-cli",
+                    driver="demo",
+                    samplerate_hz=1_000_000,
+                    duration_s=1.0,
+                    output_path=output_path,
+                    channels="D0-D3",
+                ).command()
+            with self.assertRaisesRegex(ValueError, "driver"):
+                SigrokCaptureConfig(
+                    executable="sigrok-cli",
+                    driver="",
+                    samplerate_hz=1_000_000,
+                    duration_s=1.0,
+                    output_path=output_path,
+                    channels="D0-D3",
+                ).command()
+            with self.assertRaisesRegex(ValueError, "channel"):
+                SigrokCaptureConfig(
+                    executable="sigrok-cli",
+                    driver="fx2lafw",
+                    samplerate_hz=1_000_000,
+                    duration_s=1.0,
+                    output_path=output_path,
+                    channels="",
+                ).command()
+
+    def test_sigrok_scan_suppresses_demo_and_only_offers_listed_hardware_drivers(self):
+        from types import SimpleNamespace
+
+        output = (
+            "The following devices were found:\n"
+            "demo - Demo device with 13 channels: D0 D1\n"
+            "fx2lafw - Cypress FX2 with 8 channels: D0 D1 D2 D3\n"
+        )
+        with (
+            patch("signal_lab.trace_capture.find_sigrok_cli", return_value="sigrok-cli"),
+            patch(
+                "signal_lab.trace_capture.subprocess.run",
+                return_value=SimpleNamespace(returncode=0, stdout=output, stderr=""),
+            ),
+        ):
+            result = scan_sigrok()
+        self.assertEqual(result["available_drivers"], ["fx2lafw"])
+        self.assertTrue(result["software_demo_present"])
+        self.assertNotIn("demo - Demo device", result["output"])
+        self.assertIn("fx2lafw", result["output"])
 
     def test_measurement_capability_probe_reflects_actual_queries(self):
         class FakeMeasurement:

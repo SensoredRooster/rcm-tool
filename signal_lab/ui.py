@@ -225,6 +225,7 @@ class MainWindow(QMainWindow):
         self.support_upload_worker: SupportUploadWorker | None = None
         self.noise_test_active = False
         self.noise_test_kind = ""
+        self.noise_test_smoothing_tau_seconds = 0.05
         self.noise_test_deadline = 0.0
         self.noise_test_start_timestamp_ns = 0
         self.noise_test_result: dict | None = None
@@ -238,6 +239,9 @@ class MainWindow(QMainWindow):
         self.trace_capture_active = False
         self.trace_capture_start_timestamp_ns = 0
         self.trace_capture_result: dict | None = None
+        self.trace_capture_configuration: dict = {}
+        self.trace_scanned_drivers: list[str] = []
+        self.trace_scanned_executable = ""
         self.trace_controller_timestamps: list[int] = []
         self.trace_controller_samples: list[dict] = []
         self.trace_controller_raw_reports: list[str | None] = []
@@ -609,7 +613,7 @@ class MainWindow(QMainWindow):
         source_layout.addWidget(self.controller_source_status)
         diagnostics.addWidget(source_card, 2, 0, 1, 2)
 
-        evidence_card, evidence_layout = card("NOISE ATTRIBUTION EVIDENCE")
+        evidence_card, evidence_layout = card("RAW HID NOISE + SMOOTHING TEST")
         evidence_help = QLabel(
             "Raw HID only: the first test measures stationary output noise; the second measures movement/settling behavior. "
             "Neither can prove firmware filtering without an oscilloscope or logic analyzer upstream of USB."
@@ -617,8 +621,23 @@ class MainWindow(QMainWindow):
         evidence_help.setObjectName("Muted")
         evidence_help.setWordWrap(True)
         evidence_layout.addWidget(evidence_help)
+        smoothing_row = QHBoxLayout()
+        smoothing_row.addWidget(QLabel("Offline smoother time constant"))
+        self.noise_smoothing_tau_ms = QDoubleSpinBox()
+        self.noise_smoothing_tau_ms.setRange(1.0, 200.0)
+        self.noise_smoothing_tau_ms.setDecimals(1)
+        self.noise_smoothing_tau_ms.setSingleStep(1.0)
+        self.noise_smoothing_tau_ms.setValue(50.0)
+        self.noise_smoothing_tau_ms.setSuffix(" ms")
+        self.noise_smoothing_tau_ms.setToolTip(
+            "Applies a first-order smoother to a duplicate of the captured Raw HID data for comparison only. "
+            "It does not change the controller or game input."
+        )
+        smoothing_row.addWidget(self.noise_smoothing_tau_ms)
+        smoothing_row.addStretch(1)
+        evidence_layout.addLayout(smoothing_row)
         evidence_row = QHBoxLayout()
-        guided_test = QPushButton("Guided smoothing test")
+        guided_test = QPushButton("Guided Raw HID + smoothing test")
         guided_test.clicked.connect(self._run_noise_wizard)
         self.guided_test_buttons.append(guided_test)
         export_evidence = QPushButton("Export + open results report")
@@ -647,7 +666,7 @@ class MainWindow(QMainWindow):
     def _trace_page(self) -> QWidget:
         w, layout = page(
             "Electrical Trace",
-            "Optional upstream evidence through sigrok/libsigrok. RcmTool stores the raw capture and aligns it with Raw HID using an explicitly labeled synchronization method.",
+            "Optional capture from a connected physical analyzer through sigrok/libsigrok. The built-in software demo is rejected and cannot create evidence.",
         )
 
         tool_card, tool_layout = card("OPEN-SOURCE TRACE TOOL")
@@ -679,9 +698,9 @@ class MainWindow(QMainWindow):
         config_card, config_layout = card("CAPTURE CONFIGURATION")
         config_form = QFormLayout()
         self.trace_driver = QLineEdit()
-        self.trace_driver.setPlaceholderText("Example: fx2lafw or saleae-logic-pro")
+        self.trace_driver.setPlaceholderText("Real analyzer driver from Scan devices (software demo blocked)")
         self.trace_channels = QLineEdit()
-        self.trace_channels.setPlaceholderText("Required for a real capture, for example A0 or 0-3")
+        self.trace_channels.setPlaceholderText("Required: channel names reported for your connected analyzer")
         self.trace_samplerate = QLineEdit("1m")
         self.trace_samplerate.setToolTip(
             "Requested sigrok rate, not a guarantee. Choose at least 10× the highest electrical frequency of interest; "
@@ -1318,6 +1337,8 @@ class MainWindow(QMainWindow):
             enabled = ready and not self.noise_test_active
             if button.isEnabled() != enabled:
                 button.setEnabled(enabled)
+        if hasattr(self, "noise_smoothing_tau_ms"):
+            self.noise_smoothing_tau_ms.setEnabled(not self.noise_test_active)
         if hasattr(self, "start_trace_button"):
             enabled = ready and not self.trace_capture_active
             if self.start_trace_button.isEnabled() != enabled:
@@ -1339,6 +1360,7 @@ class MainWindow(QMainWindow):
         self.noise_test_active = True
         self._sync_hardware_controls()
         self.noise_test_kind = capture_kind
+        self.noise_test_smoothing_tau_seconds = self.noise_smoothing_tau_ms.value() / 1000.0
         self.noise_test_deadline = time.monotonic() + (10.0 if capture_kind == "neutral" else 20.0)
         self.noise_test_start_timestamp_ns = time.perf_counter_ns()
         self.noise_capture_timestamps.clear()
@@ -1349,7 +1371,13 @@ class MainWindow(QMainWindow):
         else:
             instruction = "Use one stick: center → full deflection → center, then repeat with a quick reversal."
         self.noise_test_status.setText(f"RUNNING Raw HID {capture_kind} capture • {instruction}")
-        self._add_event("noise_attribution_started", {"capture_kind": capture_kind})
+        self._add_event(
+            "noise_attribution_started",
+            {
+                "capture_kind": capture_kind,
+                "offline_smoothing_tau_seconds": self.noise_test_smoothing_tau_seconds,
+            },
+        )
 
     def _run_noise_wizard(self) -> None:
         if not self._has_measured_raw_hid():
@@ -1384,7 +1412,8 @@ class MainWindow(QMainWindow):
             "Step 2 leaves the sticks untouched for 10 seconds. Step 3 uses one stick: slowly center → full deflection "
             "→ center, then one quick reversal, for 20 seconds. The export contains every dedicated-test timestamp, "
             "normalized sample, and Raw HID report byte captured during each step. If no session is already recording, "
-            "the wizard starts and saves one automatically in the local database."
+            "the wizard starts and saves one automatically in the local database. Step 4 compares the untouched raw "
+            "measurements with a software-only smoother applied offline to the same samples at the selected time constant."
         )
         intro_text.setWordWrap(True)
         intro_layout.addWidget(intro_text)
@@ -1434,6 +1463,10 @@ class MainWindow(QMainWindow):
         review_status = QLabel("Run both captures to produce the evidence package.")
         review_status.setWordWrap(True)
         review_layout.addWidget(review_status)
+        review_export = QPushButton("Export + open results report")
+        review_export.setEnabled(False)
+        review_export.clicked.connect(self._export_noise_evidence)
+        review_layout.addWidget(review_export, alignment=Qt.AlignmentFlag.AlignLeft)
         limitation = QLabel(
             "Interpretation boundary: Raw HID is downstream of firmware and USB. This package can show a "
             "host-observed smoothing signature, but it cannot identify firmware as the cause without a synchronized "
@@ -1453,7 +1486,7 @@ class MainWindow(QMainWindow):
         cancel = buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
         layout.addWidget(buttons)
 
-        state = {"neutral_done": False, "movement_done": False}
+        state = {"neutral_done": False, "movement_done": False, "results": {}}
         wizard_capture = {"started": False}
         self.noise_wizard = {
             "dialog": dialog,
@@ -1480,6 +1513,7 @@ class MainWindow(QMainWindow):
             else:
                 next_button.setText("Close")
                 next_button.setEnabled(bool(state["neutral_done"] and state["movement_done"]))
+                review_export.setEnabled(bool(state["neutral_done"] and state["movement_done"]))
 
         def start_neutral() -> None:
             if self.noise_test_active:
@@ -1563,6 +1597,7 @@ class MainWindow(QMainWindow):
             device_metadata=self.controller_metadata,
             stationary_excursion=self.stationary_excursion.value(),
             reference_rate_hz=self._configured_reference_rate_hz(),
+            smoothing_tau_seconds=self.noise_test_smoothing_tau_seconds,
         )
         result = self.noise_test_result
         device_name = result.get("device_metadata", {}).get("controller_name") or "HID"
@@ -1570,16 +1605,40 @@ class MainWindow(QMainWindow):
         self.noise_test_results[capture_key] = result
         quality = result.get("capture_quality", {})
         stationary = result.get("stationary_check", {}).get("is_stationary", False)
-        stationarity_text = "stationary check passed" if stationary else "movement exceeded stationary threshold"
+        if self.noise_test_kind == "movement":
+            stationarity_text = "movement protocol completed; stationary noise check does not apply"
+        elif stationary is True:
+            stationarity_text = "stationary check passed"
+        elif stationary is False:
+            stationarity_text = "movement exceeded stationary threshold"
+        else:
+            stationarity_text = "stationarity unavailable (below sample minimum)"
+        tau_ms = result["smoothing_comparison"]["time_constant_ms"]
+        if result["smoothing_comparison"]["basis"] == "stationary-noise-RMS":
+            left_change = result["axes"]["lx"]["variation_change_percent"]
+            up_change = result["axes"]["ly"]["variation_change_percent"]
+            smoothing_text = (
+                f"offline-filter RMS change at {tau_ms:.1f} ms: "
+                f"LX {left_change:.1f}%, LY {up_change:.1f}%"
+                if left_change is not None and up_change is not None
+                else f"offline-filter comparison at {tau_ms:.1f} ms is unavailable"
+            )
+        elif self.noise_test_kind == "movement":
+            smoothing_text = f"movement/filter tradeoff calculated at {tau_ms:.1f} ms; not a noise-only percentage"
+        elif result["smoothing_comparison"]["basis"] == "variation-includes-unwanted-movement":
+            smoothing_text = f"stationarity failed; filter change at {tau_ms:.1f} ms is not labeled noise reduction"
+        else:
+            smoothing_text = f"stationarity unavailable; filter change at {tau_ms:.1f} ms is not labeled noise reduction"
         self.noise_test_status.setText(
             f"Complete • {result['sample_count']} Raw HID samples • "
             f"{result['raw_hid_report_count']} reports • {result['sample_rate_hz']:.2f} reports/s • "
-            f"{stationarity_text} • integrity checks: {quality.get('label', 'review required')}."
+            f"{stationarity_text} • {smoothing_text} • integrity checks: {quality.get('label', 'review required')}."
         )
         self._add_event("noise_attribution_completed", result)
         if self.noise_wizard is not None:
             state = self.noise_wizard["state"]
             state[f"{self.noise_test_kind}_done"] = True
+            state["results"][self.noise_test_kind] = result
             if self.noise_test_kind == "neutral":
                 self.noise_wizard["neutral_status"].setText(
                     f"Complete • {result['sample_count']} samples • {result['sample_rate_hz']:.2f} reports/s • "
@@ -1592,9 +1651,39 @@ class MainWindow(QMainWindow):
                     f"integrity checks: {quality.get('label', 'review required')}."
                 )
             self.noise_wizard["next"].setEnabled(True)
+            neutral_result = state["results"].get("neutral")
+            movement_result = state["results"].get("movement")
+            review_lines = []
+            if neutral_result:
+                if neutral_result["smoothing_comparison"]["basis"] == "stationary-noise-RMS":
+                    axis_notes = []
+                    for axis in ("lx", "ly", "rx", "ry"):
+                        metrics = neutral_result["axes"][axis]
+                        raw = metrics["noise_rms"]
+                        filtered = metrics["variation_rms_after_smoothing"]
+                        change = metrics["variation_change_percent"]
+                        if raw is not None and filtered is not None and change is not None:
+                            axis_notes.append(
+                                f"{axis.upper()} {raw:.6f} → {filtered:.6f} ({change:+.1f}%)"
+                            )
+                    review_lines.append("Neutral stationary noise RMS, raw → filtered: " + "; ".join(axis_notes))
+                elif neutral_result["smoothing_comparison"]["basis"] == "variation-includes-unwanted-movement":
+                    review_lines.append("Neutral capture was not stationary; do not interpret its filter change as noise reduction.")
+                else:
+                    review_lines.append("Neutral capture did not have enough samples to determine stationarity.")
+            if movement_result:
+                movement_axis = movement_result["axes"]["lx"]
+                delta = movement_axis["smoothing_delta_rms"]
+                if delta is not None:
+                    review_lines.append(
+                        f"Movement LX filter delta RMS: {delta:.6f} (includes intended motion and response lag)."
+                    )
             captures = self.noise_test_results
             self.noise_wizard["review_status"].setText(
-                f"Evidence ready: {len(captures)} capture(s). Use Export + open results report to save and explain the paired records."
+                "Evidence ready from the selected Raw HID device.\n"
+                + "\n".join(review_lines)
+                + f"\nThe {self.noise_test_smoothing_tau_seconds * 1000.0:.1f} ms setting is calculated offline; original reports are unchanged. "
+                + f"{len(captures)} capture(s) are retained. Export opens the full explained report."
             )
 
     def _export_noise_evidence(self) -> None:
@@ -1643,10 +1732,20 @@ class MainWindow(QMainWindow):
             )
 
     def _scan_trace_devices(self) -> None:
-        result = scan_sigrok(self.trace_executable.text().strip() or "sigrok-cli")
-        self.trace_tool_status.setText(
-            ("SCAN OK" if result.get("ok") else "SCAN FAILED") + f" • {result.get('message', '')}"
-        )
+        executable = self.trace_executable.text().strip() or "sigrok-cli"
+        self.trace_scanned_drivers = []
+        self.trace_scanned_executable = ""
+        result = scan_sigrok(executable)
+        if result.get("ok"):
+            self.trace_scanned_drivers = [
+                str(driver).casefold() for driver in result.get("available_drivers", [])
+            ]
+            self.trace_scanned_executable = str(result.get("executable", ""))
+        prefix = "SCAN OK" if result.get("ok") else "SCAN FAILED"
+        message = str(result.get("message", ""))
+        if result.get("ok") and not self.trace_scanned_drivers:
+            message += "; no non-demo analyzer was listed"
+        self.trace_tool_status.setText(f"{prefix} • {message}")
         self.trace_scan_output.setPlainText(str(result.get("output", "")))
 
     def _trace_samplerate_hz(self) -> int:
@@ -1695,6 +1794,34 @@ class MainWindow(QMainWindow):
             triggers=self.trace_triggers.text(),
             wait_trigger=self.trace_wait_trigger.isChecked(),
         )
+        try:
+            command = config.command()
+        except ValueError as exc:
+            QMessageBox.information(self, "Real analyzer required", str(exc))
+            return
+        selected_driver = config.driver.split(":", 1)[0].strip().casefold()
+        if self.trace_scanned_executable != str(tool["executable"]):
+            QMessageBox.information(
+                self,
+                "Scan real analyzer first",
+                "Click Scan devices with the selected sigrok-cli executable. Capture is enabled only for a non-demo driver actually listed by that scan.",
+            )
+            return
+        if selected_driver not in self.trace_scanned_drivers:
+            QMessageBox.information(
+                self,
+                "Analyzer not detected",
+                "That driver was not listed by the latest device scan. Connect a supported physical analyzer, scan again, and use one of the listed drivers. The software demo is never accepted.",
+            )
+            return
+        self.trace_capture_configuration = {
+            "driver": config.driver.strip(),
+            "channels": config.channels.strip(),
+            "requested_sample_rate_hz": config.samplerate_hz,
+            "driver_present_in_latest_sigrok_scan": True,
+            "physical_device_identity_verified_by_application": False,
+            "built_in_software_demo_allowed": False,
+        }
         self.trace_capture_result = None
         self.trace_capture_active = True
         self._sync_hardware_controls()
@@ -1709,7 +1836,7 @@ class MainWindow(QMainWindow):
         self._add_event(
             "electrical_trace_started",
             {
-                "command": config.command(),
+                "command": command,
                 "synchronization_method": sync_method,
                 "controller_source": self.controller_source_combo.currentText(),
             },
@@ -1756,6 +1883,7 @@ class MainWindow(QMainWindow):
                 trace_result["controller_raw_hid"] = {"evidence_class": "no-raw-hid-window", "sample_count": 0}
             trace_result["attribution"] = "undetermined-until-electrical-and-raw-hid-signals-are-correlated"
             trace_result["capture_process"] = process_result
+            trace_result["instrument_configuration"] = dict(self.trace_capture_configuration)
             self.trace_capture_result = trace_result
             self.trace_capture_status.setText(
                 f"Complete • {trace_result['sample_count']} instrument samples • "

@@ -213,6 +213,12 @@ def write_noise_evidence_report(
     destination.parent.mkdir(parents=True, exist_ok=True)
     quality = result.get("capture_quality") or {}
     stationary = result.get("stationary_check") or {}
+    smoothing = result.get("smoothing_comparison") or {}
+    smoothing_tau_ms = smoothing.get("time_constant_ms")
+    smoothing_tau_text = (
+        f"{float(smoothing_tau_ms):.1f} ms"
+        if isinstance(smoothing_tau_ms, (int, float)) else "Unavailable"
+    )
     rate_reference = result.get("rate_vs_reference_percent")
     rate_reference_text = (
         f"{float(rate_reference):.1f}%"
@@ -232,6 +238,7 @@ def write_noise_evidence_report(
         "Observed rate": sample_rate_text,
         "Rate vs configured reference": rate_reference_text,
         "Duration": f"{float(result.get('duration_s', 0.0)):.3f} s",
+        "Offline smoothing setting": smoothing_tau_text,
         "Raw report coverage": f"{float(result.get('raw_report_coverage_percent', 0.0)):.1f}%",
         "Duplicate payloads": f"{float(duplicate_percent):.2f}%" if isinstance(duplicate_percent, (int, float)) else "Unavailable (<2 raw reports)",
         "Capture checks": quality.get("label", "unavailable"),
@@ -270,22 +277,34 @@ def write_noise_evidence_report(
         return f"{float(value):.{decimals}f}" if isinstance(value, (int, float)) else "Unavailable"
 
     axis_rows = []
+    variation_label = (
+        "Stationary noise change"
+        if result.get("capture_kind") == "neutral" and stationary.get("is_stationary") is True
+        else "Total variation change"
+    )
     for axis, metrics in (result.get("axes") or {}).items():
+        variation_change = metrics.get("variation_change_percent")
+        variation_change_text = (
+            f"{float(variation_change):.2f}%" if isinstance(variation_change, (int, float)) else "Unavailable"
+        )
         axis_rows.append(
             "<tr>"
             f"<td>{escape(str(axis).upper())}</td>"
             f"<td>{axis_number(metrics, 'noise_rms', 8)}</td>"
+            f"<td>{axis_number(metrics, 'variation_rms_after_smoothing', 8)}</td>"
+            f"<td>{variation_change_text}</td>"
+            f"<td>{axis_number(metrics, 'smoothing_delta_rms', 8)}</td>"
             f"<td>{axis_number(metrics, 'peak_to_peak', 8)}</td>"
-            f"<td>{axis_number(metrics, 'slow_trend_residual_rms', 8)}</td>"
+            f"<td>{axis_number(metrics, 'peak_to_peak_after_smoothing', 8)}</td>"
             f"<td>{axis_number(metrics, 'high_frequency_energy_percent', 2)}"
             f"{'%' if metrics.get('high_frequency_energy_percent') is not None else ''}</td>"
-            f"<td>{int(metrics.get('unique_levels', 0))}</td>"
             "</tr>"
         )
     axis_table = (
-        "<table><thead><tr><th>Axis</th><th>Total RMS</th><th>Peak-to-peak</th>"
-        "<th>50 ms residual RMS</th><th>High-frequency energy</th><th>Unique levels</th></tr></thead>"
-        f"<tbody>{''.join(axis_rows) or '<tr><td colspan=6>Unavailable</td></tr>'}</tbody></table>"
+        "<table><thead><tr><th>Axis</th><th>Raw RMS</th><th>After smoother RMS</th>"
+        f"<th>{escape(variation_label)}</th><th>Raw-to-filter delta RMS</th><th>Raw peak-to-peak</th>"
+        "<th>After smoother peak-to-peak</th><th>High-frequency energy</th></tr></thead>"
+        f"<tbody>{''.join(axis_rows) or '<tr><td colspan=8>Unavailable</td></tr>'}</tbody></table>"
     )
     capture_rows = []
     for name, capture in (captures or {}).items():
@@ -296,11 +315,17 @@ def write_noise_evidence_report(
             if capture_sample_count >= 2 and isinstance(capture_rate, (int, float)) else "Unavailable"
         )
         capture_stationary = (capture.get("stationary_check") or {}).get("is_stationary")
+        capture_smoothing = (capture.get("smoothing_comparison") or {}).get("time_constant_ms")
+        capture_smoothing_text = (
+            f"{float(capture_smoothing):.1f} ms"
+            if isinstance(capture_smoothing, (int, float)) else "Unavailable"
+        )
         capture_rows.append(
             "<tr>"
             f"<td>{escape(str(name))}</td>"
             f"<td>{capture_sample_count}</td>"
             f"<td>{capture_rate_text}</td>"
+            f"<td>{capture_smoothing_text}</td>"
             f"<td>{float(capture.get('duration_s', 0.0)):.3f}</td>"
             f"<td>{escape(str((capture.get('capture_quality') or {}).get('label', 'unavailable')))}</td>"
             f"<td>{escape(str(capture_stationary if capture_stationary is not None else 'Unavailable'))}</td>"
@@ -310,11 +335,19 @@ def write_noise_evidence_report(
     if capture_rows:
         capture_table = (
             "<div class='card'><h2>All guided captures</h2>"
-            "<table><thead><tr><th>Capture</th><th>Samples</th><th>Rate</th><th>Duration</th><th>Capture checks</th><th>Stationary check</th></tr></thead>"
+            "<table><thead><tr><th>Capture</th><th>Samples</th><th>Rate</th><th>Offline filter</th><th>Duration</th><th>Capture checks</th><th>Stationary check</th></tr></thead>"
             f"<tbody>{''.join(capture_rows)}</tbody></table></div>"
         )
     interpretation = escape(str(result.get("interpretation", "No interpretation available.")))
-    if stationary.get("is_stationary") is True:
+    smoothing_note = escape(str(smoothing.get("note", "No offline smoothing comparison is available.")))
+    smoothing_card = (
+        "<div class='card'><h2>Offline smoothing comparison</h2>"
+        f"<p>A first-order exponential smoother with a {escape(smoothing_tau_text)} time constant was calculated from a copy of these exact captured Raw HID samples. The original reports were not changed.</p>"
+        f"<p>{smoothing_note} Positive variation change means the software-filtered copy varied less; negative means it varied more. This is a calculation, not a second hardware measurement, and it does not alter controller firmware or game input.</p></div>"
+    )
+    if result.get("capture_kind") == "movement":
+        stationary_text = "This was an intentional movement capture; a stationary noise-floor check does not apply."
+    elif stationary.get("is_stationary") is True:
         stationary_text = "The capture stayed within the stationary threshold."
     elif stationary.get("is_stationary") is False:
         stationary_text = "The capture exceeded the stationary threshold; do not call this a stationary noise floor."
@@ -326,9 +359,13 @@ def write_noise_evidence_report(
         "These percentages describe the captured signal; they are not probabilities that firmware is cheating or filtering.</p></div>"
         f"<div class='card'><h2>Capture summary</h2>{summary}</div>"
         f"{quality_table}"
+        f"{smoothing_card}"
         f"{capture_table}"
         "<div class='card'><h2>How to read the numbers</h2>"
-        "<ul><li><b>Total RMS</b> is the axis variation around its mean during this capture.</li>"
+        "<ul><li><b>Raw RMS</b> is the measured axis variation around its mean during this capture.</li>"
+        "<li><b>After smoother RMS</b> is the variation in the offline-filtered copy using the selected time constant; it is not a firmware or game-input result.</li>"
+        "<li><b>Variation change</b> compares raw RMS with the filtered-copy RMS. For neutral captures it is called noise change only when the stationary check passes; movement results include intended movement.</li>"
+        "<li><b>Raw-to-filter delta RMS</b> quantifies how far the software smoother moved samples from their measured values; a larger value also means more response alteration.</li>"
         "<li><b>Rate vs configured reference</b> compares the observed Raw HID arrival rate with the reference you entered. It is a warning signal, not proof that the controller or firmware dropped reports.</li>"
         "<li><b>50 ms residual RMS</b> subtracts a documented slow trend. It is a repeatable comparison metric, not a direct firmware measurement.</li>"
         "<li><b>High-frequency energy</b> is the squared residual RMS as a percentage of total AC energy. Higher means more captured variation remains above the slow trend.</li>"
@@ -354,6 +391,7 @@ def write_trace_evidence_report(
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     synchronization = result.get("synchronization") or {}
+    instrument_configuration = result.get("instrument_configuration") or {}
     method = synchronization.get("method", "not recorded")
     synchronized = method == "hardware-trigger-assisted"
     channel_rows = []
@@ -383,6 +421,10 @@ def write_trace_evidence_report(
         f"<div class='card'><h2>Capture summary</h2>{_metric_grid({
             'Evidence class': result.get('evidence_class', 'Unavailable'),
             'Source': result.get('source', 'Unavailable'),
+            'Selected driver': instrument_configuration.get('driver', 'Not recorded'),
+            'Selected channels': instrument_configuration.get('channels', 'Not recorded'),
+            'Driver listed by latest scan': instrument_configuration.get('driver_present_in_latest_sigrok_scan', 'Not recorded'),
+            'Physical device verified by RcmTool': 'No — verify the connected hardware independently',
             'Instrument samples': result.get('sample_count', 0),
             'Duration': f"{float(result.get('duration_s', 0.0)):.6f} s",
             'Synchronization': method,
@@ -395,7 +437,7 @@ def write_trace_evidence_report(
         "<li><b>Edge rate</b> is reported only for channels that look digital-like. Analog sensor channels require probe-specific step and spectrum analysis.</li></ul></div>"
         f"<div class='card'><h2>Channel results</h2>{channel_table}</div>"
         f"<div class='card'><h2>Synchronization record</h2><pre>{escape(json.dumps(synchronization, indent=2, default=str))}</pre></div>"
-        "<div class='card'><h2>Required attribution boundary</h2><p>A trace can support a firmware-filtering claim only when the upstream electrical signal, the Raw HID output, and their timing relationship are captured with a known physical connection and a valid shared trigger. Software host-start alignment alone is not enough.</p></div>"
+        "<div class='card'><h2>Hardware and attribution boundary</h2><p>RcmTool rejects sigrok's built-in software demo, but it cannot certify that a selected non-demo driver is connected to a genuine physical analyzer. Verify the device, probe point, ground, and channel wiring yourself. A trace supports firmware-filtering attribution only when the upstream electrical signal, Raw HID output, and their timing relationship are captured with a known physical connection and valid shared trigger. Software host-start alignment alone is not enough.</p></div>"
     )
     destination.write_text(_report_shell(title, body), encoding="utf-8")
     return destination

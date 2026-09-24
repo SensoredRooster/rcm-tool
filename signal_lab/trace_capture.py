@@ -11,6 +11,7 @@ import csv
 from dataclasses import dataclass
 import math
 from pathlib import Path
+import re
 import shutil
 import statistics
 import subprocess
@@ -43,13 +44,21 @@ class SigrokCaptureConfig:
     triggers: str = ""
     wait_trigger: bool = False
 
+    def validate(self) -> None:
+        driver = self.driver.strip()
+        if not driver:
+            raise ValueError("Enter the real analyzer driver shown by Scan devices.")
+        if driver.split(":", 1)[0].strip().casefold() == "demo":
+            raise ValueError("sigrok's built-in demo is software-generated and is not accepted as real hardware evidence.")
+        if not self.channels.strip():
+            raise ValueError("Enter the channel names reported for your connected analyzer.")
+
     def command(self) -> list[str]:
+        self.validate()
         command = [self.executable]
-        if self.driver.strip():
-            command.extend(("--driver", self.driver.strip()))
+        command.extend(("--driver", self.driver.strip()))
         command.extend(("--config", f"samplerate={_rate_text(self.samplerate_hz)}"))
-        if self.channels.strip():
-            command.extend(("--channels", self.channels.strip()))
+        command.extend(("--channels", self.channels.strip()))
         if self.wait_trigger:
             command.append("--wait-trigger")
         if self.triggers.strip():
@@ -88,7 +97,7 @@ def check_sigrok_cli(executable: str = "sigrok-cli") -> dict:
 def scan_sigrok(executable: str = "sigrok-cli") -> dict:
     resolved = find_sigrok_cli(executable)
     if not resolved:
-        return {"ok": False, "message": "sigrok-cli was not found", "output": ""}
+        return {"ok": False, "message": "sigrok-cli was not found", "output": "", "available_drivers": []}
     try:
         completed = subprocess.run(
             [resolved, "--scan"],
@@ -98,30 +107,67 @@ def scan_sigrok(executable: str = "sigrok-cli") -> dict:
             check=False,
         )
     except OSError as exc:
-        return {"ok": False, "message": str(exc), "output": ""}
+        return {"ok": False, "message": str(exc), "output": "", "available_drivers": []}
     output = "\n".join(part for part in (completed.stdout, completed.stderr) if part).strip()
-    return {"ok": completed.returncode == 0, "message": "scan complete" if completed.returncode == 0 else "scan failed", "output": output}
+    device_entry = re.compile(r"^\s*([\w.-]+)(?::\S+)?\s+-\s+", re.IGNORECASE)
+    entries = [
+        (line, device_entry.match(line))
+        for line in output.splitlines()
+    ]
+    demo_entries = [line for line, match in entries if match and match.group(1).casefold() == "demo"]
+    other_device_entries = [line for line, match in entries if match and match.group(1).casefold() != "demo"]
+    available_drivers = list(dict.fromkeys(
+        match.group(1)
+        for _line, match in entries
+        if match and match.group(1).casefold() != "demo"
+    ))
+    software_demo_present = bool(demo_entries) or any(
+        re.match(r"\s*demo(?=\s|:|-|\()", line, flags=re.IGNORECASE)
+        for line in output.splitlines()
+    )
+    if software_demo_present:
+        visible_lines = [line for line, match in entries if not (match and match.group(1).casefold() == "demo")]
+        if not other_device_entries:
+            output = "No physical analyzer entry was listed. The built-in software demo was suppressed."
+        else:
+            output = "\n".join(visible_lines).strip()
+            output += "\n\nBuilt-in software demo entry suppressed; only the remaining listed drivers can be selected."
+    message = "scan complete" if completed.returncode == 0 else "scan failed"
+    if software_demo_present:
+        message += "; software demo suppressed and never eligible for evidence capture"
+    return {
+        "ok": completed.returncode == 0,
+        "message": message,
+        "output": output,
+        "software_demo_present": software_demo_present,
+        "available_drivers": available_drivers,
+        "executable": resolved,
+    }
 
 
 def run_sigrok_capture(config: SigrokCaptureConfig) -> dict:
     """Run one finite capture and return process metadata plus the raw path."""
+    try:
+        command = config.command()
+    except ValueError as exc:
+        return {"ok": False, "message": str(exc), "command": [], "output_path": str(config.output_path)}
     config.output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         completed = subprocess.run(
-            config.command(),
+            command,
             capture_output=True,
             text=True,
             timeout=max(15.0, config.duration_s + 15.0),
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"ok": False, "message": str(exc), "command": config.command(), "output_path": str(config.output_path)}
+        return {"ok": False, "message": str(exc), "command": command, "output_path": str(config.output_path)}
     output = "\n".join(part for part in (completed.stdout, completed.stderr) if part).strip()
     return {
         "ok": completed.returncode == 0 and config.output_path.exists(),
         "return_code": completed.returncode,
         "message": "capture complete" if completed.returncode == 0 else "capture failed",
-        "command": config.command(),
+        "command": command,
         "output": output,
         "output_path": str(config.output_path),
     }

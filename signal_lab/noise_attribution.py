@@ -37,6 +37,10 @@ def _axis_metrics(values: list[float], timestamps_s: list[float]) -> dict[str, f
             "adjacent_delta_rms": None,
             "slow_trend_residual_rms": None,
             "high_frequency_energy_percent": None,
+            "variation_rms_after_smoothing": None,
+            "variation_change_percent": None,
+            "smoothing_delta_rms": None,
+            "peak_to_peak_after_smoothing": None,
         }
     if len(values) < 2:
         return {
@@ -48,6 +52,10 @@ def _axis_metrics(values: list[float], timestamps_s: list[float]) -> dict[str, f
             "adjacent_delta_rms": None,
             "slow_trend_residual_rms": None,
             "high_frequency_energy_percent": None,
+            "variation_rms_after_smoothing": None,
+            "variation_change_percent": None,
+            "smoothing_delta_rms": None,
+            "peak_to_peak_after_smoothing": None,
         }
     mean = statistics.fmean(values)
     residuals = [value - mean for value in values]
@@ -84,6 +92,7 @@ def analyze_noise_capture(
     device_metadata: dict | None = None,
     stationary_excursion: float = 0.02,
     reference_rate_hz: float | None = None,
+    smoothing_tau_seconds: float = DEFAULT_TAU_SECONDS,
 ) -> dict:
     """Analyze a real Raw HID window without claiming firmware attribution."""
     if len(timestamps_ns) != len(samples):
@@ -92,6 +101,8 @@ def analyze_noise_capture(
         raise ValueError("raw_report_hex and samples must have the same length")
     if any(not math.isfinite(float(timestamp)) for timestamp in timestamps_ns):
         raise ValueError("timestamps_ns must contain finite values")
+    if not math.isfinite(float(smoothing_tau_seconds)) or not 0.001 <= smoothing_tau_seconds <= 1.0:
+        raise ValueError("smoothing_tau_seconds must be between 0.001 and 1 second")
     timestamps_s = [timestamp / 1_000_000_000.0 for timestamp in timestamps_ns]
     duration_s = (timestamps_s[-1] - timestamps_s[0]) if len(timestamps_s) >= 2 else 0.0
     intervals = [after - before for before, after in zip(timestamps_s, timestamps_s[1:]) if after > before]
@@ -104,6 +115,24 @@ def analyze_noise_capture(
         axis: _axis_metrics([float(sample.get(axis, 0.0)) for sample in samples], timestamps_s)
         for axis in AXES
     }
+    for axis in AXES:
+        values = [float(sample.get(axis, 0.0)) for sample in samples]
+        if len(values) < 2:
+            continue
+        filtered = _low_pass(values, timestamps_s, smoothing_tau_seconds)
+        raw_rms = axes[axis]["noise_rms"]
+        filtered_mean = statistics.fmean(filtered)
+        filtered_ac = [value - filtered_mean for value in filtered]
+        filtered_rms = math.sqrt(statistics.fmean(value * value for value in filtered_ac))
+        axes[axis]["variation_rms_after_smoothing"] = filtered_rms
+        axes[axis]["variation_change_percent"] = (
+            100.0 * (float(raw_rms) - filtered_rms) / float(raw_rms)
+            if isinstance(raw_rms, (int, float)) and raw_rms > 0 else None
+        )
+        axes[axis]["smoothing_delta_rms"] = math.sqrt(
+            statistics.fmean((raw - smooth) ** 2 for raw, smooth in zip(values, filtered))
+        )
+        axes[axis]["peak_to_peak_after_smoothing"] = max(filtered) - min(filtered)
     axis_spans = {
         axis: float(metrics["peak_to_peak"])
         for axis, metrics in axes.items()
@@ -168,6 +197,30 @@ def analyze_noise_capture(
         "checks passed" if all(check["status"] == "pass" for check in quality_checks)
         else "review required"
     )
+    if capture_kind == "neutral" and stationary is True:
+        smoothing_basis = "stationary-noise-RMS"
+        smoothing_note = (
+            "For this stationary capture, the comparison estimates how the selected software low-pass would reduce "
+            "variation in a duplicate of the recorded Raw HID stream. It does not change the controller or game input."
+        )
+    elif capture_kind == "neutral" and stationary is False:
+        smoothing_basis = "variation-includes-unwanted-movement"
+        smoothing_note = (
+            "The neutral capture failed its stationarity check, so the raw-to-filtered change includes stick movement; "
+            "it is not labeled as noise reduction."
+        )
+    elif capture_kind == "neutral":
+        smoothing_basis = "stationarity-unavailable"
+        smoothing_note = (
+            "The neutral capture did not meet the sample-count minimum for a stationarity decision, so the "
+            "raw-to-filtered change is not labeled as noise reduction."
+        )
+    else:
+        smoothing_basis = "movement-includes-intended-input"
+        smoothing_note = (
+            "During movement, raw-to-filtered change includes intended stick motion and the smoother's response lag; "
+            "it is a tradeoff measurement, not a noise-reduction percentage."
+        )
     if len(samples) < 100:
         interpretation = (
             f"Only {len(samples)} Raw HID sample(s) were captured, below the 100-sample screening minimum. "
@@ -213,6 +266,14 @@ def analyze_noise_capture(
         "interval_mean_s": statistics.fmean(intervals) if intervals else 0.0,
         "interval_stdev_s": statistics.pstdev(intervals) if len(intervals) > 1 else 0.0,
         "axes": axes,
+        "smoothing_comparison": {
+            "method": "first-order exponential low-pass applied offline to a duplicate of the captured samples",
+            "time_constant_s": float(smoothing_tau_seconds),
+            "time_constant_ms": float(smoothing_tau_seconds) * 1000.0,
+            "basis": smoothing_basis,
+            "note": smoothing_note,
+            "does_not_modify_controller_or_game_input": True,
+        },
         "high_frequency_energy_percent_by_axis": high_frequency_energy,
         "capture_quality": {
             "label": quality_label,
@@ -239,7 +300,7 @@ def analyze_noise_capture(
             }
             for timestamp, sample, raw_report in zip(timestamps_ns, samples, raw_report_hex)
         ],
-        "display_smoothing": "disabled-for-test; metrics use stored acquisition samples",
+        "display_smoothing": "offline comparison only; original Raw HID samples remain unchanged",
         "attribution": "undetermined-from-raw-hid-alone",
         "limitation": (
             "Raw HID is measured after the controller firmware and USB stack. "
