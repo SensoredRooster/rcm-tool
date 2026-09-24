@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from bisect import bisect_left
-from collections import deque
+from collections import Counter, deque
 from dataclasses import asdict
 import json
 import logging
@@ -15,7 +15,7 @@ import time
 import webbrowser
 
 from PySide6.QtCore import QSettings, QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
@@ -59,12 +59,7 @@ from support import (
 
 LOGGER = logging.getLogger(__name__)
 
-NAV = [
-    "Dashboard", "Live Capture", "Controller Lab", "Stick Cleaner", "Electrical Trace", "Oscillator Lab",
-    "Interference Lab", "Sweep Lab", "Correlation", "Experiments",
-    "Compare", "Reports", "Instruments", "Support", "Settings",
-]
-FOCUS_NAV = ("Dashboard", "Controller Lab", "Stick Cleaner", "Electrical Trace", "Reports", "Support", "Settings")
+NAV = ["Dashboard", "Controller Lab", "Electrical Trace", "Reports", "Support", "Settings"]
 
 TESTER_SHARE_URL = "https://rcm-tool-share.sensoredrooster-com.workers.dev"
 
@@ -139,10 +134,10 @@ class WelcomeDialog(QDialog):
         copy = QLabel(
             "A hardware-only controller noise and jitter workstation.\n\n"
             "1  Connect the controller by USB\n"
-            "2  Select a named Raw HID device\n"
+            "2  Select its named Raw HID device\n"
             "3  Run the guided neutral and movement tests\n"
             "4  Export the measured evidence\n\n"
-            "No simulated controller values are used. A physical controller is required."
+            "No simulated controller values are used. Windows HID identity alone cannot certify that a device is physical rather than virtual."
         )
         copy.setWordWrap(True)
         layout.addWidget(copy)
@@ -169,9 +164,10 @@ class MainWindow(QMainWindow):
         self.capture_active = False
         self.session_id: str | None = None
         self.controller_acquisition: ControllerAcquisition | None = None
-        self.controller_source_kind = "automatic"
+        self.controller_source_kind = "none"
         self.controller_source_path = None
         self.controller_source_info: dict = {}
+        self.controller_connected = False
         self.controller_queue: queue.Queue[ControllerMeasurement] = queue.Queue()
         self.controller_event_queue: queue.Queue = queue.Queue()
         self.osc_queue: queue.Queue = queue.Queue()
@@ -213,9 +209,6 @@ class MainWindow(QMainWindow):
         self.sweep_step_osc_duty: list[float] = []
         self.sweep_phase = "idle"
         self.sweep_reference_rate_hz = 0.0
-        self.sweep_timer = QTimer(self)
-        self.sweep_timer.setSingleShot(True)
-        self.sweep_timer.timeout.connect(self._sweep_timer_tick)
         self.refresh_once_timer = QTimer(self)
         self.refresh_once_timer.setSingleShot(True)
         self.refresh_once_timer.timeout.connect(self._refresh_ui)
@@ -233,6 +226,7 @@ class MainWindow(QMainWindow):
         self.noise_test_start_timestamp_ns = 0
         self.noise_test_result: dict | None = None
         self.noise_test_results: dict[str, dict] = {}
+        self.guided_test_buttons: list[QPushButton] = []
         self.noise_capture_timestamps: list[int] = []
         self.noise_capture_samples: list[dict] = []
         self.noise_capture_raw_reports: list[str | None] = []
@@ -246,12 +240,14 @@ class MainWindow(QMainWindow):
         self.trace_controller_raw_reports: list[str | None] = []
         self._last_gui_resource_audit = 0.0
         self._last_gui_resource_count: int | None = None
+        self._resource_startup_until = time.monotonic() + 30.0
+        self._startup_gui_snapshot_logged = False
+        self._gui_resource_limit_triggered = False
 
         start_heartbeat()
         support_log_event("gamepad_signal_lab_start", version=__version__)
         self._build_ui()
         self._apply_saved_settings()
-        self._start_controller_acquisition()
 
         self.sample_timer = QTimer(self)
         self.sample_timer.timeout.connect(self._sample_tick)
@@ -289,8 +285,6 @@ class MainWindow(QMainWindow):
 
         self.nav_buttons: dict[str, QPushButton] = {}
         for index, name in enumerate(NAV):
-            if name not in FOCUS_NAV:
-                continue
             button = QPushButton(name)
             button.setObjectName("Nav")
             button.setCheckable(True)
@@ -299,8 +293,8 @@ class MainWindow(QMainWindow):
             self.nav_buttons[name] = button
 
         side.addStretch(1)
-        self.hardware_status = QLabel("HARDWARE • controller discovery active")
-        self.hardware_status.setObjectName("Good")
+        self.hardware_status = QLabel("HARDWARE • select a named Raw HID device")
+        self.hardware_status.setObjectName("Muted")
         self.hardware_status.setWordWrap(True)
         side.addWidget(self.hardware_status)
         self.database_status = QLabel(f"DB • {self.db.path.name}")
@@ -336,21 +330,19 @@ class MainWindow(QMainWindow):
         work_layout.addWidget(topbar)
 
         self.stack = QStackedWidget()
-        for builder in [
-            self._dashboard_page, self._live_page, self._controller_page, self._stick_cleaner_page, self._trace_page, self._oscillator_page,
-            self._interference_page, self._sweep_page, self._correlation_page,
-            self._experiments_page, self._compare_page, self._reports_page,
-            self._instruments_page, self._support_page, self._settings_page,
-        ]:
+        for builder in (
+            self._dashboard_page,
+            self._controller_page,
+            self._trace_page,
+            self._reports_page,
+            self._support_page,
+            self._settings_page,
+        ):
             self.stack.addWidget(builder())
         work_layout.addWidget(self.stack, 1)
         root_layout.addWidget(work, 1)
         self._navigate(0)
-
-        emergency = QAction("Emergency Output Off", self)
-        emergency.setShortcut("Ctrl+Shift+Esc")
-        emergency.triggered.connect(self._emergency_off)
-        self.addAction(emergency)
+        self._sync_hardware_controls()
 
     def _navigate(self, index: int) -> None:
         index = max(0, min(index, self.stack.count() - 1))
@@ -358,13 +350,6 @@ class MainWindow(QMainWindow):
         self.top_title.setText(NAV[index])
         for name, button in self.nav_buttons.items():
             button.setChecked(NAV[index] == name)
-        if NAV[index] == "Experiments":
-            self._refresh_experiments()
-        elif NAV[index] == "Compare":
-            self._refresh_compare_sources()
-            self._refresh_compare()
-        elif NAV[index] == "Instruments":
-            self._refresh_capabilities()
         if hasattr(self, "ui_timer"):
             self._schedule_ui_refresh()
 
@@ -396,18 +381,15 @@ class MainWindow(QMainWindow):
             grid.setColumnStretch(column, 1)
         self.cards = {}
         specs = [
-            ("rate","Gamepad rate","MEASURED"), ("interval","Report interval","MEASURED"),
-            ("jitter","Report jitter","CALCULATED"), ("late","Duplicate / late reports","CALCULATED"),
-            ("osc","Oscillator","UNUSED"), ("ppm","Clock error","UNUSED"),
-            ("clock_jitter","Clock jitter","UNUSED"), ("stimulus","Test stimulus","UNUSED"),
+            ("rate", "Observed Raw HID rate", "MEASURED"),
+            ("interval", "Report interval", "MEASURED"),
+            ("jitter", "Report timing jitter", "CALCULATED"),
+            ("late", "Duplicate / late reports", "CALCULATED"),
         ]
-        for i, (key, title, source) in enumerate(specs[:4]):
+        for i, (key, title, source) in enumerate(specs):
             c = MetricCard(title, help_text=METRIC_HELP[key], source=source)
             self.cards[key] = c
             grid.addWidget(c, i // 4, i % 4)
-        for key, title, source in specs[4:]:
-            self.cards[key] = MetricCard(title, help_text=METRIC_HELP[key], source=source)
-            self.cards[key].setVisible(False)
         layout.addLayout(grid)
 
         evidence, evidence_layout = card("RC FILTER / NOISE EVIDENCE")
@@ -421,6 +403,7 @@ class MainWindow(QMainWindow):
         evidence_actions = QHBoxLayout()
         guided = QPushButton("Guided smoothing test")
         guided.clicked.connect(self._run_noise_wizard)
+        self.guided_test_buttons.append(guided)
         open_controller = QPushButton("Open Controller Lab")
         open_controller.clicked.connect(lambda: self._navigate(NAV.index("Controller Lab")))
         export_evidence = QPushButton("Export + open results report")
@@ -456,12 +439,6 @@ class MainWindow(QMainWindow):
             help_text=CHART_HELP["report_interval"],
             x_label="Elapsed controller capture time (s)",
         )
-        self.dashboard_osc_chart = LineChart(
-            "Unused oscillator chart",
-            help_text=CHART_HELP["osc_ppm"],
-            x_label="Elapsed time (s)",
-        )
-        self.dashboard_osc_chart.setVisible(False)
         self.dashboard_noise_chart = LineChart(
             "Raw HID analog output",
             help_text=CHART_HELP["analog_stability"],
@@ -544,7 +521,7 @@ class MainWindow(QMainWindow):
 
         identity, il = card("CONNECTED CONTROLLER")
         identity_row = QHBoxLayout()
-        self.controller_meta = QLabel("No physical controller detected")
+        self.controller_meta = QLabel("No live Raw HID report stream; select a named device to begin")
         self.controller_meta.setObjectName("Good")
         self.controller_meta.setWordWrap(True)
         identity_row.addWidget(self.controller_meta, 1)
@@ -575,7 +552,7 @@ class MainWindow(QMainWindow):
         visual, vl = card("LIVE CONTROLLER STATE")
         self.controller_view = ControllerView()
         vl.addWidget(self.controller_view)
-        self.controller_axes_readout = QLabel("LX +0.0000  •  LY +0.0000  •  RX +0.0000  •  RY +0.0000  •  LT 0.0%  •  RT 0.0%")
+        self.controller_axes_readout = QLabel("LX unavailable  •  LY unavailable  •  RX unavailable  •  RY unavailable  •  LT unavailable  •  RT unavailable")
         self.controller_axes_readout.setObjectName("Muted")
         self.controller_axes_readout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.controller_axes_readout.setWordWrap(True)
@@ -601,7 +578,7 @@ class MainWindow(QMainWindow):
         diagnostics.addWidget(signal_card,0,1)
 
         device_card, device_layout = card("BACKEND / DEVICE DETAILS")
-        self.controller_capability = QLabel("Firmware / battery / USB path: shown only when the active backend can report them.")
+        self.controller_capability = QLabel("No live Raw HID stream. Device details appear only when the selected interface provides them.")
         self.controller_capability.setObjectName("Muted")
         self.controller_capability.setWordWrap(True)
         device_layout.addWidget(self.controller_capability)
@@ -612,19 +589,17 @@ class MainWindow(QMainWindow):
         self.controller_source_combo = QComboBox()
         self.controller_source_combo.setMinimumWidth(420)
         self.controller_source_combo.setToolTip(
-            "Automatic tries XInput, SDL, Raw HID, then DirectInput. Raw HID reads the selected device's USB HID reports."
+            "Only a specifically selected Raw HID device is measured. XInput polling is excluded; a virtual device that exposes a HID interface may still appear and must be independently verified."
         )
         self.controller_source_combo.currentIndexChanged.connect(self._controller_source_changed)
-        refresh_sources = QPushButton("Refresh devices")
+        refresh_sources = QPushButton("Refresh Raw HID")
         refresh_sources.clicked.connect(self._refresh_controller_sources)
-        diagnose_sources = QPushButton("Diagnose backends")
-        diagnose_sources.clicked.connect(self._diagnose_controller_backends)
         source_row.addWidget(self.controller_source_combo, 1)
         source_row.addWidget(refresh_sources)
-        source_row.addWidget(diagnose_sources)
+        self.refresh_controller_button = refresh_sources
         source_layout.addLayout(source_row)
         self.controller_source_status = QLabel(
-            "Automatic mode reads an API state estimate. Select a named Raw HID device for measured USB-report timing."
+            "No controller data is read until a named Raw HID device is selected. Windows HID descriptors do not prove that a device is physical rather than virtual."
         )
         self.controller_source_status.setObjectName("Muted")
         self.controller_source_status.setWordWrap(True)
@@ -642,6 +617,7 @@ class MainWindow(QMainWindow):
         evidence_row = QHBoxLayout()
         guided_test = QPushButton("Guided smoothing test")
         guided_test.clicked.connect(self._run_noise_wizard)
+        self.guided_test_buttons.append(guided_test)
         export_evidence = QPushButton("Export + open results report")
         export_evidence.clicked.connect(self._export_noise_evidence)
         evidence_row.addWidget(guided_test)
@@ -736,6 +712,7 @@ class MainWindow(QMainWindow):
         start_trace = QPushButton("Start synchronized capture")
         start_trace.setObjectName("Primary")
         start_trace.clicked.connect(self._start_trace_capture)
+        self.start_trace_button = start_trace
         export_trace = QPushButton("Export trace evidence")
         export_trace.clicked.connect(self._export_trace_evidence)
         capture_actions.addWidget(start_trace)
@@ -1125,7 +1102,7 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Diagnostics upload failed", message)
 
     def _settings_page(self) -> QWidget:
-        w, layout = page("Settings", "Measurement, safety, data, and performance controls.")
+        w, layout = page("Settings", "A few capture and display controls. Existing sessions and logs are kept.")
         g, gl=card("GENERAL / MEASUREMENT")
         form=QFormLayout()
         self.theme_combo=QComboBox(); self.theme_combo.addItems(["Dark","Light"]); self.theme_combo.setCurrentText(self.theme_name); self.theme_combo.currentTextChanged.connect(self._change_theme)
@@ -1142,29 +1119,21 @@ class MainWindow(QMainWindow):
             "Measured polling rate always comes from observed report timestamps."
         )
         self.late_factor=QDoubleSpinBox(); self.late_factor.setRange(1.01,10.0); self.late_factor.setDecimals(2); self.late_factor.setValue(1.50); self.late_factor.setSuffix(" × reference interval")
-        self.outlier_sigma=QDoubleSpinBox(); self.outlier_sigma.setRange(0.5,20.0); self.outlier_sigma.setDecimals(2); self.outlier_sigma.setValue(4.0); self.outlier_sigma.setSuffix(" σ")
         self.stationary_excursion=QDoubleSpinBox(); self.stationary_excursion.setRange(0.0001,0.5000); self.stationary_excursion.setDecimals(4); self.stationary_excursion.setValue(0.0200)
         self.stationary_excursion.setToolTip("Maximum max−min excursion allowed on every normalized stick axis before the window is considered moving rather than stationary.")
-        self.graph_refresh=QSpinBox(); self.graph_refresh.setRange(33,1000); self.graph_refresh.setValue(100); self.graph_refresh.setSuffix(" ms")
+        self.graph_refresh=QSpinBox(); self.graph_refresh.setRange(100,1000); self.graph_refresh.setValue(200); self.graph_refresh.setSuffix(" ms")
         self.graph_refresh.valueChanged.connect(lambda v: self.ui_timer.setInterval(v) if hasattr(self,"ui_timer") else None)
         form.addRow("Theme",self.theme_combo)
         form.addRow("Default baseline duration",self.baseline_seconds)
         form.addRow("Timing reference",self.timing_reference_mode)
         form.addRow("Configured reference rate",self.expected_rate)
         form.addRow("Late-report threshold",self.late_factor)
-        form.addRow("Oscillator outlier threshold",self.outlier_sigma)
         form.addRow("Stationary stick max excursion",self.stationary_excursion)
         form.addRow("Graph refresh interval",self.graph_refresh)
-        gl.addLayout(form); layout.addWidget(g)
-
-        s, sl=card("INSTRUMENT SAFETY LIMITS")
-        sf=QFormLayout()
-        self.max_freq=QDoubleSpinBox(); self.max_freq.setRange(1,1e9); self.max_freq.setValue(self.safety_limits.max_frequency_hz); self.max_freq.setSuffix(" Hz")
-        self.max_amp=QDoubleSpinBox(); self.max_amp.setRange(.001,100); self.max_amp.setValue(self.safety_limits.max_amplitude_vpp); self.max_amp.setSuffix(" Vpp")
-        self.max_offset=QDoubleSpinBox(); self.max_offset.setRange(.001,100); self.max_offset.setValue(self.safety_limits.max_abs_offset_v); self.max_offset.setSuffix(" V")
-        sf.addRow("Maximum frequency",self.max_freq); sf.addRow("Maximum amplitude",self.max_amp); sf.addRow("Maximum absolute offset",self.max_offset)
+        gl.addLayout(form)
         save=QPushButton("Save Settings"); save.clicked.connect(self._save_settings)
-        sl.addLayout(sf); sl.addWidget(save,alignment=Qt.AlignmentFlag.AlignRight); layout.addWidget(s)
+        gl.addWidget(save,alignment=Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(g)
 
         dbcard, dbl=card("DATA")
         label=QLabel(f"SQLite database:\n{self.db.path}\n\nRaw samples are retained and can be exported from Reports.")
@@ -1173,14 +1142,13 @@ class MainWindow(QMainWindow):
 
     def _clear_controller_state(self, identity: str) -> None:
         """Prevent samples from one acquisition mode being shown as another."""
+        self.controller_connected = False
         self.controller_ts.clear()
         self.controller_samples.clear()
         self.controller_sources.clear()
         self.controller_raw_report_hex.clear()
         self.controller_metadata = {}
         self.duplicate_raw_reports = 0
-        self.noise_test_result = None
-        self.noise_test_results.clear()
         self.noise_capture_timestamps.clear()
         self.noise_capture_samples.clear()
         self.noise_capture_raw_reports.clear()
@@ -1188,24 +1156,45 @@ class MainWindow(QMainWindow):
         self.trace_controller_samples.clear()
         self.trace_controller_raw_reports.clear()
         if hasattr(self, "noise_test_status"):
-            self.noise_test_status.setText("No attribution capture has been run.")
+            if self.noise_test_results:
+                self.noise_test_status.setText(
+                    f"{len(self.noise_test_results)} completed evidence capture(s) retained; each includes its own device metadata."
+                )
+            else:
+                self.noise_test_status.setText("No attribution capture has been run.")
         while True:
             try:
                 self.controller_queue.get_nowait()
             except queue.Empty:
                 break
         self.controller_meta.setText(identity)
+        self.controller_view.set_state({}, "")
         self.controller_axes_readout.setText(
             "LX unavailable  •  LY unavailable  •  RX unavailable  •  RY unavailable  •  LT unavailable  •  RT unavailable"
         )
         self.axis_noise.setText("Analog noise unavailable until hardware samples arrive")
         self.button_capability.setText("No decoded hardware input sample")
-        self.controller_capability.setText("No active physical controller/backend")
+        self.controller_capability.setText("No live Raw HID stream selected; physical authenticity cannot be certified from HID identity alone.")
+        self._sync_hardware_controls()
 
     def _start_controller_acquisition(self) -> None:
         if self.controller_acquisition:
             self.controller_acquisition.stop()
-        identity = self.controller_source_info.get("product_string") or self.controller_source_kind
+            self.controller_acquisition = None
+        if self._gui_resource_limit_triggered:
+            self.controller_source_status.setText(
+                "Hardware reader blocked by the Windows UI-resource safety stop. Close and reopen RcmTool before testing."
+            )
+            return
+        if self.controller_source_kind != "raw_hid" or not self.controller_source_path:
+            self._clear_controller_state("No named Raw HID device selected")
+            self.controller_source_status.setText(
+                "Waiting for a named Raw HID device. Connect by USB, select its entry, and confirm reports arrive. HID descriptors alone cannot certify physical hardware."
+            )
+            self.hardware_status.setText("HARDWARE • waiting for named Raw HID selection")
+            self.hardware_status.setObjectName("Muted")
+            return
+        identity = self.controller_source_info.get("product_string") or "Selected Raw HID device"
         self._clear_controller_state(str(identity))
         self.controller_acquisition = ControllerAcquisition(
             self.controller_queue.put,
@@ -1215,15 +1204,12 @@ class MainWindow(QMainWindow):
             hid_info=self.controller_source_info,
         )
         self.controller_acquisition.start()
-        if self.controller_source_kind == "raw_hid":
-            name = self.controller_source_info.get("product_string") or "selected device"
-            self.controller_source_status.setText(
-                f"Raw HID selected: {name}. The reader drains the available HID queue and timestamps each report at host arrival."
-            )
-        else:
-            self.controller_source_status.setText(
-                "Automatic mode active: XInput/SDL/DirectInput are host-poll estimates. Select a named Raw HID device to measure report cadence."
-            )
+        name = self.controller_source_info.get("product_string") or "selected device"
+        self.controller_source_status.setText(
+            f"Selected Raw HID entry: {name}. Waiting for reports. Windows cannot certify whether this HID interface is physical or virtual."
+        )
+        self.hardware_status.setText(f"HARDWARE • waiting for Raw HID reports from {name}")
+        self.hardware_status.setObjectName("Good")
 
     def _refresh_controller_sources(self) -> None:
         if not hasattr(self, "controller_source_combo"):
@@ -1232,7 +1218,7 @@ class MainWindow(QMainWindow):
         combo = self.controller_source_combo
         combo.blockSignals(True)
         combo.clear()
-        combo.addItem("Automatic — XInput → SDL → Raw HID → DirectInput", {"kind": "automatic"})
+        combo.addItem("Select a named Raw HID device…", {"kind": "none"})
         raw_devices = ControllerAcquisition.enumerate_raw_hid_devices()
         for info in raw_devices:
             path = info.get("path")
@@ -1247,11 +1233,9 @@ class MainWindow(QMainWindow):
             )
         if not raw_devices:
             combo.addItem(
-                "Raw HID — no device detected (connect a controller and refresh)",
-                {"kind": "raw_hid", "path": None, "info": {}},
+                "No Raw HID device detected — connect USB and refresh",
+                {"kind": "none"},
             )
-        combo.blockSignals(False)
-
         index = 0
         if selected_path is not None:
             for i in range(combo.count()):
@@ -1260,12 +1244,17 @@ class MainWindow(QMainWindow):
                     index = i
                     break
         combo.setCurrentIndex(index)
-        self._controller_source_changed(index)
+        combo.blockSignals(False)
+        selected_data = combo.itemData(index) or {}
+        if selected_path and selected_data.get("path") == selected_path:
+            self._start_controller_acquisition()
+        else:
+            self._controller_source_changed(index)
         if not raw_devices:
             backend_available, backend_status = ControllerAcquisition.raw_hid_backend_status()
             if backend_available:
                 self.controller_source_status.setText(
-                    "No Raw HID controller was found. Automatic mode is still available; connect the controller by USB and refresh."
+                    "No Raw HID device was found. Connect the controller directly by USB, then refresh. XInput-only and virtual gamepad states are excluded; a virtual HID device may still appear."
                 )
             else:
                 self.controller_source_status.setText(backend_status)
@@ -1289,41 +1278,63 @@ class MainWindow(QMainWindow):
     def _controller_source_changed(self, _index: int = 0) -> None:
         if not hasattr(self, "controller_source_combo"):
             return
-        data = self.controller_source_combo.currentData() or {"kind": "automatic"}
-        self.controller_source_kind = data.get("kind", "automatic")
+        data = self.controller_source_combo.currentData() or {"kind": "none"}
+        self.controller_source_kind = data.get("kind", "none")
         self.controller_source_path = data.get("path")
         self.controller_source_info = dict(data.get("info") or {})
-        if self.controller_source_kind == "raw_hid":
-            product = self.controller_source_info.get("product_string") or "selected device"
-            self.controller_source_status.setText(
-                f"Raw HID ready: {product}. Hardware acquisition is always active when the app is running."
-            )
-        elif self.controller_source_kind == "automatic":
-            self.controller_source_status.setText(
-                "Automatic backend selection. Hardware acquisition is always active when the app is running."
-            )
         if not hasattr(self, "sample_timer"):
             return
-        if self.capture_active:
-            self.controller_source_status.setText("Stop Capture before changing the controller source.")
-        else:
-            self._start_controller_acquisition()
+        self._start_controller_acquisition()
+
+    def _has_measured_raw_hid(self) -> bool:
+        return bool(
+            self.controller_source_kind == "raw_hid"
+            and self.controller_source_path
+            and self.controller_connected
+            and self.controller_metadata.get("evidence_class") == "measured-host-observed-raw-hid"
+            and self.controller_ts
+        )
+
+    def _sync_hardware_controls(self) -> None:
+        ready = self._has_measured_raw_hid() and not self._gui_resource_limit_triggered
+        source_enabled = (
+            not self.capture_active
+            and not self.noise_test_active
+            and not self.trace_capture_active
+            and not self._gui_resource_limit_triggered
+        )
+        for control_name in ("controller_source_combo", "refresh_controller_button"):
+            control = getattr(self, control_name, None)
+            if control is not None and control.isEnabled() != source_enabled:
+                control.setEnabled(source_enabled)
+        if hasattr(self, "capture_button"):
+            enabled = self.capture_active or ready
+            if self.capture_button.isEnabled() != enabled:
+                self.capture_button.setEnabled(enabled)
+        for button in getattr(self, "guided_test_buttons", []):
+            enabled = ready and not self.noise_test_active
+            if button.isEnabled() != enabled:
+                button.setEnabled(enabled)
+        if hasattr(self, "start_trace_button"):
+            enabled = ready and not self.trace_capture_active
+            if self.start_trace_button.isEnabled() != enabled:
+                self.start_trace_button.setEnabled(enabled)
 
     def _toggle_capture(self) -> None:
         self._stop_capture() if self.capture_active else self._start_capture()
 
     def _start_noise_test(self, capture_kind: str) -> None:
-        if self.controller_source_kind != "raw_hid" or not self.controller_source_path:
+        if not self._has_measured_raw_hid():
             QMessageBox.information(
                 self,
-                "Raw HID required",
-                "Connect a controller, refresh devices, and select a named Raw HID device before running attribution evidence.",
+                "Live Raw HID reports required",
+                "Select a named Raw HID device in Controller Lab and wait until live reports appear before starting this test.",
             )
             return
         if self.noise_test_active:
             return
-        self.smoothing_window.setValue(1)
         self.noise_test_active = True
+        self._sync_hardware_controls()
         self.noise_test_kind = capture_kind
         self.noise_test_deadline = time.monotonic() + (10.0 if capture_kind == "neutral" else 20.0)
         self.noise_test_start_timestamp_ns = time.perf_counter_ns()
@@ -1338,11 +1349,11 @@ class MainWindow(QMainWindow):
         self._add_event("noise_attribution_started", {"capture_kind": capture_kind})
 
     def _run_noise_wizard(self) -> None:
-        if self.controller_source_kind != "raw_hid" or not self.controller_source_path:
+        if not self._has_measured_raw_hid():
             QMessageBox.information(
                 self,
-                "Raw HID required",
-                "Connect a controller, refresh devices, and select a named Raw HID device before running the guided test.",
+                "Live Raw HID reports required",
+                "In Controller Lab, refresh devices, select the named HID entry, and wait for live reports before opening the test wizard. Verify the device identity independently.",
             )
             return
         if self.noise_test_active or self.noise_wizard is not None:
@@ -1358,18 +1369,19 @@ class MainWindow(QMainWindow):
 
         intro = QWidget()
         intro_layout = QVBoxLayout(intro)
-        intro_title = QLabel("Step 1 of 4 • Confirm the physical test")
+        intro_title = QLabel("Step 1 of 4 • Confirm the hardware setup")
         intro_title.setObjectName("Eyebrow")
         intro_layout.addWidget(intro_title)
         intro_text = QLabel(
             "This wizard runs only against the selected Raw HID device. It does not simulate input, inject noise, "
             "or modify the controller.\n\n"
             f"Selected source: {self.controller_source_combo.currentText()}\n"
-            "Before starting: keep one physical controller connected, do not change USB ports or input modes, and "
+            "Before starting: verify the selected VID/PID and product against your controller; HID descriptors cannot rule out a virtual device. Keep one controller connected, do not change USB ports or input modes, and "
             "close other tools that read the same controller.\n\n"
             "Step 2 leaves the sticks untouched for 10 seconds. Step 3 uses one stick: slowly center → full deflection "
             "→ center, then one quick reversal, for 20 seconds. The export contains every dedicated-test timestamp, "
-            "normalized sample, and Raw HID report byte captured during each step."
+            "normalized sample, and Raw HID report byte captured during each step. If no session is already recording, "
+            "the wizard starts and saves one automatically in the local database."
         )
         intro_text.setWordWrap(True)
         intro_layout.addWidget(intro_text)
@@ -1439,6 +1451,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(buttons)
 
         state = {"neutral_done": False, "movement_done": False}
+        wizard_capture = {"started": False}
         self.noise_wizard = {
             "dialog": dialog,
             "state": state,
@@ -1467,6 +1480,11 @@ class MainWindow(QMainWindow):
 
         def start_neutral() -> None:
             if self.noise_test_active:
+                return
+            if not self.capture_active:
+                self._start_capture()
+                wizard_capture["started"] = self.capture_active
+            if not self.capture_active:
                 return
             self._start_noise_test("neutral")
             neutral_start.setEnabled(False)
@@ -1503,8 +1521,17 @@ class MainWindow(QMainWindow):
         def close_wizard() -> None:
             if self.noise_test_active:
                 self.noise_test_active = False
-                self.noise_test_status.setText("Guided capture cancelled before completion.")
+                self._sync_hardware_controls()
+                self.noise_test_status.setText(
+                    f"Capture interrupted after {len(self.noise_capture_samples):,} samples. Raw session data was retained; this partial phase is not scored."
+                )
+                self._add_event(
+                    "noise_attribution_interrupted",
+                    {"capture_kind": self.noise_test_kind, "sample_count": len(self.noise_capture_samples)},
+                )
             self.noise_wizard = None
+            if wizard_capture["started"] and self.capture_active:
+                self._stop_capture()
 
         dialog.finished.connect(lambda _result: close_wizard())
         update_navigation()
@@ -1517,6 +1544,7 @@ class MainWindow(QMainWindow):
         window_samples = list(self.noise_capture_samples)
         window_reports = list(self.noise_capture_raw_reports)
         self.noise_test_active = False
+        self._sync_hardware_controls()
         if not window_samples:
             self.noise_test_result = None
             self.noise_test_status.setText(
@@ -1531,17 +1559,19 @@ class MainWindow(QMainWindow):
             source_label=self.controller_source_combo.currentText(),
             device_metadata=self.controller_metadata,
             stationary_excursion=self.stationary_excursion.value(),
-            reference_rate_hz=self.expected_rate.value(),
+            reference_rate_hz=self._configured_reference_rate_hz(),
         )
         result = self.noise_test_result
-        self.noise_test_results[self.noise_test_kind] = result
+        device_name = result.get("device_metadata", {}).get("controller_name") or "HID"
+        capture_key = f"{self.noise_test_kind} • {device_name} • {result.get('captured_utc', '')}"
+        self.noise_test_results[capture_key] = result
         quality = result.get("capture_quality", {})
         stationary = result.get("stationary_check", {}).get("is_stationary", False)
         stationarity_text = "stationary check passed" if stationary else "movement exceeded stationary threshold"
         self.noise_test_status.setText(
             f"Complete • {result['sample_count']} Raw HID samples • "
             f"{result['raw_hid_report_count']} reports • {result['sample_rate_hz']:.2f} reports/s • "
-            f"{stationarity_text} • data quality {quality.get('score_percent', 0)}%."
+            f"{stationarity_text} • integrity checks: {quality.get('label', 'review required')}."
         )
         self._add_event("noise_attribution_completed", result)
         if self.noise_wizard is not None:
@@ -1556,7 +1586,7 @@ class MainWindow(QMainWindow):
             else:
                 self.noise_wizard["movement_status"].setText(
                     f"Complete • {result['sample_count']} samples • {result['sample_rate_hz']:.2f} reports/s • "
-                    f"data quality {quality.get('score_percent', 0)}%."
+                    f"integrity checks: {quality.get('label', 'review required')}."
                 )
             self.noise_wizard["next"].setEnabled(True)
             captures = self.noise_test_results
@@ -1633,11 +1663,11 @@ class MainWindow(QMainWindow):
     def _start_trace_capture(self) -> None:
         if self.trace_capture_active or (self.trace_worker is not None and self.trace_worker.isRunning()):
             return
-        if self.controller_source_kind != "raw_hid" or not self.controller_source_path:
+        if not self._has_measured_raw_hid():
             QMessageBox.information(
                 self,
-                "Raw HID required",
-                "Select a named Raw HID device first so the electrical trace can be compared with controller reports.",
+                "Live Raw HID reports required",
+                "Select a named Raw HID device and confirm reports are arriving before starting a synchronized trace. Verify the device identity independently.",
             )
             return
         executable = self.trace_executable.text().strip() or "sigrok-cli"
@@ -1664,6 +1694,7 @@ class MainWindow(QMainWindow):
         )
         self.trace_capture_result = None
         self.trace_capture_active = True
+        self._sync_hardware_controls()
         self.trace_capture_start_timestamp_ns = time.perf_counter_ns()
         self.trace_controller_timestamps.clear()
         self.trace_controller_samples.clear()
@@ -1715,7 +1746,7 @@ class MainWindow(QMainWindow):
                     source_label=self.controller_source_combo.currentText(),
                     device_metadata=self.controller_metadata,
                     stationary_excursion=self.stationary_excursion.value(),
-                    reference_rate_hz=self.expected_rate.value(),
+                    reference_rate_hz=self._configured_reference_rate_hz(),
                 )
                 trace_result["controller_raw_hid"] = hid_result
             else:
@@ -1735,6 +1766,7 @@ class MainWindow(QMainWindow):
             self.trace_capture_status.setText(f"Trace was captured but could not be analyzed: {exc}")
         finally:
             self.trace_worker = None
+            self._sync_hardware_controls()
 
     def _trace_capture_failed(self, message: str) -> None:
         self.trace_capture_active = False
@@ -1742,6 +1774,7 @@ class MainWindow(QMainWindow):
         self.trace_capture_status.setText(f"sigrok capture failed: {message}")
         self._add_event("electrical_trace_failed", {"message": message})
         self.trace_worker = None
+        self._sync_hardware_controls()
 
     def _export_trace_evidence(self) -> None:
         if not self.trace_capture_result:
@@ -1767,26 +1800,31 @@ class MainWindow(QMainWindow):
     def _start_capture(self) -> None:
         if self.capture_active:
             return
+        if not self._has_measured_raw_hid():
+            QMessageBox.information(
+                self,
+                "Live Raw HID reports required",
+                "Select a named Raw HID device and wait for live reports before recording. XInput/host polling is excluded; a virtual HID device still requires independent verification.",
+            )
+            return
         mode="hardware"
         self.session_id=self.db.create_session(
             "RcmTool capture",mode,__version__,
             {
-                "nominal_frequency_hz":self.nominal_freq.value(),
                 "timing_reference_mode":self.timing_reference_mode.currentData(),
                 "configured_reference_rate_hz":self.expected_rate.value(),
                 "host_timer_resolution_ns":self.host_timer_resolution_ns,
                 "stationary_excursion_threshold":self.stationary_excursion.value(),
                 "late_factor":self.late_factor.value(),
-                "oscillator_outlier_sigma":self.outlier_sigma.value(),
             },
         )
         self.capture_active=True
         self.capture_button.setText("Stop Recording")
+        self._sync_hardware_controls()
         self._add_event("capture_started",{
             "mode":mode,
             "timing_reference_mode":self.timing_reference_mode.currentData(),
             "configured_reference_rate_hz":self.expected_rate.value(),
-            "nominal_frequency_hz":self.nominal_freq.value(),
             "host_timer_resolution_ns":self.host_timer_resolution_ns,
         })
 
@@ -1803,11 +1841,17 @@ class MainWindow(QMainWindow):
         self.db.flush()
         self.capture_active=False
         self.capture_button.setText("Record Session")
+        if not self._gui_resource_limit_triggered:
+            self.controller_source_combo.setEnabled(True)
+            self.refresh_controller_button.setEnabled(True)
+        self._sync_hardware_controls()
 
     def _audit_gui_resource_usage(self) -> None:
-        """Record rising Windows GUI-object use before the USER quota is hit."""
+        """Record startup resource growth and stop capture before Windows exhausts GUI handles."""
         now = time.monotonic()
-        if now - self._last_gui_resource_audit < 5.0:
+        in_startup_window = now < self._resource_startup_until
+        audit_interval = 1.0 if in_startup_window else 5.0
+        if now - self._last_gui_resource_audit < audit_interval:
             return
         self._last_gui_resource_audit = now
         counts = windows_gui_resource_counts()
@@ -1817,26 +1861,88 @@ class MainWindow(QMainWindow):
         user_objects = counts["user_objects"]
         previous = self._last_gui_resource_count
         self._last_gui_resource_count = user_objects
-        if user_objects < 1000 and (previous is None or previous < 1000):
+        timers = self.findChildren(QTimer)
+        widget_types = Counter(type(widget).__name__ for widget in self.findChildren(QWidget))
+        if not self._startup_gui_snapshot_logged:
+            support_log_event(
+                "windows_gui_startup_snapshot",
+                user_objects=user_objects,
+                gdi_objects=counts["gdi_objects"],
+                qt_widget_count=sum(widget_types.values()),
+                qt_widget_types=dict(widget_types.most_common(12)),
+                qt_timer_objects=len(timers),
+                qt_timers_active=sum(timer.isActive() for timer in timers),
+                top_level_widgets=len(QApplication.topLevelWidgets()),
+                pages=list(NAV),
+            )
+            self._startup_gui_snapshot_logged = True
+        if user_objects < 1000 and (previous is None or previous < 1000) and not in_startup_window:
             return
 
-        timers = self.findChildren(QTimer)
         support_log_event(
             "windows_gui_resource_snapshot",
+            phase="startup" if in_startup_window else "runtime",
             user_objects=user_objects,
             user_object_delta=(user_objects - previous) if previous is not None else None,
             gdi_objects=counts["gdi_objects"],
+            qt_widget_count=sum(widget_types.values()),
+            qt_widget_types=dict(widget_types.most_common(12)),
             qt_timer_objects=len(timers),
             qt_timers_active=sum(timer.isActive() for timer in timers),
             top_level_widgets=len(QApplication.topLevelWidgets()),
             current_page=NAV[self.stack.currentIndex()] if hasattr(self, "stack") else "startup",
         )
-        if user_objects >= 8000 and hasattr(self, "error_banner"):
-            self.error_banner.setText(
-                f"Windows UI resource use is critically high ({user_objects:,} USER objects). "
-                "Stop testing, save/export if possible, then close and reopen RcmTool."
+        user_object_delta = (user_objects - previous) if previous is not None else 0
+        rapid_growth = user_object_delta >= 1000
+        resource_limit = user_objects >= 3500 or rapid_growth
+        if resource_limit and not self._gui_resource_limit_triggered:
+            self._gui_resource_limit_triggered = True
+            was_capture_active = self.capture_active
+            if self.controller_acquisition is not None:
+                self.controller_acquisition.stop()
+                self.controller_acquisition = None
+            if self.noise_test_active:
+                self.noise_test_active = False
+                self.noise_test_status.setText(
+                    "Stopped for Windows UI safety. This partial test is not scored; export only if clearly marked incomplete."
+                )
+                self._add_event(
+                    "noise_attribution_interrupted",
+                    {
+                        "capture_kind": self.noise_test_kind,
+                        "sample_count": len(self.noise_capture_samples),
+                        "reason": "windows_gui_resource_safety_stop",
+                    },
+                )
+            if self.noise_wizard is not None:
+                self.noise_wizard["dialog"].reject()
+            if self.capture_active:
+                self._stop_capture()
+            for timer_name in ("sample_timer", "ui_timer"):
+                timer = getattr(self, timer_name, None)
+                if timer is not None:
+                    timer.stop()
+            if hasattr(self, "controller_source_combo"):
+                self.controller_source_combo.setEnabled(False)
+                self.refresh_controller_button.setEnabled(False)
+            self._sync_hardware_controls()
+            self.capture_button.setEnabled(False)
+            self.hardware_status.setText("HARDWARE • stopped by UI-resource safety limit")
+            support_log_event(
+                "windows_gui_resource_safety_stop",
+                user_objects=user_objects,
+                user_object_delta=user_object_delta,
+                rapid_growth=rapid_growth,
+                stopped_capture=was_capture_active,
+                page=NAV[self.stack.currentIndex()],
             )
-            self.error_banner.show()
+            if hasattr(self, "error_banner"):
+                self.error_banner.setText(
+                    f"Safety stop at {user_objects:,} Windows UI objects"
+                    + (f" ({user_object_delta:+,} since the last check). " if rapid_growth else ". ")
+                    + "Controller reads and graph refresh are paused. Any active recording was finalized; existing database and support data are preserved. Close and reopen RcmTool before testing again."
+                )
+                self.error_banner.show()
 
     def _sample_tick(self) -> None:
         self._audit_gui_resource_usage()
@@ -1854,18 +1960,53 @@ class MainWindow(QMainWindow):
                 metadata = event_payload.get("metadata") or {}
                 evidence_class = metadata.get("evidence_class")
                 if evidence_class == "measured-host-observed-raw-hid":
-                    message = "Controller connected: Raw HID measured report stream active."
+                    self.controller_connected = False
+                    message = "Raw HID interface opened; waiting for its first report."
+                    self.hardware_status.setText("HARDWARE • waiting for first Raw HID report")
+                    self.hardware_status.setObjectName("Muted")
                 else:
-                    message = (
-                        "Controller connected: API state polling active; this is not a bus-rate measurement."
-                    )
+                    self.controller_connected = False
+                    message = "Non-Raw-HID source ignored; it cannot be used as Raw HID report evidence."
                 self.controller_source_status.setText(
                     message + f" Source: {event_payload.get('source', 'hardware input')}"
                 )
             elif event_name == "controller_disconnected":
+                self.controller_connected = False
                 self.controller_source_status.setText(
                     "Controller disconnected or stopped reporting. Check the cable/mode, then refresh devices."
                 )
+                self.hardware_status.setText("HARDWARE • selected Raw HID device stopped reporting")
+                self.hardware_status.setObjectName("Warn")
+                if self.noise_test_active:
+                    sample_count = len(self.noise_capture_samples)
+                    self.noise_test_active = False
+                    self.noise_test_status.setText(
+                        f"Interrupted by disconnect after {sample_count:,} samples. This partial phase is not scored; recorded session data is retained."
+                    )
+                    self._add_event(
+                        "noise_attribution_interrupted",
+                        {
+                            "capture_kind": self.noise_test_kind,
+                            "sample_count": sample_count,
+                            "reason": "controller_disconnected",
+                        },
+                    )
+                if self.noise_wizard is not None:
+                    self.noise_wizard["dialog"].reject()
+                if self.capture_active:
+                    self._stop_capture()
+                self.controller_view.set_state({}, "")
+                last_device = self.controller_metadata.get("controller_name") or self.controller_source_info.get("product_string") or "Selected Raw HID device"
+                self.controller_meta.setText(f"Last observed: {last_device} • disconnected; values below are not live")
+                self.controller_axes_readout.setText(
+                    "LX unavailable  •  LY unavailable  •  RX unavailable  •  RY unavailable  •  LT unavailable  •  RT unavailable"
+                )
+                self.axis_noise.setText(
+                    "No live Raw HID stream. Previously captured samples remain available in the saved session."
+                )
+                self.button_capability.setText("No live decoded input; previous session data is retained.")
+                self.controller_capability.setText("Selected Raw HID device stopped reporting; refresh or reconnect to resume.")
+                self._sync_hardware_controls()
         # Drain enough queued hardware reports for high-rate controllers so this
         # handoff queue does not become an artificial polling ceiling.
         for _ in range(10000):
@@ -1907,8 +2048,20 @@ class MainWindow(QMainWindow):
             return
         self.controller_ts.append(int(timestamp_ns)); self.controller_samples.append(dict(sample)); self.controller_sources.append((source,quality))
         self.controller_raw_report_hex.append(raw_hex)
-        if metadata and metadata != self.controller_metadata:
+        metadata_changed = bool(metadata and metadata != self.controller_metadata)
+        if metadata_changed:
             self.controller_metadata=dict(metadata)
+        became_live = (
+            self.controller_metadata.get("evidence_class") == "measured-host-observed-raw-hid"
+            and not self.controller_connected
+        )
+        if self.controller_metadata.get("evidence_class") == "measured-host-observed-raw-hid":
+            self.controller_connected = True
+            if became_live:
+                self.hardware_status.setText("HARDWARE • Raw HID reports received; identity unverified")
+                self.hardware_status.setObjectName("Good")
+        if (metadata_changed or became_live) and self.controller_connected:
+            self._sync_hardware_controls()
         if duplicate_raw:
             self.duplicate_raw_reports += 1
         if self.baseline_active: self.baseline_controller_ts.append(int(timestamp_ns))
@@ -1950,84 +2103,48 @@ class MainWindow(QMainWindow):
             late_factor=self.late_factor.value(),
         )
 
-        osc_times_all=list(self.osc_ts)
-        osc_freq_all=list(self.osc_freq)
-        osc_duty_all=list(self.osc_duty)
-        osc_count=min(3000,len(osc_times_all),len(osc_freq_all))
-        osc_times=osc_times_all[-osc_count:] if osc_count else []
-        freqs=osc_freq_all[-osc_count:] if osc_count else []
-        duties=[float(value) for value in osc_duty_all[-osc_count:] if value is not None] if osc_count else []
-        nominal=self.nominal_freq.value()
-        self.current_osc=oscillator_metrics(
-            freqs,nominal,duty_cycles_percent=duties,outlier_sigma=self.outlier_sigma.value()
-        )
-        self.current_corr=self._aligned_correlation(
-            timestamps,osc_times,freqs,nominal,expected_interval_ms=expected_override
-        )
+        nominal = 12_000_000.0  # Retained only for the legacy, non-visible report schema.
+        osc_times: list[int] = []
+        freqs: list[float] = []
+        self.current_osc = oscillator_metrics([], nominal)
+        self.current_corr = None
         t,o=self.current_timing,self.current_osc
         current_page = NAV[self.stack.currentIndex()] if hasattr(self, "stack") else "Dashboard"
+        if current_page not in {"Dashboard", "Controller Lab"}:
+            return
 
         reference_name="configured" if expected_override is not None else "measured median"
-        osc_source="MEASURED" if self.measurement_instrument is not None else "UNAVAILABLE"
+        osc_source="UNAVAILABLE"
         controller_samples_available = t.sample_count > 0
         evidence_class=str(self.controller_metadata.get("evidence_class") or "unavailable")
         rate_source="MEASURED" if evidence_class == "measured-host-observed-raw-hid" else "ESTIMATE"
+        live_raw_hid = (
+            self.controller_connected
+            and evidence_class == "measured-host-observed-raw-hid"
+            and controller_samples_available
+        )
 
         if current_page == "Dashboard":
             self.cards["rate"].set_value(
-                f"{t.effective_rate_hz:,.2f} Hz" if controller_samples_available else "Unavailable",
-                f"{t.sample_count:,} observed report timestamps" if controller_samples_available else "No controller reports received",
+                f"{t.effective_rate_hz:,.2f} Hz" if live_raw_hid else "Unavailable",
+                f"{t.sample_count:,} live report timestamps" if live_raw_hid else "No active Raw HID stream; prior session data remains saved",
                 source=rate_source,
             )
             self.cards["interval"].set_value(
-                f"{t.mean_interval_ms:.3f} ms" if controller_samples_available else "Unavailable",
-                f"min {t.min_interval_ms:.3f} • max {t.max_interval_ms:.3f}" if controller_samples_available else "Requires controller reports",
+                f"{t.mean_interval_ms:.3f} ms" if live_raw_hid else "Unavailable",
+                f"min {t.min_interval_ms:.3f} • max {t.max_interval_ms:.3f}" if live_raw_hid else "Requires an active Raw HID stream",
                 source=rate_source,
             )
             self.cards["jitter"].set_value(
-                f"{t.rms_deviation_ms:.3f} ms" if t.sample_count >= 2 else "Unavailable",
-                f"RMS vs {reference_name} {reference_ms:.3f} ms • p2p {t.peak_to_peak_jitter_ms:.3f}" if t.sample_count >= 2 else "Requires at least two controller reports",
-                source="CALCULATED",
-            )
-            self.cards["osc"].set_value(
-                f"{o.mean_frequency_hz/1e6:.6f} MHz" if o.sample_count else "Unavailable",
-                f"{o.sample_count:,} frequency samples • source-limited precision" if o.sample_count else "No compatible frequency samples",
-                source=osc_source,
-            )
-            self.cards["ppm"].set_value(
-                f"{o.frequency_error_ppm:+.4f} ppm" if o.sample_count else "Unavailable",
-                f"{o.frequency_error_hz:+.3f} Hz vs nominal" if o.sample_count else "Requires measured frequency + nominal reference",
-                source="CALCULATED",
-            )
-            self.cards["clock_jitter"].set_value(
-                f"{o.rms_period_jitter_s*1e12:.3f} ps" if o.sample_count else "Unavailable",
-                "Derived from reciprocal frequency samples; not direct phase jitter",
+                f"{t.rms_deviation_ms:.3f} ms" if live_raw_hid and t.sample_count >= 2 else "Unavailable",
+                f"RMS vs {reference_name} {reference_ms:.3f} ms • p2p {t.peak_to_peak_jitter_ms:.3f}" if live_raw_hid and t.sample_count >= 2 else "Requires an active Raw HID stream with at least two reports",
                 source="CALCULATED",
             )
             self.cards["late"].set_value(
-                str(t.late_reports) if controller_samples_available else "Unavailable",
-                f"missing estimate {t.missing_reports_estimate} • raw duplicates {self.duplicate_raw_reports}" if controller_samples_available else "Requires controller reports",
+                str(t.late_reports) if live_raw_hid else "Unavailable",
+                f"missing estimate {t.missing_reports_estimate} • raw duplicates {self.duplicate_raw_reports}" if live_raw_hid else "Requires an active Raw HID stream",
                 source="CALCULATED",
             )
-
-        try:
-            output=self.instrument.output_enabled()
-        except Exception:
-            output=False
-        if current_page == "Dashboard":
-            generator_available = bool(getattr(getattr(self.instrument, "capabilities", None), "generator_output", False))
-            self.cards["stimulus"].set_value(
-                ("ON" if output else "OFF") if generator_available else "Unavailable",
-                f"{self.stim_freq.value():g} Hz • {self.stim_amp.value():g} Vpp" if generator_available else "No physical generator connected",
-                source="STATE",
-            )
-        if current_page == "Interference Lab":
-            generator_name=self.generator_id.text().removeprefix("Generator: ").split(" • ")[0] if hasattr(self,"generator_id") else self.instrument.identify()
-            self.interference_status.setText(f"{generator_name} • OUTPUT {'ON' if output else 'OFF'}")
-            if hasattr(self,"generator_id"):
-                self.generator_id.setText(f"Generator: {generator_name} • OUTPUT {'ON' if output else 'OFF'}")
-            self.output_button.setChecked(output)
-            self.output_button.setText("Disable Output" if output else "Enable Output")
 
         deviations=[value-reference_ms for value in intervals] if intervals else []
         ppm_values=[(f-nominal)/nominal*1e6 for f in freqs] if nominal>0 else []
@@ -2036,11 +2153,11 @@ class MainWindow(QMainWindow):
 
         if current_page == "Dashboard":
             self.dashboard_timing_chart.set_series(
-                [("interval ms",intervals[-500:],"#6AA2FF")],
-                x_values=interval_elapsed[-500:],
+                [("interval ms",intervals[-500:],"#6AA2FF")] if live_raw_hid else [],
+                x_values=interval_elapsed[-500:] if live_raw_hid else [],
                 x_label="Elapsed controller capture time (s)",
             )
-            dashboard_samples = list(self.controller_samples)[-500:]
+            dashboard_samples = list(self.controller_samples)[-500:] if live_raw_hid else []
             dashboard_sample_ts = list(self.controller_ts)[-len(dashboard_samples):] if dashboard_samples else []
             dashboard_elapsed = self._elapsed_seconds(
                 dashboard_sample_ts,
@@ -2156,7 +2273,7 @@ class MainWindow(QMainWindow):
                 timing=t,
             )
 
-        if current_page == "Controller Lab" and samples:
+        if current_page == "Controller Lab" and samples and self.controller_connected:
             last=samples[-1]
             visual_source=self.controller_sources[-1][0] if self.controller_sources else ""
             detected_family=detect_controller_family(self.controller_metadata,visual_source)
@@ -2261,16 +2378,11 @@ class MainWindow(QMainWindow):
         timing_source=self.controller_sources[-1][1] if self.controller_sources else "none"
         if current_page == "Dashboard":
             self.quality_label.setText(
-                f"Controller samples {t.sample_count:,} • duration {t.duration_s:.3f} s • timing source {timing_source} • "
+                f"Stream {'LIVE' if live_raw_hid else 'NOT LIVE'} • retained session samples {t.sample_count:,} • duration {t.duration_s:.3f} s • timing source {timing_source} • "
                 f"evidence class {evidence_class} • "
                 f"host monotonic timer resolution {self.host_timer_resolution_ns:.0f} ns • reference {reference_name} • "
                 f"effective rate {t.effective_rate_hz:.2f} Hz • consecutive identical raw HID payloads {self.duplicate_raw_reports}.\n"
-                "Raw HID is measured at host arrival after USB. XInput/SDL/DirectInput are API polling estimates and must not be presented as the controller's bus rate."
-            )
-        if current_page == "Interference Lab":
-            self.safety_label.setText(
-                f"Configured safety limits • {self.safety_limits.max_frequency_hz:g} Hz • {self.safety_limits.max_amplitude_vpp:g} Vpp • "
-                f"±{self.safety_limits.max_abs_offset_v:g} V • generator output defaults OFF."
+                "Raw HID timestamps are observed after USB at the host. They do not prove the controller's sensor-side or firmware filtering behavior; that needs a synchronized upstream electrical trace."
             )
 
         if current_page == "Dashboard" and self.baseline_active:
@@ -2287,6 +2399,11 @@ class MainWindow(QMainWindow):
     def _timing_reference_ms(self, intervals_ms:list[float]) -> float | None:
         if hasattr(self,"timing_reference_mode") and self.timing_reference_mode.currentData()=="configured":
             return 1000.0/max(self.expected_rate.value(),1.0)
+        return None
+
+    def _configured_reference_rate_hz(self) -> float | None:
+        if hasattr(self, "timing_reference_mode") and self.timing_reference_mode.currentData() == "configured":
+            return float(self.expected_rate.value())
         return None
 
     @staticmethod
@@ -3098,54 +3215,50 @@ class MainWindow(QMainWindow):
 
     def _export_html_report(self) -> None:
         if not self._ensure_session(): return
-        path,_=QFileDialog.getSaveFileName(self,"Engineering Report",str(self.data_root/"RcmTool_Report.html"),"HTML (*.html)")
+        path,_=QFileDialog.getSaveFileName(self,"Raw HID Session Report",str(self.data_root/"RcmTool_Report.html"),"HTML (*.html)")
         if not path: return
         timestamps=list(self.controller_ts)[-5000:]
         intervals=[(b-a)/1e6 for a,b in zip(timestamps,timestamps[1:]) if b>a]
         expected_override=self._timing_reference_ms(intervals)
         report_reference_ms=expected_override if expected_override is not None else self._median(intervals)
         deviations=[value-report_reference_ms for value in intervals]
-        freqs=list(self.osc_freq)[-3000:]
-        nominal=self.nominal_freq.value()
-        ppm=[(value-nominal)/nominal*1e6 for value in freqs] if nominal>0 else []
+        samples=list(self.controller_samples)[-1200:]
         timeline=self.db.list_events(self.session_id,limit=250)
         report_path = write_html_report(
-            path,title="RcmTool Engineering Report",
+            path,title="RcmTool Raw HID Session Report",
             controller_metrics=asdict(self.current_timing),
-            oscillator_metrics=asdict(self.current_osc),
+            oscillator_metrics=None,
             metadata={
                 "session_id":self.session_id,
-                "mode":"hardware",
-                "correlation":self.current_corr,
+                "mode":"selected named Raw HID only",
                 "app_version":__version__,
-                "nominal_frequency_hz":self.nominal_freq.value(),
+                "controller":self.controller_metadata,
+                "evidence_class":self.controller_metadata.get("evidence_class", "unavailable"),
                 "timing_reference_mode":self.timing_reference_mode.currentData(),
                 "timing_reference_interval_ms":report_reference_ms,
                 "configured_reference_rate_hz":self.expected_rate.value(),
                 "host_timer_resolution_ns":self.host_timer_resolution_ns,
-                "baseline_reference":self.reference_baseline,
-                "stimulus":{
-                    "waveform":self.waveform_combo.currentText(),
-                    "frequency_hz":self.stim_freq.value(),
-                    "amplitude_vpp":self.stim_amp.value(),
-                    "offset_v":self.stim_offset.value(),
-                    "output_enabled":bool(self.instrument.output_enabled()),
-                },
-                "sweep_points":len(self.sweep_results),
             },
             plots={
-                "Report interval (ms)":intervals[-1200:],
-                "Gamepad timing deviation (ms)":deviations[-1200:],
-                "Oscillator frequency (Hz)":freqs[-1200:],
-                "Oscillator error (ppm)":ppm[-1200:],
+                "Raw HID report interval (ms)":intervals[-1200:],
+                "Report interval deviation (ms)":deviations[-1200:],
+                "Left stick X (normalized)": [float(item.get("lx", 0.0)) for item in samples],
+                "Left stick Y (normalized)": [float(item.get("ly", 0.0)) for item in samples],
             },
-            sweep_points=self.sweep_results,
             timeline=timeline,
+            interpretation=(
+                "Observed rate is the cadence of HID reports received by Windows after USB; it is not a guaranteed "
+                "firmware polling rate. Timing jitter describes variation in those host arrival intervals, and Windows/USB "
+                "scheduling can contribute. Repeated identical raw reports can simply mean the controls did not change; "
+                "they are not proof of dropped input. Stick noise is measured downstream of the controller's sensor, ADC, "
+                "and firmware, so this report cannot identify which stage introduced smoothing. A synchronized electrical "
+                "trace upstream of the USB report is required for that attribution. No percent filtering score is inferred "
+                "unless comparable paired measurements support it."
+            ),
             limitations=[
-                "Host-side gamepad timestamps include USB/OS scheduling unless dedicated analyzer hardware supplies bus-level timestamps.",
-                "Oscillator precision cannot exceed the connected measurement instrument and sampling method.",
-                "Software-derived frequency/period jitter is calculated and is not a substitute for a dedicated phase-noise analyzer.",
-                "Correlation between signals does not by itself demonstrate causation."
+                "Timestamps are host-arrival times after USB and include operating-system scheduling; they are not bus-level timestamps.",
+                "A downstream controller report alone cannot distinguish sensor/electrical filtering from ADC, firmware, or host effects.",
+                "For firmware attribution, use the Electrical Trace page with a physically synchronized upstream probe capture.",
             ]
         )
         webbrowser.open(report_path.resolve().as_uri())
@@ -3158,27 +3271,19 @@ class MainWindow(QMainWindow):
         self.timing_reference_mode.setCurrentIndex(max(0,reference_index))
         self.expected_rate.setValue(float(self.settings.value("expected_rate",1000)))
         self.late_factor.setValue(float(self.settings.value("late_factor",1.5)))
-        self.outlier_sigma.setValue(float(self.settings.value("outlier_sigma",4.0)))
         self.stationary_excursion.setValue(float(self.settings.value("stationary_excursion",0.02)))
-        self.nominal_freq.setValue(float(self.settings.value("nominal_freq",12_000_000)))
-        self.graph_refresh.setValue(int(self.settings.value("graph_refresh",100)))
-        self.max_freq.setValue(float(self.settings.value("max_freq",20_000_000)))
-        self.max_amp.setValue(float(self.settings.value("max_amp",1.0)))
-        self.max_offset.setValue(float(self.settings.value("max_offset",0.5)))
+        self.graph_refresh.setValue(int(self.settings.value("graph_refresh",200)))
         saved_skin=str(self.settings.value("controller_skin","auto"))
         skin_index=self.controller_skin_combo.findData(saved_skin)
         self.controller_skin_combo.setCurrentIndex(max(0,skin_index))
-        self._sync_safety_limits()
 
     def _save_settings(self) -> None:
-        self._sync_safety_limits()
         values={
             "theme":self.theme_combo.currentText(),"baseline_seconds":self.baseline_seconds.value(),
             "timing_reference_mode":self.timing_reference_mode.currentData(),
-            "expected_rate":self.expected_rate.value(),"late_factor":self.late_factor.value(),"outlier_sigma":self.outlier_sigma.value(),
-            "stationary_excursion":self.stationary_excursion.value(),"nominal_freq":self.nominal_freq.value(),
-            "graph_refresh":self.graph_refresh.value(),"max_freq":self.max_freq.value(),
-            "max_amp":self.max_amp.value(),"max_offset":self.max_offset.value(),
+            "expected_rate":self.expected_rate.value(),"late_factor":self.late_factor.value(),
+            "stationary_excursion":self.stationary_excursion.value(),
+            "graph_refresh":self.graph_refresh.value(),
             "controller_skin":self.controller_skin_combo.currentData()
         }
         for key,val in values.items(): self.settings.setValue(key,val)
@@ -3201,11 +3306,10 @@ class MainWindow(QMainWindow):
             self._schedule_ui_refresh()
 
     def _reset_graphs(self) -> None:
-        for ch in [
-            self.dashboard_timing_chart,self.dashboard_osc_chart,self.dashboard_noise_chart,self.live_interval_chart,self.live_jitter_chart,
-            self.live_hist_chart,self.live_latency_chart,self.live_analog_chart,self.live_osc_chart,self.live_osc_jitter_chart,
-            self.osc_stability_chart,self.osc_period_chart,self.corr_stimulus_chart,self.corr_osc_chart,self.corr_gamepad_chart
-        ]: ch.reset_view()
+        for name in ("dashboard_timing_chart", "dashboard_noise_chart"):
+            chart = getattr(self, name, None)
+            if chart is not None:
+                chart.reset_view()
 
     def _first_run(self) -> None:
         dlg=WelcomeDialog(self)

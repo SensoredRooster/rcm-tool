@@ -294,8 +294,6 @@ class ControllerAcquisition:
             if raw_report is None:
                 continue
             sample = parse_report(raw_report) if callable(parse_report) else None
-            if sample is None:
-                sample = getattr(active, "last_sample", None) or first_sample
             sample_dict = ControllerAcquisition._coerce_sample(sample)
             if sample_dict is not None:
                 timestamp_ns = max(
@@ -322,8 +320,6 @@ class ControllerAcquisition:
                 continue
             timestamp_ns = max(time.perf_counter_ns(), last_timestamp_ns + 1)
             sample = parse_report(raw_report) if callable(parse_report) else None
-            if sample is None:
-                sample = getattr(active, "last_sample", None) or first_sample
             sample_dict = ControllerAcquisition._coerce_sample(sample)
             if sample_dict is not None:
                 last_timestamp_ns = timestamp_ns
@@ -367,6 +363,7 @@ class ControllerAcquisition:
         last_error: str | None = None
 
         while not self.stop_event.is_set():
+            raw_report_count = 0
             try:
                 sample = self.backend.read()
                 now = time.perf_counter_ns()
@@ -402,10 +399,14 @@ class ControllerAcquisition:
                             })
                         last_buttons = buttons
 
-                raw_report_count = 0
                 if active is not None and active.__class__.__name__ == "HIDGamepad":
                     reports = self._raw_hid_reports(active, now, sample)
                     raw_report_count = len(reports)
+                    if raw_report_count:
+                        last_seen = time.monotonic()
+                        if not connected:
+                            connected = True
+                            self._event("controller_connected", {"source": source, "metadata": metadata})
                     for report_timestamp_ns, report_sample, report in reports:
                         raw_hex = bytes(report).hex()
                         duplicate = last_raw_hex == raw_hex
@@ -440,6 +441,13 @@ class ControllerAcquisition:
                 if self.error != last_error:
                     self._event("controller_backend_error", {"message": self.error})
                     last_error = self.error
+                if connected and time.monotonic() - last_seen >= 0.5:
+                    connected = False
+                    last_buttons = None
+                    self._event(
+                        "controller_disconnected",
+                        {"reason": "read_error", "message": self.error},
+                    )
             if raw_report_count:
                 # A short yield prevents a hot loop from starving the rest of
                 # the process without imposing a 1 ms ceiling on Raw HID.

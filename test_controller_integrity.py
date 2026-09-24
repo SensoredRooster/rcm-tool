@@ -42,6 +42,17 @@ class ControllerIntegrityTests(unittest.TestCase):
         self.assertAlmostEqual(sample["rx"], 0.0, places=2)
         self.assertAlmostEqual(sample["ry"], 0.0, places=2)
 
+    def test_hid_reader_does_not_replay_cached_sample_when_no_report_arrives(self):
+        class EmptyDevice:
+            @staticmethod
+            def read(_size):
+                return []
+
+        reader = app.HIDGamepad()
+        reader.device = EmptyDevice()
+        reader.last_sample = {"lx": 0.25, "ly": 0.0, "rx": 0.0, "ry": 0.0}
+        self.assertIsNone(reader.read())
+
     def test_rc_alpha_is_frame_rate_independent(self):
         tau = 0.05
         alpha_4ms = rc_filter.RCLowPassFilter.alpha(0.004, tau)

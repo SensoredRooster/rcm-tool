@@ -26,17 +26,28 @@ def _low_pass(values: list[float], timestamps_s: list[float], tau_seconds: float
     return output
 
 
-def _axis_metrics(values: list[float], timestamps_s: list[float]) -> dict[str, float | int]:
+def _axis_metrics(values: list[float], timestamps_s: list[float]) -> dict[str, float | int | None]:
     if not values:
         return {
             "samples": 0,
-            "mean": 0.0,
-            "noise_rms": 0.0,
-            "peak_to_peak": 0.0,
+            "mean": None,
+            "noise_rms": None,
+            "peak_to_peak": None,
             "unique_levels": 0,
-            "adjacent_delta_rms": 0.0,
-            "slow_trend_residual_rms": 0.0,
-            "high_frequency_energy_percent": 0.0,
+            "adjacent_delta_rms": None,
+            "slow_trend_residual_rms": None,
+            "high_frequency_energy_percent": None,
+        }
+    if len(values) < 2:
+        return {
+            "samples": len(values),
+            "mean": float(values[0]),
+            "noise_rms": None,
+            "peak_to_peak": None,
+            "unique_levels": len({round(value, 6) for value in values}),
+            "adjacent_delta_rms": None,
+            "slow_trend_residual_rms": None,
+            "high_frequency_energy_percent": None,
         }
     mean = statistics.fmean(values)
     residuals = [value - mean for value in values]
@@ -93,12 +104,23 @@ def analyze_noise_capture(
         axis: _axis_metrics([float(sample.get(axis, 0.0)) for sample in samples], timestamps_s)
         for axis in AXES
     }
-    axis_spans = {axis: float(metrics["peak_to_peak"]) for axis, metrics in axes.items()}
-    stationary = bool(samples) and bool(axis_spans) and max(axis_spans.values()) <= max(0.0001, float(stationary_excursion))
+    axis_spans = {
+        axis: float(metrics["peak_to_peak"])
+        for axis, metrics in axes.items()
+        if metrics["peak_to_peak"] is not None
+    }
+    stationary = (
+        max(axis_spans.values()) <= max(0.0001, float(stationary_excursion))
+        if len(samples) >= 100 and len(axis_spans) == len(AXES)
+        else None
+    )
     timestamp_pairs = max(0, len(samples) - 1)
     monotonic_percent = 100.0 * len(intervals) / timestamp_pairs if timestamp_pairs else 0.0
     raw_report_count = sum(bool(report) for report in raw_report_hex)
-    duplicate_percent = 100.0 * duplicate_reports / max(1, raw_report_count - 1)
+    duplicate_percent = (
+        100.0 * duplicate_reports / (raw_report_count - 1)
+        if raw_report_count >= 2 else None
+    )
     raw_report_coverage_percent = 100.0 * raw_report_count / max(1, len(samples))
     reference_rate = float(reference_rate_hz or 0.0)
     rate_vs_reference_percent = (
@@ -106,18 +128,51 @@ def analyze_noise_capture(
         if reference_rate > 0 and duration_s > 0 else None
     )
     high_frequency_energy = {
-        axis: float(metrics["high_frequency_energy_percent"])
+        axis: (
+            float(metrics["high_frequency_energy_percent"])
+            if metrics["high_frequency_energy_percent"] is not None else None
+        )
         for axis, metrics in axes.items()
     }
-    quality_score = round(
-        0.35 * min(100.0, duration_s / 10.0 * 100.0)
-        + 0.25 * min(100.0, len(samples) / 1000.0 * 100.0)
-        + 0.20 * monotonic_percent
-        + 0.20 * raw_report_coverage_percent,
-        1,
+    target_duration_s = {"neutral": 10.0, "movement": 20.0}.get(capture_kind)
+    quality_checks = []
+    if target_duration_s is not None:
+        minimum_duration_s = target_duration_s * 0.9
+        quality_checks.append({
+            "name": "capture duration",
+            "observed_s": duration_s,
+            "required_s": minimum_duration_s,
+            "status": "pass" if duration_s >= minimum_duration_s else "review",
+        })
+    quality_checks.extend([
+        {
+            "name": "sample count",
+            "observed": len(samples),
+            "required": 100,
+            "status": "pass" if len(samples) >= 100 else "review",
+        },
+        {
+            "name": "monotonic timestamps",
+            "observed_percent": monotonic_percent,
+            "required_percent": 100.0,
+            "status": "pass" if monotonic_percent == 100.0 else "review",
+        },
+        {
+            "name": "Raw HID report-byte coverage",
+            "observed_percent": raw_report_coverage_percent,
+            "required_percent": 99.0,
+            "status": "pass" if raw_report_coverage_percent >= 99.0 else "review",
+        },
+    ])
+    quality_label = (
+        "checks passed" if all(check["status"] == "pass" for check in quality_checks)
+        else "review required"
     )
-    if not samples:
-        interpretation = "No Raw HID samples were captured; no noise or smoothing conclusion is valid."
+    if len(samples) < 100:
+        interpretation = (
+            f"Only {len(samples)} Raw HID sample(s) were captured, below the 100-sample screening minimum. "
+            "Variation metrics are unavailable or preliminary; no noise-floor or smoothing conclusion is valid."
+        )
     elif capture_kind == "neutral" and not stationary:
         interpretation = (
             "The neutral capture contained movement larger than the stationary threshold. "
@@ -160,9 +215,15 @@ def analyze_noise_capture(
         "axes": axes,
         "high_frequency_energy_percent_by_axis": high_frequency_energy,
         "capture_quality": {
-            "score_percent": quality_score,
-            "label": "usable" if quality_score >= 80 else "review required",
-            "basis": "duration, sample count, monotonic timestamps, and Raw HID report coverage; not firmware confidence",
+            "label": quality_label,
+            "checks": quality_checks,
+            "basis": "Each listed capture-integrity check is evaluated independently; there is no weighted score or firmware-confidence percentage.",
+        },
+        "high_frequency_energy_method": {
+            "filter": "first-order exponential slow trend",
+            "time_constant_s": DEFAULT_TAU_SECONDS,
+            "energy_share": "100 * (RMS(signal - slow_trend) / RMS(signal - mean))^2",
+            "meaning": "descriptive residual-energy share; not a firmware-filtering percentage",
         },
         "interpretation": interpretation,
         "stationary_check": {

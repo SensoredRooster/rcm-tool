@@ -1,51 +1,44 @@
 # RcmTool
 
-RcmTool is the next-generation desktop application built on the original **RCM Tool** controller measurement code. It is a Windows laboratory workspace for measuring controller report timing, analog-input stability, oscillator/clock stability, controlled bench stimulus, sweep response, and synchronized timing relationships.
+RcmTool is a Windows tool for documenting controller Raw HID noise, host-observed report timing jitter, and movement/settling behavior, with an optional upstream electrical trace for attribution work.
 
 The application is measurement-focused. It does not inject game inputs, modify controller firmware, or manufacture precision that the connected hardware cannot provide.
 
-## Current integrated capabilities
+## Active test workflow
 
-- Modern PySide6/Qt desktop UI with rounded panels, dark/light modes, high-DPI scaling, dashboard cards, live plots, and dedicated lab pages.
-- Existing RCM controller acquisition through Windows XInput, SDL/pygame, Raw HID/hidapi, and WinMM fallback.
-- Controller timing analysis: effective report rate, interval statistics, RMS timing deviation, peak-to-peak jitter, successive interval variation, P50/P90/P95/P99/P99.9, late reports, and estimated missing reports.
-- Controller Lab with **Auto / Xbox / DualSense / Generic** visual modes. Auto uses backend + VID/PID + product identity conservatively; Xbox and DualSense remain manually selectable. Manual visual override never changes the trusted input mapping. Live sticks, triggers, button/D-pad state where decoded, and stationary analog-noise inspection remain separate from device/backend diagnostics.
-- Live Capture controls for zoom, pan, crosshair inspection, pause-visualization-without-pausing-acquisition, display-only moving-average smoothing, PNG export, fullscreen inspection, raw-data viewing, report-interval histogram, and explicit unavailable labeling for latency when no device-origin timestamp exists.
-- Oscillator Lab: frequency, error in Hz and ppm, frequency standard deviation/span, first-to-last-window drift, configurable sigma outlier count, period statistics, RMS period jitter, peak-to-peak jitter, cycle-to-cycle jitter, and one-sample-interval Allan deviation.
-- A dedicated read-only VISA/SCPI measurement role for counters, oscilloscopes, and analyzers.
-- A separate VISA/SCPI signal-generator role with output-off-by-default behavior.
-- Interference Lab with explicit output enable, configurable software limits, and an EMERGENCY OUTPUT OFF control.
-- Linear/logarithmic frequency and amplitude sweep planning with repetitions, settling time, dwell time, sequential/randomized ordering, event logging, selectable response heat maps, per-step isolated measurement windows, and forced output-off at completion.
-- Synchronized controller and oscillator storage with descriptive correlation, shared cross-chart cursors, user markers, and timeline-event cursor positioning.
-- SQLite/WAL session storage, experiment history/timeline, JSON export, controller CSV export, saved baseline JSON, saved-session vs saved-session comparison, live-reference comparison, and self-contained HTML engineering reports containing plots, sweep response, timeline, metadata, and limitations.
-- Hardware-only acquisition and explicit unavailable states when a controller, measurement instrument, or generator is not connected.
-- Guided Raw HID noise-evidence workflow for neutral noise and movement/settling captures, with paired host timestamps, normalized samples, raw report bytes, and an explicit boundary against claiming firmware attribution from USB data alone.
-- Optional Electrical Trace page backed by an installed open-source sigrok-cli/libsigrok driver stack for oscilloscope or logic-analyzer capture, raw CSV retention, instrument-channel metrics, and explicitly labeled host or hardware-trigger alignment.
-- Automated tests plus Windows CI validation for unit tests, Qt desktop launch, hardware-only workflow, portable build, standalone one-file EXE, and Inno Setup installer.
+- **Dashboard:** Raw HID arrival rate, report interval, timing jitter, duplicate/late estimates, and stick traces. Unavailable data stays unavailable.
+- **Controller Lab:** Select a named Raw HID interface, inspect live decoded axes/buttons, and run the guided neutral and movement tests.
+- **Electrical Trace:** Optionally capture an upstream sensor signal using an installed sigrok-compatible scope or logic analyzer.
+- **Reports:** Export saved session JSON/CSV and a plain-language report that states what the values can and cannot establish.
+- **Support:** Existing local logs, health snapshot, redacted support bundle, and explicit-confirm upload flow remain available.
+- **Settings:** Capture thresholds, timing reference, display refresh, controller view, and theme.
+
+The guided wizard captures untouched-stick behavior for 10 seconds, then a defined movement/settling sequence for 20 seconds. If there is no session already recording, the wizard starts one and stores the raw session in the local SQLite database. Completed evidence remains available when the selected device changes.
 
 ## Measurement integrity
 
 The primary UI is intentionally focused on the controller question: Raw HID
-noise, report timing jitter, and movement/settling behavior. Dashboard and
-Controller Lab provide the guided workflow; Reports, Support, and Settings
-remain available. The local SQLite database, raw samples, testing timeline,
-support logs, and app data are retained. The other lab implementations remain
-in the codebase for compatibility with existing sessions and reports but are
-not part of the primary navigation.
+noise, report timing jitter, movement/settling behavior, and optional upstream
+trace capture. The local SQLite database, raw samples, testing timeline,
+support logs, and app data are retained. Older lab implementations remain in
+the codebase for compatibility, but their pages are not constructed or shown
+in the focused UI.
 
 Controller timestamps use Python's highest-resolution host monotonic clock available through time.perf_counter_ns. The meaning of those timestamps depends on the backend:
 
-- **Raw HID** reports are timestamped when the application receives/drains the HID report. This is still a host-observed timestamp.
-- **XInput, SDL, and WinMM** are host-polling APIs. Their timing includes operating-system scheduling and API buffering effects.
+- **Raw HID** reports are timestamped when the application receives/drains the HID report. This is still a host-observed timestamp after USB.
+- The focused UI does not start XInput/SDL/WinMM polling. A named HID interface may still be software-emulated; VID/PID and product strings do not prove physical authenticity.
 - Dedicated oscilloscopes, counters, logic analyzers, USB analyzers, or timing instruments are required when direct electrical or bus-level timing is needed.
 
 The application labels data as measured, calculated, estimated, or unavailable rather than inventing unsupported values.
 
-Dashboard cards, oscillator readouts, comparison metrics, and graphs include short hover definitions describing what each value means and whether it is measured or derived. Controller timing uses the measured median report interval as the default jitter/late-report reference; a configured reference rate can be selected explicitly in Settings. Time-series plots use elapsed timestamps rather than treating sample number as time.
+Dashboard cards and graphs include short definitions describing what each value means. Controller timing uses the measured median report interval as the default jitter/late-report reference; a configured reference rate can be selected explicitly in Settings. Time-series plots use elapsed timestamps rather than treating sample number as time.
+
+Noise reports list capture-integrity checks separately (duration, sample count, timestamp order, and raw-report-byte coverage); they do not collapse them into a quality or firmware-confidence percentage. A configured-rate comparison is shown only when that reference mode is explicitly selected.
 
 Analog stick noise is only labeled as a stationary noise floor when all four stick axes remain within the configured stationary-excursion threshold for the analysis window. If movement exceeds that threshold, the noise-floor result is withheld instead of reporting motion as noise.
 
-Generic VISA/SCPI measurement capability is probed at connection time. Directly unsupported values remain unavailable; for example, period displayed from frequency samples is explicitly labeled as a calculated reciprocal-period result rather than a direct period measurement.
+Raw HID alone cannot distinguish filtering in the sensor, analog circuit, ADC, firmware, or host. The report's high-frequency energy percentage is a descriptive signal metric, not a percent estimate of firmware smoothing or a confidence score. Firmware attribution requires a properly connected upstream trace and a valid synchronization method.
 
 ## Install from source
 
@@ -72,81 +65,18 @@ Runtime dependencies are pinned in `requirements.txt` from the validated Windows
 ## First-run workflow
 
 1. Launch RcmTool.
-2. Connect a physical controller, open Controller Lab, click **Refresh devices**, and choose either **Automatic** or a named **Raw HID** device under **Input Source**.
-3. Start Capture and verify the timing and controller dashboard.
-4. Connect a physical frequency instrument before using Oscillator Lab or running a baseline that includes clock data.
-5. Run a baseline.
-6. Review Controller Lab, Oscillator Lab, Correlation, Experiments, Compare, and Reports.
-7. For physical clock measurement, select a VISA resource in Oscillator Lab and connect it as a measurement instrument.
-8. For controlled stimulus, select a VISA resource in Interference Lab and explicitly connect it as a generator. Generator output remains OFF until the user enables it.
+2. Connect the controller by USB. In **Controller Lab**, click **Refresh Raw HID** and select its named VID/PID entry.
+3. Verify that entry matches the controller you connected. Windows HID descriptors cannot rule out a virtual HID device.
+4. Wait until live Raw HID reports arrive. Capture and test controls remain disabled until they do.
+5. Run **Guided smoothing test**: leave the sticks untouched for 10 seconds, then follow the one-stick movement sequence for 20 seconds.
+6. Export the result report. It explains observed rate, jitter, noise, duplicate payloads, and the limits of any firmware attribution.
+7. Use **Electrical Trace** only when a real scope/analyzer and safe upstream probe connection are available. Host-start alignment alone does not prove causation.
 
-The Raw HID selector reads the selected controller's USB HID reports and labels their timestamps as **measured-at-host-read**. If no device is found, Controller Lab reports that hardware samples are unavailable.
+The Raw HID selector reads the selected interface's USB HID reports and labels timestamps as **measured at host arrival**. If no device is found, the app does not substitute simulated or XInput values.
 
-## Oscillator and clock measurements
+## Retained compatibility modules
 
-The generic measurement adapter is intentionally read-only. Connecting it does not send generator output commands.
-
-It tries common SCPI frequency queries such as:
-
-~~~text
-MEAS:FREQ?
-MEASure:FREQuency?
-FETCh:FREQuency?
-READ:FREQuency?
-~~~
-
-It also tries common duty-cycle queries. Instrument command sets differ, so model-specific drivers can be added behind the same adapter interface without rewriting the analysis, database, or UI.
-
-Calculated oscillator metrics include:
-
-- mean, minimum, and maximum frequency
-- frequency standard deviation and span
-- first-to-last-window frequency drift in Hz and ppm
-- configurable sigma-based frequency outlier count
-- error in Hz
-- error in ppm
-- mean period
-- period standard deviation
-- RMS period jitter
-- peak-to-peak period jitter
-- cycle-to-cycle RMS and peak
-- one-sample-interval Allan deviation when enough samples exist
-
-Software calculations are only as accurate as the values and timing supplied by the physical measurement hardware.
-
-## Controlled stimulus safety
-
-Measurement instruments and signal sources are separate roles.
-
-- Generator output defaults to **OFF**.
-- A VISA resource is not accepted as a generator unless an OUTP OFF command succeeds.
-- Discovery never turns output on.
-- Frequency, amplitude, and offset are validated against configured software limits before enable or sweep.
-- The generator adapter retains the active limits and validates the configured state again at the output boundary, so callers cannot bypass the UI safety check.
-- When supported, generator state is read back after configuration and at sweep result points; requested values and instrument-reported values are recorded separately.
-- The UI exposes **EMERGENCY OUTPUT OFF**.
-- Sweep completion forces the source OFF.
-- Closing the application attempts to force output OFF and close the source.
-
-Default software limits are conservative starting values; they are not electrical ratings for any particular controller, coupling network, scope, or generator. Use limits appropriate to the actual bench hardware.
-
-## Baselines, sweeps, and correlation
-
-A baseline captures the current controller timing and oscillator statistics as the reference for the active session. It can be saved to JSON, promoted to the active comparison reference, and compared with live measurements including absolute and percentage change.
-
-The sweep engine supports:
-
-- linear or logarithmic frequency spacing
-- amplitude grids
-- repeated sweeps
-- configurable settling and dwell periods
-- sequential or deterministic randomized ordering
-- isolated per-step measurement windows
-- requested-vs-instrument-reported configuration capture
-- selectable response heat maps for gamepad jitter, oscillator jitter, polling-rate deviation, clock frequency deviation, late reports, and analog noise
-- timestamped experiment events
-
-Correlation is descriptive. A coefficient or visual time alignment can show that values moved together; it does not establish causation. The Correlation page keeps stimulus, oscillator, and controller plots aligned on the same experiment timeline, supports synchronized measurement cursors across charts, allows user markers, and lets timeline-event selection position the common cursor near that event.
+Older oscillator, instrument-output, sweep, baseline, comparison, and correlation code remains in the repository for compatibility with prior data and reports. These modules are not constructed or exposed in the focused desktop workflow. The active tool does not use generated stimulus or simulations as controller evidence.
 
 ## Data storage
 

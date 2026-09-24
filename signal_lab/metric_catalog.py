@@ -7,16 +7,16 @@ from __future__ import annotations
 
 METRIC_HELP: dict[str, str] = {
     "rate": (
-        "Effective report rate: (observed reports - 1) / elapsed capture time. "
-        "Calculated from measured timestamps; never taken from the advertised device rate."
+        "Observed Raw HID arrival rate: (reports received - 1) / elapsed host time. "
+        "It is downstream of USB, not the controller's guaranteed firmware polling rate; a virtual HID device may still appear."
     ),
     "interval": (
-        "Mean report interval: arithmetic mean of positive consecutive controller-report intervals. "
-        "Host timestamps include Windows/USB scheduling unless a bus-level timing source is used."
+        "Mean interval between consecutive reports from the selected Raw HID entry. "
+        "Host timestamps include Windows and USB scheduling and do not reveal the upstream sensor or firmware timing."
     ),
     "jitter": (
-        "RMS report timing deviation from the selected reference interval. "
-        "Default reference is the measured median interval; a configured-rate reference is optional."
+        "RMS variation in host-observed report arrival intervals. This is timing jitter, not a stick-noise or smoothing percentage. "
+        "The default reference is the measured median interval; a configured reference is optional."
     ),
     "late": (
         "Late report count: intervals greater than the selected reference interval multiplied by the configured late threshold. "
@@ -65,7 +65,7 @@ METRIC_HELP: dict[str, str] = {
     ),
     "analog_noise": (
         "Average RMS deviation across LX/LY/RX/RY, reported only when every axis stays within the configured stationary-excursion threshold for the analysis window. "
-        "If movement exceeds that threshold the noise-floor value is withheld."
+        "If movement exceeds that threshold the noise-floor value is withheld. HID output alone cannot attribute filtering to the sensor, circuit, firmware, or host."
     ),
     "correlation": (
         "Pearson correlation after nearest-time alignment of gamepad interval deviation and oscillator frequency error. "
@@ -75,7 +75,7 @@ METRIC_HELP: dict[str, str] = {
 
 CHART_HELP: dict[str, str] = {
     "report_interval": (
-        "Observed interval between consecutive controller reports. X-axis uses elapsed capture time when timestamp data is available."
+        "Host-arrival interval between selected Raw HID reports after USB. It is not a bus-level or firmware polling measurement."
     ),
     "gamepad_deviation": (
         "Controller report interval minus the selected reference interval. Positive values are later than reference."

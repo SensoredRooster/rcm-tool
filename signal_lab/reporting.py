@@ -136,18 +136,28 @@ def write_html_report(
     *,
     title: str,
     controller_metrics: dict,
-    oscillator_metrics: dict,
+    oscillator_metrics: dict | None,
     metadata: dict,
     limitations: list[str],
     plots: dict[str, Sequence[float]] | None = None,
     sweep_points: Sequence[Sequence[float]] | None = None,
     timeline: Sequence[dict] | None = None,
+    interpretation: str | None = None,
 ) -> Path:
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     limitations_html = "".join(f"<li>{escape(item)}</li>" for item in limitations)
     raw_meta = escape(json.dumps(metadata, indent=2))
     plot_html = "".join(_svg_plot(name, values) for name, values in (plots or {}).items())
+    oscillator_html = (
+        f"<div class='card'><h2>Oscillator / clock</h2>{_table(oscillator_metrics)}</div>"
+        if oscillator_metrics is not None else ""
+    )
+    sweep_html = _sweep_html(sweep_points) if sweep_points else ""
+    interpretation_html = (
+        f"<div class='card'><h2>How to interpret these results</h2><p>{escape(interpretation)}</p></div>"
+        if interpretation else ""
+    )
     html = f"""<!doctype html><html><head><meta charset='utf-8'><title>{escape(title)}</title>
 <style>
 body{{font-family:Segoe UI,Arial,sans-serif;background:#080b12;color:#eef2ff;margin:0;padding:40px}}
@@ -158,9 +168,10 @@ code,pre{{font-family:Cascadia Mono,monospace}}pre{{white-space:pre-wrap;color:#
 .small{{color:#93a4bc;font-size:13px}}svg{{width:100%;height:auto;display:block}}
 </style></head><body><main><h1>{escape(title)}</h1><div class='small'>Generated {datetime.now(timezone.utc).isoformat()}</div>
 <div class='card'><h2>Gamepad timing</h2>{_table(controller_metrics)}</div>
-<div class='card'><h2>Oscillator / clock</h2>{_table(oscillator_metrics)}</div>
+{interpretation_html}
+{oscillator_html}
 {plot_html}
-{_sweep_html(sweep_points or [])}
+{sweep_html}
 {_timeline_html(timeline or [])}
 <div class='card'><h2>Measurement limitations</h2><ul>{limitations_html}</ul></div>
 <div class='card'><h2>Metadata</h2><pre>{raw_meta}</pre></div>
@@ -207,26 +218,67 @@ def write_noise_evidence_report(
         f"{float(rate_reference):.1f}%"
         if isinstance(rate_reference, (int, float)) else "Not configured"
     )
+    sample_count = int(result.get("sample_count", 0))
+    sample_rate = result.get("sample_rate_hz")
+    sample_rate_text = (
+        f"{float(sample_rate):.2f} reports/s"
+        if sample_count >= 2 and isinstance(sample_rate, (int, float)) else "Unavailable"
+    )
+    duplicate_percent = result.get("duplicate_report_percent")
     summary = _metric_grid({
         "Evidence class": result.get("evidence_class", "Unavailable"),
         "Capture": result.get("capture_kind", "Unavailable"),
         "Observed reports": result.get("raw_hid_report_count", 0),
-        "Observed rate": f"{float(result.get('sample_rate_hz', 0.0)):.2f} reports/s",
+        "Observed rate": sample_rate_text,
         "Rate vs configured reference": rate_reference_text,
         "Duration": f"{float(result.get('duration_s', 0.0)):.3f} s",
         "Raw report coverage": f"{float(result.get('raw_report_coverage_percent', 0.0)):.1f}%",
-        "Duplicate payloads": f"{float(result.get('duplicate_report_percent', 0.0)):.2f}%",
-        "Capture quality": f"{quality.get('score_percent', 0)}% ({quality.get('label', 'unavailable')})",
+        "Duplicate payloads": f"{float(duplicate_percent):.2f}%" if isinstance(duplicate_percent, (int, float)) else "Unavailable (<2 raw reports)",
+        "Capture checks": quality.get("label", "unavailable"),
     })
+    quality_rows = []
+    for check in quality.get("checks", []):
+        if check.get("observed_percent") is not None:
+            observed = f"{float(check['observed_percent']):.1f}%"
+        elif "observed_s" in check:
+            observed = f"{float(check['observed_s']):.3f} s"
+        else:
+            observed = str(check.get("observed", "Unavailable"))
+        if check.get("required_percent") is not None:
+            required = f"{float(check['required_percent']):g}%"
+        elif "required_s" in check:
+            required = f"{float(check['required_s']):.1f} s minimum"
+        else:
+            required = str(check.get("required", "—"))
+        quality_rows.append(
+            "<tr>"
+            f"<td>{escape(str(check.get('name', 'Check')))}</td>"
+            f"<td>{escape(observed)}</td>"
+            f"<td>{escape(required)}</td>"
+            f"<td>{escape(str(check.get('status', 'unavailable')).upper())}</td>"
+            "</tr>"
+        )
+    quality_table = (
+        "<div class='card'><h2>Capture integrity checks</h2>"
+        "<p>These independent checks describe completeness, not measurement accuracy or firmware confidence. "
+        "The 100-sample floor is a screening rule, not a statistical guarantee. Review each result; no weighted quality percentage is calculated.</p>"
+        "<table><thead><tr><th>Check</th><th>Observed</th><th>Screening requirement</th><th>Result</th></tr></thead>"
+        f"<tbody>{''.join(quality_rows) or '<tr><td colspan=4>Unavailable</td></tr>'}</tbody></table></div>"
+    )
+    def axis_number(metrics: dict, key: str, decimals: int) -> str:
+        value = metrics.get(key)
+        return f"{float(value):.{decimals}f}" if isinstance(value, (int, float)) else "Unavailable"
+
     axis_rows = []
     for axis, metrics in (result.get("axes") or {}).items():
         axis_rows.append(
             "<tr>"
             f"<td>{escape(str(axis).upper())}</td>"
-            f"<td>{float(metrics.get('noise_rms', 0.0)):.8f}</td>"
-            f"<td>{float(metrics.get('peak_to_peak', 0.0)):.8f}</td>"
-            f"<td>{float(metrics.get('slow_trend_residual_rms', 0.0)):.8f}</td>"
-            f"<td>{float(metrics.get('high_frequency_energy_percent', 0.0)):.2f}%</td>"
+            f"<td>{axis_number(metrics, 'noise_rms', 8)}</td>"
+            f"<td>{axis_number(metrics, 'peak_to_peak', 8)}</td>"
+            f"<td>{axis_number(metrics, 'slow_trend_residual_rms', 8)}</td>"
+            f"<td>{axis_number(metrics, 'high_frequency_energy_percent', 2)}"
+            f"{'%' if metrics.get('high_frequency_energy_percent') is not None else ''}</td>"
             f"<td>{int(metrics.get('unique_levels', 0))}</td>"
             "</tr>"
         )
@@ -237,34 +289,43 @@ def write_noise_evidence_report(
     )
     capture_rows = []
     for name, capture in (captures or {}).items():
+        capture_sample_count = int(capture.get("sample_count", 0))
+        capture_rate = capture.get("sample_rate_hz")
+        capture_rate_text = (
+            f"{float(capture_rate):.2f}"
+            if capture_sample_count >= 2 and isinstance(capture_rate, (int, float)) else "Unavailable"
+        )
+        capture_stationary = (capture.get("stationary_check") or {}).get("is_stationary")
         capture_rows.append(
             "<tr>"
             f"<td>{escape(str(name))}</td>"
-            f"<td>{int(capture.get('sample_count', 0))}</td>"
-            f"<td>{float(capture.get('sample_rate_hz', 0.0)):.2f}</td>"
+            f"<td>{capture_sample_count}</td>"
+            f"<td>{capture_rate_text}</td>"
             f"<td>{float(capture.get('duration_s', 0.0)):.3f}</td>"
-            f"<td>{float((capture.get('capture_quality') or {}).get('score_percent', 0)):.1f}%</td>"
-            f"<td>{escape(str((capture.get('stationary_check') or {}).get('is_stationary', 'Unavailable')))}</td>"
+            f"<td>{escape(str((capture.get('capture_quality') or {}).get('label', 'unavailable')))}</td>"
+            f"<td>{escape(str(capture_stationary if capture_stationary is not None else 'Unavailable'))}</td>"
             "</tr>"
         )
     capture_table = ""
     if capture_rows:
         capture_table = (
             "<div class='card'><h2>All guided captures</h2>"
-            "<table><thead><tr><th>Capture</th><th>Samples</th><th>Rate</th><th>Duration</th><th>Quality</th><th>Stationary check</th></tr></thead>"
+            "<table><thead><tr><th>Capture</th><th>Samples</th><th>Rate</th><th>Duration</th><th>Capture checks</th><th>Stationary check</th></tr></thead>"
             f"<tbody>{''.join(capture_rows)}</tbody></table></div>"
         )
     interpretation = escape(str(result.get("interpretation", "No interpretation available.")))
-    stationary_text = (
-        "The capture stayed within the stationary threshold."
-        if stationary.get("is_stationary")
-        else "The capture exceeded the stationary threshold; do not call this a stationary noise floor."
-    )
+    if stationary.get("is_stationary") is True:
+        stationary_text = "The capture stayed within the stationary threshold."
+    elif stationary.get("is_stationary") is False:
+        stationary_text = "The capture exceeded the stationary threshold; do not call this a stationary noise floor."
+    else:
+        stationary_text = "Stationarity is unavailable because the capture did not meet the sample-count screening minimum."
     body = (
         "<div class='card'><h2>Bottom line</h2>"
         f"<p>{interpretation}</p><p class='small'>{escape(stationary_text)} "
         "These percentages describe the captured signal; they are not probabilities that firmware is cheating or filtering.</p></div>"
         f"<div class='card'><h2>Capture summary</h2>{summary}</div>"
+        f"{quality_table}"
         f"{capture_table}"
         "<div class='card'><h2>How to read the numbers</h2>"
         "<ul><li><b>Total RMS</b> is the axis variation around its mean during this capture.</li>"
@@ -272,7 +333,7 @@ def write_noise_evidence_report(
         "<li><b>50 ms residual RMS</b> subtracts a documented slow trend. It is a repeatable comparison metric, not a direct firmware measurement.</li>"
         "<li><b>High-frequency energy</b> is the squared residual RMS as a percentage of total AC energy. Higher means more captured variation remains above the slow trend.</li>"
         "<li><b>Duplicate payloads</b> is the percentage of adjacent Raw HID reports with identical bytes. It is not automatically bad: a centered stick can legitimately repeat.</li>"
-        "<li><b>Capture quality</b> is a data-quality score based on duration, sample count, timestamp monotonicity, and raw-report coverage. It is not a confidence percentage for firmware attribution.</li></ul></div>"
+        "<li><b>Capture checks</b> show duration, sample count, timestamp order, and Raw HID report-byte coverage separately. Their screening requirements are visible above; they are not a combined score or confidence percentage.</li></ul></div>"
         f"<div class='card'><h2>Axis results</h2>{axis_table}</div>"
         "<div class='card'><h2>What this test can prove</h2>"
         "<p>This is a host-observed Raw HID result downstream of the controller firmware and USB transport. It can document report cadence, repeated bytes, output noise, and the amount of variation left after the slow-trend comparison.</p>"

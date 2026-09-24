@@ -440,7 +440,9 @@ class HIDGamepad:
             parsed = self._parse_report(report)
             if parsed is not None:
                 return parsed
-        return self.last_sample
+        # A nonblocking read with no fresh report must not replay old axes as
+        # live controller input. Callers use None to detect a stalled device.
+        return None
 
     def drain_raw_reports(self) -> list[list[int]]:
         reports = self.raw_reports

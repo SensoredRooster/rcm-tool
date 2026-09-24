@@ -234,6 +234,28 @@ class SignalLabTests(unittest.TestCase):
         self.assertEqual(timestamps, sorted(set(timestamps)))
         self.assertEqual([item[2][0] for item in reports], [1, 4, 5])
 
+    def test_raw_hid_drain_does_not_pair_invalid_packet_with_cached_axes(self):
+        from signal_lab.controller import ControllerAcquisition
+
+        class FakeDevice:
+            @staticmethod
+            def read(_size):
+                return []
+
+        class FakeHID:
+            last_sample = {"lx": 0.5, "ly": 0.0, "rx": 0.0, "ry": 0.0}
+            device = FakeDevice()
+
+            @staticmethod
+            def drain_raw_reports():
+                return [[1, 2, 3]]
+
+            @staticmethod
+            def _parse_report(_report):
+                return None
+
+        self.assertEqual(ControllerAcquisition._raw_hid_reports(FakeHID(), 100, FakeHID.last_sample), [])
+
     def test_raw_hid_filter_keeps_known_vendor_generic_controller(self):
         import controller_integrity
 
