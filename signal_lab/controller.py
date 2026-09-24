@@ -11,6 +11,7 @@ from typing import Callable
 SONY_VENDOR_ID = 0x054C
 MICROSOFT_VENDOR_ID = 0x045E
 DUALSENSE_PRODUCT_IDS = frozenset({0x0CE6, 0x0DF2})
+DISCONNECT_TIMEOUT_S = 2.0
 LOGGER = logging.getLogger(__name__)
 
 
@@ -430,7 +431,7 @@ class ControllerAcquisition:
                         metadata=metadata,
                     ))
 
-                if connected and sample is None and time.monotonic() - last_seen >= 0.5:
+                if connected and sample is None and time.monotonic() - last_seen >= DISCONNECT_TIMEOUT_S:
                     connected = False
                     last_buttons = None
                     self._event("controller_disconnected", {})
@@ -441,7 +442,7 @@ class ControllerAcquisition:
                 if self.error != last_error:
                     self._event("controller_backend_error", {"message": self.error})
                     last_error = self.error
-                if connected and time.monotonic() - last_seen >= 0.5:
+                if connected and time.monotonic() - last_seen >= DISCONNECT_TIMEOUT_S:
                     connected = False
                     last_buttons = None
                     self._event(
