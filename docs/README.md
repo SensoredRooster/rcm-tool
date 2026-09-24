@@ -19,6 +19,7 @@ The diagnostics bucket is only for redacted support bundles. The Tester Share bu
 ## Documentation map
 
 - [README.md](README.md) — Main controller-integrity project overview and usage.
+- [STICK_CLEANER.md](STICK_CLEANER.md) — Step-by-step Stick Cleaner calibration (pad firmware, measured Hz, rest capture).
 - [SUPPORT.md](SUPPORT.md) — Local diagnostics, bundle contents, privacy, and production support service.
 - [TESTER_SHARE.md](TESTER_SHARE.md) — Authenticated tester/admin file portal behavior and maintenance.
 
