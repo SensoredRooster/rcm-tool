@@ -66,6 +66,7 @@ def main() -> int:
         ("Dashboard", "dashboard.png"),
         ("Live Capture", "live_capture.png"),
         ("Controller Lab", "controller_lab.png"),
+        ("Stick Cleaner", "stick_cleaner.png"),
         ("Electrical Trace", "electrical_trace.png"),
         ("Oscillator Lab", "oscillator_lab.png"),
         ("Correlation", "correlation_lab.png"),
