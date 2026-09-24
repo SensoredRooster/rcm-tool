@@ -139,7 +139,8 @@ class WelcomeDialog(QDialog):
         copy = QLabel(
             "A hardware-only controller noise and jitter workstation.\n\n"
             "1  Connect the controller by USB\n"
-            "2  Select its named Raw HID device\n"
+            "2  RcmTool selects it automatically if it is the only one found\n"
+            "   Choose a device manually if several are listed\n"
             "3  Run the guided neutral and movement tests\n"
             "4  Export the measured evidence\n\n"
             "No simulated controller values are used. Windows HID identity alone cannot certify that a device is physical rather than virtual."
@@ -172,7 +173,10 @@ class MainWindow(QMainWindow):
         self.controller_source_kind = "none"
         self.controller_source_path = None
         self.controller_source_info: dict = {}
+        self._controller_source_signature: frozenset | None = None
         self.controller_connected = False
+        self.controller_device_present = False
+        self.controller_input_active = False
         self.controller_queue: queue.Queue[ControllerMeasurement] = queue.Queue()
         self.controller_event_queue: queue.Queue = queue.Queue()
         self.osc_queue: queue.Queue = queue.Queue()
@@ -272,6 +276,14 @@ class MainWindow(QMainWindow):
         self.db_flush_timer = QTimer(self)
         self.db_flush_timer.timeout.connect(self._flush_database_buffer)
         self.db_flush_timer.start(500)
+
+        self.controller_discovery_timer = QTimer(self)
+        self.controller_discovery_timer.setInterval(2000)
+        self.controller_discovery_timer.timeout.connect(self._refresh_controller_sources)
+        self.controller_discovery_timer.start()
+        # The initial page scan runs before sample_timer exists; start a selected
+        # device now that the acquisition/UI queues are ready.
+        self._refresh_controller_sources()
 
         if not bool(self.settings.value("welcomed", False, type=bool)):
             QTimer.singleShot(150, self._first_run)
@@ -561,7 +573,7 @@ class MainWindow(QMainWindow):
         il.addLayout(identity_row)
         layout.addWidget(identity)
 
-        visual, vl = card("LIVE STICK POSITION")
+        visual, vl = card("LAST REPORTED STICK POSITION")
         self.controller_view = ControllerView()
         vl.addWidget(self.controller_view)
         self.controller_axes_readout = QLabel("LX unavailable  •  LY unavailable  •  RX unavailable  •  RY unavailable  •  LT unavailable  •  RT unavailable")
@@ -605,7 +617,7 @@ class MainWindow(QMainWindow):
         )
         self.controller_source_combo.currentIndexChanged.connect(self._controller_source_changed)
         refresh_sources = QPushButton("Refresh Raw HID")
-        refresh_sources.clicked.connect(self._refresh_controller_sources)
+        refresh_sources.clicked.connect(lambda: self._refresh_controller_sources(force=True))
         source_row.addWidget(self.controller_source_combo, 1)
         source_row.addWidget(refresh_sources)
         self.refresh_controller_button = refresh_sources
@@ -1212,6 +1224,8 @@ class MainWindow(QMainWindow):
     def _clear_controller_state(self, identity: str) -> None:
         """Prevent samples from one acquisition mode being shown as another."""
         self.controller_connected = False
+        self.controller_device_present = False
+        self.controller_input_active = False
         self.controller_ts.clear()
         self.controller_samples.clear()
         self.controller_sources.clear()
@@ -1258,13 +1272,14 @@ class MainWindow(QMainWindow):
         if self.controller_source_kind != "raw_hid" or not self.controller_source_path:
             self._clear_controller_state("No named Raw HID device selected")
             self.controller_source_status.setText(
-                "Waiting for a named Raw HID device. Connect by USB, select its entry, and confirm reports arrive. HID descriptors alone cannot certify physical hardware."
+                "RcmTool scans for controllers automatically. Connect by USB; if several are found, choose the one to test."
             )
-            self.hardware_status.setText("HARDWARE • waiting for named Raw HID selection")
+            self.hardware_status.setText("CONTROLLER • scanning for a device")
             self.hardware_status.setObjectName("Muted")
             return
         identity = self.controller_source_info.get("product_string") or "Selected Raw HID device"
         self._clear_controller_state(str(identity))
+        self.controller_device_present = True
         self.controller_acquisition = ControllerAcquisition(
             self.controller_queue.put,
             lambda name, payload: self.controller_event_queue.put((name, payload)),
@@ -1275,24 +1290,46 @@ class MainWindow(QMainWindow):
         self.controller_acquisition.start()
         name = self.controller_source_info.get("product_string") or "selected device"
         self.controller_source_status.setText(
-            f"Selected Raw HID entry: {name}. Waiting for reports. Windows cannot certify whether this HID interface is physical or virtual."
+            f"Controller found: {name}. Waiting for its first report; being still will not be treated as unplugged."
         )
-        self.hardware_status.setText(f"HARDWARE • waiting for Raw HID reports from {name}")
+        self.hardware_status.setText(f"CONTROLLER • {name} found; waiting for input")
         self.hardware_status.setObjectName("Good")
 
-    def _refresh_controller_sources(self) -> None:
+    def _refresh_controller_sources(self, force: bool = False) -> None:
         if not hasattr(self, "controller_source_combo"):
             return
         selected_path = self.controller_source_path
+        raw_devices = [
+            info for info in ControllerAcquisition.enumerate_raw_hid_devices()
+            if info.get("path")
+        ]
+        signature = frozenset(
+            (
+                info.get("path"),
+                str(info.get("product_string") or ""),
+                info.get("vendor_id"),
+                info.get("product_id"),
+            )
+            for info in raw_devices
+        )
+        if not force and signature == self._controller_source_signature:
+            acquisition = self.controller_acquisition
+            thread = acquisition.thread if acquisition is not None else None
+            if (
+                self.controller_source_kind == "raw_hid"
+                and self.controller_source_path
+                and hasattr(self, "sample_timer")
+                and (thread is None or not thread.is_alive())
+            ):
+                self._start_controller_acquisition()
+            return
+        self._controller_source_signature = signature
         combo = self.controller_source_combo
         combo.blockSignals(True)
         combo.clear()
         combo.addItem("Select a named Raw HID device…", {"kind": "none"})
-        raw_devices = ControllerAcquisition.enumerate_raw_hid_devices()
         for info in raw_devices:
-            path = info.get("path")
-            if not path:
-                continue
+            path = info["path"]
             product = info.get("product_string") or "unnamed HID controller"
             vendor_id = int(info.get("vendor_id") or 0)
             product_id = int(info.get("product_id") or 0)
@@ -1301,10 +1338,21 @@ class MainWindow(QMainWindow):
                 {"kind": "raw_hid", "path": path, "info": dict(info)},
             )
         if not raw_devices:
-            combo.addItem(
-                "No Raw HID device detected — connect USB and refresh",
-                {"kind": "none"},
-            )
+            combo.addItem("No currently detected controller", {"kind": "none"})
+        raw_paths = {info["path"] for info in raw_devices}
+        selected_is_current = selected_path in raw_paths if selected_path is not None else False
+        if selected_path is not None and not selected_is_current:
+            selected_name = self.controller_source_info.get("product_string") or "previously selected controller"
+            if raw_devices:
+                combo.addItem(
+                    f"Not currently detected — {selected_name} (waiting for reconnect)",
+                    {"kind": "raw_hid", "path": selected_path, "info": dict(self.controller_source_info)},
+                )
+            else:
+                combo.addItem(
+                    f"Waiting for reconnect — {selected_name}",
+                    {"kind": "raw_hid", "path": selected_path, "info": dict(self.controller_source_info)},
+                )
         index = 0
         if selected_path is not None:
             for i in range(combo.count()):
@@ -1312,21 +1360,45 @@ class MainWindow(QMainWindow):
                 if data.get("kind") == "raw_hid" and data.get("path") == selected_path:
                     index = i
                     break
+        if index == 0 and len(raw_devices) == 1:
+            index = 1
+        elif index == 0 and selected_path is not None and not selected_is_current:
+            index = combo.count() - 1
         combo.setCurrentIndex(index)
         combo.blockSignals(False)
         selected_data = combo.itemData(index) or {}
-        if selected_path and selected_data.get("path") == selected_path:
-            self._start_controller_acquisition()
-        else:
+        selected_now = selected_data.get("path")
+        if selected_now != selected_path or (
+            (selected_data.get("kind") or "none") != self.controller_source_kind
+        ):
             self._controller_source_changed(index)
+        elif force and selected_now:
+            acquisition = self.controller_acquisition
+            thread = acquisition.thread if acquisition is not None else None
+            if thread is None or not thread.is_alive():
+                self._start_controller_acquisition()
         if not raw_devices:
-            backend_available, backend_status = ControllerAcquisition.raw_hid_backend_status()
-            if backend_available:
+            if selected_path is not None:
+                selected_name = self.controller_source_info.get("product_string") or "Selected controller"
                 self.controller_source_status.setText(
-                    "No Raw HID device was found. Connect the controller directly by USB, then refresh. XInput-only and virtual gamepad states are excluded; a virtual HID device may still appear."
+                    f"{selected_name} is not currently detected. Waiting for it to reconnect; quiet input alone does not count as removal."
                 )
             else:
-                self.controller_source_status.setText(backend_status)
+                backend_available, backend_status = ControllerAcquisition.raw_hid_backend_status()
+                if backend_available:
+                    self.controller_source_status.setText(
+                        "No named Raw HID controller found. RcmTool checks again automatically; connect by USB. If more than one is found, choose the controller to test."
+                    )
+                else:
+                    self.controller_source_status.setText(backend_status)
+        elif selected_now and selected_now not in raw_paths and raw_devices:
+            self.controller_source_status.setText(
+                f"The selected controller is not detected. Found {len(raw_devices)} other interface(s); choose one above or wait for the selected device to reconnect."
+            )
+        elif len(raw_devices) > 1 and not selected_now:
+            self.controller_source_status.setText(
+                f"Found {len(raw_devices)} controller interfaces. Select the one you want to test; RcmTool will not guess between them."
+            )
 
     def _diagnose_controller_backends(self) -> None:
         diagnostics = ControllerAcquisition.backend_diagnostics()
@@ -2096,7 +2168,7 @@ class MainWindow(QMainWindow):
                 self.noise_wizard["dialog"].reject()
             if self.capture_active:
                 self._stop_capture()
-            for timer_name in ("sample_timer", "ui_timer"):
+            for timer_name in ("sample_timer", "ui_timer", "controller_discovery_timer"):
                 timer = getattr(self, timer_name, None)
                 if timer is not None:
                     timer.stop()
@@ -2139,21 +2211,55 @@ class MainWindow(QMainWindow):
                 evidence_class = metadata.get("evidence_class")
                 if evidence_class == "measured-host-observed-raw-hid":
                     self.controller_connected = False
-                    message = "Raw HID interface opened; waiting for its first report."
-                    self.hardware_status.setText("HARDWARE • waiting for first Raw HID report")
-                    self.hardware_status.setObjectName("Muted")
+                    self.controller_device_present = True
+                    self.controller_input_active = True
+                    message = "Fresh Raw HID reports received. HID identity alone does not verify the device is physical."
+                    self.hardware_status.setText("CONTROLLER • connected; reports arriving")
+                    self.hardware_status.setObjectName("Good")
                 else:
                     self.controller_connected = False
                     message = "Non-Raw-HID source ignored; it cannot be used as Raw HID report evidence."
                 self.controller_source_status.setText(
                     message + f" Source: {event_payload.get('source', 'hardware input')}"
                 )
+            elif event_name == "controller_device_present":
+                self.controller_device_present = True
+                self.controller_connected = False
+                self.controller_input_active = False
+                self.controller_source_status.setText(
+                    "Controller is back. Waiting for a fresh report; move a stick or press a button to confirm input."
+                )
+                self.hardware_status.setText("CONTROLLER • device found; waiting for input")
+                self.hardware_status.setObjectName("Good")
+            elif event_name == "controller_input_idle":
+                self.controller_input_active = False
+                self.controller_source_status.setText(
+                    "Controller remains connected; no new reports while idle. Move a stick or press a button to resume readings."
+                )
+                self.hardware_status.setText("CONTROLLER • connected, idle")
+                self.hardware_status.setObjectName("Good")
+            elif event_name == "controller_input_active":
+                self.controller_input_active = True
+                self.controller_source_status.setText(
+                    "Controller connected • fresh reports are arriving."
+                )
+                self.hardware_status.setText("CONTROLLER • connected; reports arriving")
+                self.hardware_status.setObjectName("Good")
             elif event_name == "controller_disconnected":
                 self.controller_connected = False
-                self.controller_source_status.setText(
-                    "Controller disconnected or stopped reporting. Check the cable/mode, then refresh devices."
-                )
-                self.hardware_status.setText("HARDWARE • selected Raw HID device stopped reporting")
+                self.controller_device_present = False
+                self.controller_input_active = False
+                reason = event_payload.get("reason")
+                if reason == "device_removed":
+                    self.controller_source_status.setText(
+                        "Controller removed. RcmTool is watching for it to reconnect."
+                    )
+                    self.hardware_status.setText("CONTROLLER • device not present")
+                else:
+                    self.controller_source_status.setText(
+                        "Controller connection was lost. RcmTool is checking whether the device is still present."
+                    )
+                    self.hardware_status.setText("CONTROLLER • connection lost")
                 self.hardware_status.setObjectName("Warn")
                 if self.noise_test_active:
                     sample_count = len(self.noise_capture_samples)
@@ -2173,7 +2279,7 @@ class MainWindow(QMainWindow):
                     self.noise_wizard["dialog"].reject()
                 if self.capture_active:
                     self._stop_capture()
-                self.controller_view.set_state({}, "")
+                self._set_controller_visual()
                 last_device = self.controller_metadata.get("controller_name") or self.controller_source_info.get("product_string") or "Selected Raw HID device"
                 self.controller_meta.setText(f"Last observed: {last_device} • disconnected; values below are not live")
                 self.controller_axes_readout.setText(
@@ -2235,6 +2341,8 @@ class MainWindow(QMainWindow):
         )
         if self.controller_metadata.get("evidence_class") == "measured-host-observed-raw-hid":
             self.controller_connected = True
+            self.controller_device_present = True
+            self.controller_input_active = True
             if became_live:
                 self.hardware_status.setText("HARDWARE • Raw HID reports received; identity unverified")
                 self.hardware_status.setObjectName("Good")
@@ -3555,7 +3663,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self,event:QCloseEvent) -> None:
         self._emergency_off()
-        for timer_name in ("sweep_timer", "refresh_once_timer", "sample_timer", "ui_timer", "db_flush_timer"):
+        for timer_name in (
+            "sweep_timer", "refresh_once_timer", "sample_timer", "ui_timer",
+            "db_flush_timer", "controller_discovery_timer",
+        ):
             timer = getattr(self, timer_name, None)
             if timer is not None:
                 timer.stop()

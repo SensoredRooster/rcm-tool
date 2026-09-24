@@ -1,4 +1,5 @@
 import tempfile
+import threading
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -10,7 +11,7 @@ from signal_lab.analysis import (
     recent_window_timing_metrics,
     timing_metrics,
 )
-from signal_lab.controller import detect_controller_family, detect_controller_layout
+from signal_lab.controller import ControllerAcquisition, detect_controller_family, detect_controller_layout
 from signal_lab.instruments import InstrumentAdapter, SafetyLimits, VisaScpiMeasurementInstrument
 from signal_lab.noise_attribution import analyze_noise_capture
 from signal_lab.storage import LabDatabase
@@ -221,7 +222,6 @@ class SignalLabTests(unittest.TestCase):
             SafetyLimits().validate(frequency_hz=1000, amplitude_vpp=0.1, offset_v=float("nan"))
 
     def test_controller_metadata_extraction(self):
-        from signal_lab.controller import ControllerAcquisition
         class FakeHID:
             name = "Raw HID controller"
             path = b"hid-path"
@@ -238,6 +238,115 @@ class SignalLabTests(unittest.TestCase):
         self.assertEqual(meta["pid"], 0x5678)
         self.assertEqual(meta["usb_path"], "hid-path")
         self.assertEqual(meta["controller_name"], "Test Pad")
+
+    def test_raw_hid_presence_is_distinct_from_input_activity(self):
+        import controller_integrity
+        import signal_lab.controller as controller_module
+
+        original_backend = controller_integrity.HIDGamepad
+        original_hid = controller_integrity.hid
+        idle_seen = threading.Event()
+        removed_seen = threading.Event()
+        events = []
+        samples = []
+        presence = {"present": True}
+        path = b"test-controller-path"
+
+        class FakeHIDModule:
+            @staticmethod
+            def enumerate():
+                return [{"path": path}] if presence["present"] else []
+
+        def event_callback(name, _payload):
+            events.append(name)
+            if name == "controller_input_idle":
+                idle_seen.set()
+            elif name == "controller_disconnected":
+                removed_seen.set()
+
+        class HIDGamepad:
+            name = "Fake Raw HID controller"
+
+            def __init__(self, path=None, info=None):
+                self.path = path
+                self.info = dict(info or {"product_string": "Fake Pad"})
+                self.pending = []
+                self.first_read = True
+
+            def read(self):
+                if self.first_read:
+                    self.first_read = False
+                    self.pending = [[1, 128, 128, 128, 128, 0, 0]]
+                    return {"lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0}
+                return None
+
+            def drain_raw_reports(self):
+                reports, self.pending = self.pending, []
+                return reports
+
+            @staticmethod
+            def _parse_report(_report):
+                return {"lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0}
+
+            @staticmethod
+            def status():
+                return "Fake controller present"
+
+            @staticmethod
+            def close():
+                return None
+
+        controller_integrity.HIDGamepad = HIDGamepad
+        controller_integrity.hid = FakeHIDModule()
+        acquisition = ControllerAcquisition(
+            samples.append,
+            event_callback,
+            poll_sleep_s=0.001,
+            source_kind="raw_hid",
+            hid_path=path,
+            hid_info={"product_string": "Fake Pad"},
+        )
+        try:
+            with patch.object(controller_module, "RAW_HID_PRESENCE_CHECK_S", 0.01), patch.object(
+                controller_module, "RAW_HID_IDLE_AFTER_S", 0.02
+            ):
+                acquisition.start()
+                self.assertTrue(idle_seen.wait(1.0), "an idle input state should be reported")
+                self.assertIn("controller_connected", events)
+                self.assertNotIn("controller_disconnected", events)
+                self.assertEqual(len(samples), 1)
+                presence["present"] = False
+                self.assertTrue(removed_seen.wait(1.0), "enumerated removal should disconnect the device")
+                self.assertEqual(events.count("controller_disconnected"), 1)
+        finally:
+            acquisition.stop()
+            controller_integrity.HIDGamepad = original_backend
+            controller_integrity.hid = original_hid
+
+    def test_supplemental_enumeration_finds_flydigi_by_product_name(self):
+        import controller_integrity
+
+        original_hid = controller_integrity.hid
+
+        class FakeHIDModule:
+            @staticmethod
+            def enumerate():
+                return [
+                    {"path": b"vader-path", "product_string": "Vader 5 Pro"},
+                    {"path": b"keyboard-path", "product_string": "USB Keyboard"},
+                ]
+
+        controller_integrity.hid = FakeHIDModule()
+        try:
+            with patch.object(
+                controller_integrity.HIDGamepad,
+                "enumerate_devices",
+                return_value=[],
+            ):
+                devices = ControllerAcquisition.enumerate_raw_hid_devices()
+        finally:
+            controller_integrity.hid = original_hid
+        self.assertEqual([device["path"] for device in devices], [b"vader-path"])
 
     def test_raw_hid_batch_drain_keeps_report_timestamps_distinct(self):
         from signal_lab.controller import ControllerAcquisition

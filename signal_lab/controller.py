@@ -12,6 +12,8 @@ SONY_VENDOR_ID = 0x054C
 MICROSOFT_VENDOR_ID = 0x045E
 DUALSENSE_PRODUCT_IDS = frozenset({0x0CE6, 0x0DF2})
 DISCONNECT_TIMEOUT_S = 2.0
+RAW_HID_PRESENCE_CHECK_S = 1.0
+RAW_HID_IDLE_AFTER_S = 0.75
 LOGGER = logging.getLogger(__name__)
 
 
@@ -105,8 +107,28 @@ class ControllerAcquisition:
     def enumerate_raw_hid_devices() -> list[dict]:
         """Return controller-like Raw HID devices for the modern UI selector."""
         try:
-            from controller_integrity import HIDGamepad
-            return list(HIDGamepad.enumerate_devices())
+            from controller_integrity import HIDGamepad, hid
+            devices = list(HIDGamepad.enumerate_devices())
+            known_paths = {item.get("path") for item in devices}
+            # Some Flydigi descriptors use generic usage/vendor metadata, so
+            # retain these explicitly named gamepads even if the legacy filter
+            # does not yet recognize their branding.
+            if hid is not None:
+                try:
+                    all_devices = hid.enumerate()
+                except Exception:
+                    LOGGER.debug("Supplemental Raw HID enumeration failed", exc_info=True)
+                    all_devices = []
+                for info in all_devices:
+                    product = " ".join(
+                        str(info.get(key) or "")
+                        for key in ("product_string", "manufacturer_string")
+                    ).casefold()
+                    path = info.get("path")
+                    if path and path not in known_paths and ("flydigi" in product or "vader" in product):
+                        devices.append(info)
+                        known_paths.add(path)
+            return devices
         except Exception:
             LOGGER.warning("Raw HID enumeration failed", exc_info=True)
             return []
@@ -121,6 +143,22 @@ class ControllerAcquisition:
         if hid is None:
             return False, "Raw HID backend is not installed; run python -m pip install -r requirements.txt"
         return True, "Raw HID backend available"
+
+    @staticmethod
+    def raw_hid_path_present(path) -> bool | None:
+        """Check device presence independently of whether it is sending input reports.
+
+        None means enumeration was unavailable or failed; callers must not turn an
+        inconclusive check into a disconnect.
+        """
+        try:
+            from controller_integrity import hid
+            if hid is None:
+                return None
+            return any(item.get("path") == path for item in hid.enumerate())
+        except Exception:
+            LOGGER.debug("Raw HID presence enumeration failed", exc_info=True)
+            return None
 
     @staticmethod
     def backend_diagnostics() -> list[dict]:
@@ -371,13 +409,41 @@ class ControllerAcquisition:
 
         last_host_sample_ns = 0
         last_seen = 0.0
+        last_presence_check = 0.0
         connected = False
+        device_present = True
+        missing_presence_checks = 0
+        idle_reported = False
         last_buttons: int | None = None
         last_raw_hex: str | None = None
         last_error: str | None = None
 
         while not self.stop_event.is_set():
             raw_report_count = 0
+            if self.source_kind == "raw_hid":
+                now_monotonic = time.monotonic()
+                if now_monotonic - last_presence_check >= RAW_HID_PRESENCE_CHECK_S:
+                    last_presence_check = now_monotonic
+                    present = self.raw_hid_path_present(self.hid_path)
+                    if present is False:
+                        missing_presence_checks += 1
+                        if device_present and missing_presence_checks >= 2:
+                            device_present = False
+                            connected = False
+                            idle_reported = False
+                            last_buttons = None
+                            self._event("controller_disconnected", {"reason": "device_removed"})
+                    elif present is True and not device_present:
+                        missing_presence_checks = 0
+                        device_present = True
+                        self._event("controller_device_present", {})
+                    elif present is True:
+                        missing_presence_checks = 0
+                    else:
+                        missing_presence_checks = 0
+                if self.source_kind == "raw_hid" and not device_present:
+                    self.stop_event.wait(self.poll_sleep_s)
+                    continue
             try:
                 sample = self.backend.read()
                 now = time.perf_counter_ns()
@@ -399,6 +465,9 @@ class ControllerAcquisition:
 
                 if sample is not None:
                     last_seen = time.monotonic()
+                    if idle_reported:
+                        idle_reported = False
+                        self._event("controller_input_active", {})
                     if not connected:
                         connected = True
                         self._event("controller_connected", {"source": source, "metadata": metadata})
@@ -418,6 +487,9 @@ class ControllerAcquisition:
                     raw_report_count = len(reports)
                     if raw_report_count:
                         last_seen = time.monotonic()
+                        if idle_reported:
+                            idle_reported = False
+                            self._event("controller_input_active", {})
                         if not connected:
                             connected = True
                             self._event("controller_connected", {"source": source, "metadata": metadata})
@@ -444,10 +516,26 @@ class ControllerAcquisition:
                         metadata=metadata,
                     ))
 
-                if connected and sample is None and time.monotonic() - last_seen >= DISCONNECT_TIMEOUT_S:
+                if (
+                    self.source_kind != "raw_hid"
+                    and connected
+                    and sample is None
+                    and time.monotonic() - last_seen >= DISCONNECT_TIMEOUT_S
+                ):
                     connected = False
                     last_buttons = None
                     self._event("controller_disconnected", {})
+
+                if (
+                    self.source_kind == "raw_hid"
+                    and device_present
+                    and connected
+                    and last_seen
+                    and not idle_reported
+                    and time.monotonic() - last_seen >= RAW_HID_IDLE_AFTER_S
+                ):
+                    idle_reported = True
+                    self._event("controller_input_idle", {})
 
                 last_error = None
             except Exception as exc:
@@ -455,7 +543,11 @@ class ControllerAcquisition:
                 if self.error != last_error:
                     self._event("controller_backend_error", {"message": self.error})
                     last_error = self.error
-                if connected and time.monotonic() - last_seen >= DISCONNECT_TIMEOUT_S:
+                if (
+                    self.source_kind != "raw_hid"
+                    and connected
+                    and time.monotonic() - last_seen >= DISCONNECT_TIMEOUT_S
+                ):
                     connected = False
                     last_buttons = None
                     self._event(
