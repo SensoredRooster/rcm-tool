@@ -569,4 +569,3 @@ class ControllerAcquisition:
             else:
                 self.stop_event.wait(self.poll_sleep_s)
         self._close_backend()
-
