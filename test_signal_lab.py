@@ -13,7 +13,7 @@ from signal_lab.analysis import (
 )
 from signal_lab.controller import ControllerAcquisition, detect_controller_family, detect_controller_layout
 from signal_lab.instruments import InstrumentAdapter, SafetyLimits, VisaScpiMeasurementInstrument
-from signal_lab.noise_attribution import analyze_noise_capture
+from signal_lab.noise_attribution import analyze_noise_capture, estimate_host_smoothing
 from signal_lab.storage import LabDatabase
 from signal_lab.reporting import write_html_report, write_noise_evidence_report, write_trace_evidence_report
 from signal_lab.sweep import make_sweep
@@ -216,6 +216,37 @@ class SignalLabTests(unittest.TestCase):
         self.assertTrue(result["smoothing_comparison"]["does_not_modify_controller_or_game_input"])
         self.assertIn("capture_quality", result)
         self.assertIn("host-observed Raw HID", result["interpretation"])
+
+    def test_smoothing_estimate_is_available_only_for_stationary_capture(self):
+        axes = {
+            axis: {
+                "noise_rms": 0.02,
+                "adjacent_delta_rms": 0.01,
+            }
+            for axis in ("lx", "ly", "rx", "ry")
+        }
+        estimate = estimate_host_smoothing(
+            axes=axes,
+            capture_kind="neutral",
+            stationary=True,
+            sample_count=1000,
+            duplicate_report_percent=20.0,
+        )
+        self.assertTrue(estimate["available"])
+        self.assertGreater(estimate["estimated_smoothing_percent"], 0.0)
+        self.assertLessEqual(estimate["estimated_smoothing_percent"], 100.0)
+        self.assertIn("not a firmware setting", estimate["explanation"])
+
+    def test_smoothing_estimate_refuses_movement_as_noise(self):
+        estimate = estimate_host_smoothing(
+            axes={},
+            capture_kind="movement",
+            stationary=False,
+            sample_count=2000,
+            duplicate_report_percent=0.0,
+        )
+        self.assertFalse(estimate["available"])
+        self.assertEqual(estimate["basis"], "movement-includes-intended-input")
 
     def test_safety_limits_reject_non_finite_offset(self):
         with self.assertRaises(ValueError):

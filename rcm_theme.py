@@ -5,18 +5,18 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
-BG = "#070B14"
-SURFACE = "#101628"
-CARD = "#161D30"
-LINE = "#2A3550"
+BG = "#070A10"
+SURFACE = "#0A0F18"
+CARD = "#0E1622"
+LINE = "#202E42"
 TEXT = "#F4F7FF"
-MUTED = "#8B97B3"
-ACCENT = "#3B82F6"
+MUTED = "#8FA1B8"
+ACCENT = "#2E6AE8"
 ACCENT_HOVER = "#4F8CFF"
-ACCENT_DIM = "#1E3A8A"
-CYAN = "#5EC8FF"
-WARN = "#F5A524"
-TRACK = "#1A2340"
+ACCENT_DIM = "#16243A"
+CYAN = "#70D6FF"
+WARN = "#F4C76A"
+TRACK = "#182337"
 ON_ACCENT = "#F8FBFF"
 
 

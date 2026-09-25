@@ -24,7 +24,7 @@ import tkinter as tk
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 from typing import Optional, Protocol
 
 from support import log_event, start_heartbeat
@@ -369,15 +369,24 @@ class HIDGamepad:
         for info in devices:
             usage_page = info.get("usage_page")
             usage = info.get("usage")
-            product = (info.get("product_string") or "").strip()
             vendor_id = info.get("vendor_id")
             searchable = " ".join(
                 str(info.get(key) or "") for key in ("product_string", "manufacturer_string", "serial_number")
             ).lower()
+            # A single physical pad can expose mouse/vendor/consumer HID
+            # interfaces alongside its gamepad interface. Only offer the
+            # joystick/gamepad usages to the live input picker.
             is_joystick_usage = usage_page == 0x01 and usage in (0x00, 0x04, 0x05)
             has_controller_name = any(keyword in searchable for keyword in cls._KEYWORDS)
             is_known_controller_vendor = vendor_id in cls._KNOWN_CONTROLLER_VENDORS
-            if is_joystick_usage or has_controller_name or is_known_controller_vendor:
+            if is_joystick_usage or (
+                (has_controller_name or is_known_controller_vendor)
+                and usage_page == 0x01
+                and usage in (0x00, 0x04, 0x05)
+            ) or (
+                (has_controller_name or is_known_controller_vendor)
+                and usage_page is None
+            ):
                 result.append(info)
         return result
 
@@ -424,6 +433,21 @@ class HIDGamepad:
             "lt": report[offset + 4] / 255.0 if len(report) > offset + 4 else 0.0,
             "rt": report[offset + 5] / 255.0 if len(report) > offset + 5 else 0.0,
         }
+        # Common USB gamepad reports place an 8-bit button field immediately
+        # after the four axes and two triggers. The Vader 5 Pro uses this
+        # layout; retain the field only when the report actually contains it.
+        if len(report) > offset + 6:
+            sample["buttons"] = int(report[offset + 6])
+        if len(report) > offset + 7:
+            hat = int(report[offset + 7])
+            if hat <= 7:
+                directions = (
+                    (0, 1), (1, 1), (1, 0), (1, -1),
+                    (0, -1), (-1, -1), (-1, 0), (-1, 1),
+                )
+                sample["dpad_x"], sample["dpad_y"] = directions[hat]
+            else:
+                sample["dpad_x"], sample["dpad_y"] = 0, 0
         self.last_sample = sample
         return sample
 

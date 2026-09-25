@@ -64,12 +64,10 @@ def main() -> int:
     preview_root.mkdir(parents=True, exist_ok=True)
     for page_name, filename in (
         ("Dashboard", "dashboard.png"),
-        ("Live Capture", "live_capture.png"),
         ("Controller Lab", "controller_lab.png"),
-        ("Stick Cleaner", "stick_cleaner.png"),
-        ("Electrical Trace", "electrical_trace.png"),
-        ("Oscillator Lab", "oscillator_lab.png"),
-        ("Correlation", "correlation_lab.png"),
+        ("Reports", "reports.png"),
+        ("Support", "support.png"),
+        ("Settings", "settings.png"),
     ):
         window._navigate(NAV.index(page_name))
         window._refresh_ui()

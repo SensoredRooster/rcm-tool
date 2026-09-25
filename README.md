@@ -1,19 +1,46 @@
 # RcmTool
 
-RcmTool is a Windows tool for documenting controller Raw HID noise, host-observed report timing jitter, and movement/settling behavior, with an optional upstream electrical trace for attribution work.
+RcmTool is a beginner-friendly Windows app for answering one practical
+question: **what is this controller actually sending to this PC?**
+
+It measures controller reports, timing, stick noise, repeated reports, and
+movement settling. It also provides a cautious **smoothing estimate**. That
+estimate describes how smooth the signal looks after it reaches Windows; it
+does not pretend to read a hidden firmware setting.
 
 The application is measurement-focused. It does not inject game inputs, modify controller firmware, or manufacture precision that the connected hardware cannot provide.
 
 ## Active test workflow
 
-- **Dashboard:** Raw HID arrival rate, report interval, timing jitter, duplicate/late estimates, and stick traces. Unavailable data stays unavailable.
-- **Controller Lab:** Select a named Raw HID interface, inspect live decoded axes/buttons, and run the guided neutral and movement tests.
-- **Electrical Trace:** Optionally capture an upstream sensor signal using an installed sigrok-compatible scope or logic analyzer.
+- **Dashboard:** A quick summary of report rate, timing, stick traces, and the latest smoothing result.
+- **Controller Lab:** Select a named Raw HID interface, inspect live decoded axes/buttons, and run the guided test.
 - **Reports:** Export saved session JSON/CSV and a plain-language report that states what the values can and cannot establish.
 - **Support:** Existing local logs, health snapshot, redacted support bundle, and explicit-confirm upload flow remain available.
 - **Settings:** Capture thresholds, timing reference, display refresh, controller view, and theme.
 
-The guided wizard captures untouched-stick behavior for 10 seconds, then a defined movement/settling sequence for 20 seconds. If there is no session already recording, the wizard starts one and stores the raw session in the local SQLite database. Completed evidence remains available when the selected device changes.
+The guided wizard captures untouched-stick behavior for 10 seconds, then a
+defined movement/settling sequence for 20 seconds. If there is no session
+already recording, the wizard starts one and stores the raw session in the
+local SQLite database. Completed evidence remains available when the selected
+device changes.
+
+## Filtering and smoothing, in plain English
+
+Filtering (also called smoothing) makes a stick signal change more gently.
+It can hide tiny unwanted wiggles, but too much of it can make a stick feel
+soft or delayed.
+
+- **Less filtering:** sharper response, but more visible jitter.
+- **More filtering:** calmer response, but potentially more delay.
+- **Offline smoother in RcmTool:** a copy of the recorded data is smoothed
+  for comparison. Your controller and game input are never changed.
+- **Smoothing estimate:** a relative indicator based on neighboring samples and
+  repeated Raw HID reports. It is shown as low, moderate, or high and includes
+  a confidence value when the capture is suitable.
+
+The estimate is intentionally conservative. A Raw HID capture cannot prove
+whether smoothness came from the sensor, analog circuit, controller firmware,
+USB transport, driver, remapper, or game.
 
 ## Measurement integrity
 
@@ -68,9 +95,13 @@ Runtime dependencies are pinned in `requirements.txt` from the validated Windows
 2. Connect the controller by USB. In **Controller Lab**, click **Refresh Raw HID** and select its named VID/PID entry.
 3. Verify that entry matches the controller you connected. Windows HID descriptors cannot rule out a virtual HID device.
 4. Wait until live Raw HID reports arrive. Capture and test controls remain disabled until they do.
-5. Run **Guided smoothing test**: leave the sticks untouched for 10 seconds, then follow the one-stick movement sequence for 20 seconds.
-6. Export the result report. It explains observed rate, jitter, noise, duplicate payloads, and the limits of any firmware attribution.
-7. Use **Electrical Trace** only when a real scope/analyzer and safe upstream probe connection are available. Host-start alignment alone does not prove causation.
+5. Run **Guided Raw HID + smoothing test**. Leave both sticks untouched for
+   10 seconds, then follow the on-screen one-stick movement sequence for
+   20 seconds.
+6. Read the Dashboard result. A percentage is a relative signal indicator,
+   not a firmware setting.
+7. Export the result report. It explains the estimate, observed rate, jitter,
+   noise, duplicate payloads, and the limits of firmware attribution.
 
 The Raw HID selector reads the selected interface's USB HID reports and labels timestamps as **measured at host arrival**. If no device is found, the app does not substitute simulated or XInput values.
 

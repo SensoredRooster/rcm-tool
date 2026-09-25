@@ -3,7 +3,6 @@ target-version = "py312"
 line-length = 120
 extend-exclude = [
   "controller_integrity.py",
-  "apply_*.py",
   "ble_*.py",
   "desk_bench.py",
   "hid_signal.py",

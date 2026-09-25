@@ -42,6 +42,13 @@ class ControllerIntegrityTests(unittest.TestCase):
         self.assertAlmostEqual(sample["rx"], 0.0, places=2)
         self.assertAlmostEqual(sample["ry"], 0.0, places=2)
 
+    def test_generic_hid_report_exposes_buttons_and_dpad(self):
+        reader = app.HIDGamepad(info={"vendor_id": 0x1234, "product_string": "USB Gamepad"})
+        sample = reader._parse_report([0, 128, 128, 128, 128, 0, 0, 0x05, 0x01])
+        self.assertEqual(sample["buttons"], 0x05)
+        self.assertEqual(sample["dpad_x"], 1)
+        self.assertEqual(sample["dpad_y"], 1)
+
     def test_hid_reader_does_not_replay_cached_sample_when_no_report_arrives(self):
         class EmptyDevice:
             @staticmethod

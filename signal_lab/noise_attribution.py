@@ -15,6 +15,101 @@ AXES = ("lx", "ly", "rx", "ry")
 DEFAULT_TAU_SECONDS = 0.05
 
 
+def _bounded_percent(value: float) -> float:
+    return min(100.0, max(0.0, float(value)))
+
+
+def estimate_host_smoothing(
+    *,
+    axes: dict[str, dict[str, float | int | None]],
+    capture_kind: str,
+    stationary: bool | None,
+    sample_count: int,
+    duplicate_report_percent: float | None,
+) -> dict[str, object]:
+    """Estimate signal smoothness from consecutive host-observed samples.
+
+    This is intentionally a relative indicator, not a controller setting
+    detector. A single Raw HID stream cannot prove where filtering happened or
+    recover a hidden firmware percentage.
+    """
+    base = {
+        "available": False,
+        "estimated_smoothing_percent": None,
+        "confidence_percent": 0.0,
+        "label": "Not measurable",
+        "basis": "unavailable",
+        "explanation": (
+            "Run a valid untouched-stick capture with at least 100 samples. "
+            "The result will describe the smoothness of the signal received by this PC."
+        ),
+    }
+    if capture_kind != "neutral":
+        base["basis"] = "movement-includes-intended-input"
+        base["explanation"] = (
+            "Movement contains intended stick motion, so this test cannot separate "
+            "real movement from filtering. Use the untouched-stick capture."
+        )
+        return base
+    if sample_count < 100 or stationary is not True:
+        base["basis"] = "stationarity-check-failed"
+        base["explanation"] = (
+            "The untouched-stick test must stay within the stationary movement limit. "
+            "Motion or an incomplete capture would make the estimate misleading."
+        )
+        return base
+
+    axis_scores_by_axis: dict[str, float] = {}
+    for axis, metrics in axes.items():
+        noise_rms = metrics.get("noise_rms")
+        delta_rms = metrics.get("adjacent_delta_rms")
+        if not isinstance(noise_rms, (int, float)) or not isinstance(delta_rms, (int, float)):
+            continue
+        if noise_rms <= 1e-9:
+            continue
+        random_noise_delta = math.sqrt(2.0) * float(noise_rms)
+        axis_scores_by_axis[axis] = _bounded_percent(
+            100.0 * (1.0 - float(delta_rms) / random_noise_delta)
+        )
+    axis_scores = list(axis_scores_by_axis.values())
+    if not axis_scores:
+        base["basis"] = "insufficient-signal-variation"
+        base["explanation"] = (
+            "The capture was too quiet to distinguish repeated smooth samples "
+            "from a perfectly centered, low-noise stick."
+        )
+        return base
+
+    signal_score = statistics.median(axis_scores)
+    duplicate_score = _bounded_percent(float(duplicate_report_percent or 0.0))
+    estimate = _bounded_percent(0.75 * signal_score + 0.25 * duplicate_score)
+    confidence = _bounded_percent(
+        45.0
+        + min(30.0, max(0.0, (sample_count - 100) / 1000.0 * 30.0))
+        + (10.0 if len(axis_scores) >= 3 else 0.0)
+    )
+    if estimate < 25.0:
+        label = "Low observed smoothing"
+    elif estimate < 60.0:
+        label = "Moderate observed smoothing"
+    else:
+        label = "High observed smoothing"
+    return {
+        "available": True,
+        "estimated_smoothing_percent": round(estimate, 1),
+        "confidence_percent": round(confidence, 1),
+        "label": label,
+        "basis": "stationary-consecutive-sample-smoothness",
+        "axis_scores_percent": {axis: round(score, 1) for axis, score in axis_scores_by_axis.items()},
+        "explanation": (
+            "This relative indicator uses how much neighboring samples repeat or "
+            "change less than independent noise would. It is not a firmware setting "
+            "and cannot identify whether smoothing came from hardware, firmware, USB, "
+            "a driver, or another host layer."
+        ),
+    }
+
+
 def _low_pass(values: list[float], timestamps_s: list[float], tau_seconds: float) -> list[float]:
     if not values:
         return []
@@ -163,6 +258,13 @@ def analyze_noise_capture(
         )
         for axis, metrics in axes.items()
     }
+    smoothing_estimate = estimate_host_smoothing(
+        axes=axes,
+        capture_kind=capture_kind,
+        stationary=stationary,
+        sample_count=len(samples),
+        duplicate_report_percent=duplicate_percent,
+    )
     target_duration_s = {"neutral": 10.0, "movement": 20.0}.get(capture_kind)
     quality_checks = []
     if target_duration_s is not None:
@@ -274,6 +376,7 @@ def analyze_noise_capture(
             "note": smoothing_note,
             "does_not_modify_controller_or_game_input": True,
         },
+        "smoothing_estimate": smoothing_estimate,
         "high_frequency_energy_percent_by_axis": high_frequency_energy,
         "capture_quality": {
             "label": quality_label,

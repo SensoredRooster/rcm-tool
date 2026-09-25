@@ -105,7 +105,20 @@ def timing_metrics(
         return TimingMetrics(sample_count=len(timestamps_ns))
     duration_s = max(0.0, (timestamps_ns[-1] - timestamps_ns[0]) / 1_000_000_000.0)
     mean = statistics.fmean(intervals_ms)
-    expected = float(expected_interval_ms) if expected_interval_ms and expected_interval_ms > 0 else _pct(intervals_ms, 50)
+    ordered = sorted(intervals_ms)
+
+    def percentile(level: float) -> float:
+        if len(ordered) == 1:
+            return ordered[0]
+        position = (len(ordered) - 1) * (level / 100.0)
+        lower = int(math.floor(position))
+        upper = int(math.ceil(position))
+        if lower == upper:
+            return ordered[lower]
+        fraction = position - lower
+        return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
+
+    expected = float(expected_interval_ms) if expected_interval_ms and expected_interval_ms > 0 else percentile(50)
     deviations = [dt - expected for dt in intervals_ms]
     successive = [b - a for a, b in zip(intervals_ms, intervals_ms[1:])]
     late_limit = expected * max(1.0, late_factor)
@@ -124,11 +137,11 @@ def timing_metrics(
         rms_deviation_ms=_rms(deviations),
         peak_to_peak_jitter_ms=max(deviations) - min(deviations),
         successive_interval_variation_ms=_rms(successive),
-        p50_ms=_pct(intervals_ms, 50),
-        p90_ms=_pct(intervals_ms, 90),
-        p95_ms=_pct(intervals_ms, 95),
-        p99_ms=_pct(intervals_ms, 99),
-        p999_ms=_pct(intervals_ms, 99.9),
+        p50_ms=percentile(50),
+        p90_ms=percentile(90),
+        p95_ms=percentile(95),
+        p99_ms=percentile(99),
+        p999_ms=percentile(99.9),
         late_reports=late,
         missing_reports_estimate=missing,
         duplicate_intervals=duplicates,

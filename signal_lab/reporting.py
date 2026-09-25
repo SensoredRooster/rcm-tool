@@ -214,6 +214,7 @@ def write_noise_evidence_report(
     quality = result.get("capture_quality") or {}
     stationary = result.get("stationary_check") or {}
     smoothing = result.get("smoothing_comparison") or {}
+    smoothing_estimate = result.get("smoothing_estimate") or {}
     smoothing_tau_ms = smoothing.get("time_constant_ms")
     smoothing_tau_text = (
         f"{float(smoothing_tau_ms):.1f} ms"
@@ -243,6 +244,16 @@ def write_noise_evidence_report(
         "Duplicate payloads": f"{float(duplicate_percent):.2f}%" if isinstance(duplicate_percent, (int, float)) else "Unavailable (<2 raw reports)",
         "Capture checks": quality.get("label", "unavailable"),
     })
+    estimate_value = smoothing_estimate.get("estimated_smoothing_percent")
+    estimate_text = (
+        f"{float(estimate_value):.1f}%"
+        if isinstance(estimate_value, (int, float)) else "Not measurable"
+    )
+    confidence_value = smoothing_estimate.get("confidence_percent")
+    confidence_text = (
+        f"{float(confidence_value):.1f}%"
+        if isinstance(confidence_value, (int, float)) else "Unavailable"
+    )
     quality_rows = []
     for check in quality.get("checks", []):
         if check.get("observed_percent") is not None:
@@ -345,6 +356,13 @@ def write_noise_evidence_report(
         f"<p>A first-order exponential smoother with a {escape(smoothing_tau_text)} time constant was calculated from a copy of these exact captured Raw HID samples. The original reports were not changed.</p>"
         f"<p>{smoothing_note} Positive variation change means the software-filtered copy varied less; negative means it varied more. This is a calculation, not a second hardware measurement, and it does not alter controller firmware or game input.</p></div>"
     )
+    estimate_card = (
+        "<div class='card'><h2>Beginner-friendly smoothing estimate</h2>"
+        f"<p><b>{escape(str(smoothing_estimate.get('label', 'Not measurable')))}</b> "
+        f"({escape(estimate_text)} relative indicator; confidence {escape(confidence_text)}).</p>"
+        f"<p>{escape(str(smoothing_estimate.get('explanation', 'No estimate is available.')))}</p>"
+        "<p class='small'>Treat this as a clue about the signal received by Windows, not as proof of a controller firmware setting.</p></div>"
+    )
     if result.get("capture_kind") == "movement":
         stationary_text = "This was an intentional movement capture; a stationary noise-floor check does not apply."
     elif stationary.get("is_stationary") is True:
@@ -359,10 +377,12 @@ def write_noise_evidence_report(
         "These percentages describe the captured signal; they are not probabilities that firmware is cheating or filtering.</p></div>"
         f"<div class='card'><h2>Capture summary</h2>{summary}</div>"
         f"{quality_table}"
+        f"{estimate_card}"
         f"{smoothing_card}"
         f"{capture_table}"
         "<div class='card'><h2>How to read the numbers</h2>"
         "<ul><li><b>Raw RMS</b> is the measured axis variation around its mean during this capture.</li>"
+        "<li><b>Beginner-friendly smoothing estimate</b> is a relative indicator based on neighboring samples and repeated reports. It is not an exact percentage setting.</li>"
         "<li><b>After smoother RMS</b> is the variation in the offline-filtered copy using the selected time constant; it is not a firmware or game-input result.</li>"
         "<li><b>Variation change</b> compares raw RMS with the filtered-copy RMS. For neutral captures it is called noise change only when the stationary check passes; movement results include intended movement.</li>"
         "<li><b>Raw-to-filter delta RMS</b> quantifies how far the software smoother moved samples from their measured values; a larger value also means more response alteration.</li>"

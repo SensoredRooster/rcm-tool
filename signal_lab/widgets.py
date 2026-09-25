@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
     QFileDialog, QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 )
 
+from .theme import PAINT
+
 
 def _axis_text(value: float) -> str:
     value = float(value)
@@ -37,7 +39,7 @@ class MetricCard(QFrame):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("MetricCard")
-        self.setMinimumSize(190, 132)
+        self.setMinimumSize(168, 108)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 13, 16, 13)
@@ -59,14 +61,14 @@ class MetricCard(QFrame):
         self.value_label = QLabel(value)
         self.value_label.setObjectName("Metric")
         self.value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.value_label.setMinimumHeight(30)
+        self.value_label.setMinimumHeight(26)
         self.value_label.setWordWrap(False)
         layout.addWidget(self.value_label)
 
         self.subtitle_label = QLabel(subtitle)
         self.subtitle_label.setObjectName("Muted")
         self.subtitle_label.setWordWrap(True)
-        self.subtitle_label.setMinimumHeight(30)
+        self.subtitle_label.setMinimumHeight(22)
         layout.addWidget(self.subtitle_label, 1)
 
         source_row = QHBoxLayout()
@@ -113,13 +115,15 @@ class MetricCard(QFrame):
             self.source_label.setText(text)
 
     def set_value(self, value: str, subtitle: str | None = None, source: str | None = None) -> None:
-        if self.value_label.text() != value:
+        value_changed = self.value_label.text() != value
+        if value_changed:
             self.value_label.setText(value)
         if subtitle is not None and self.subtitle_label.text() != subtitle:
             self.subtitle_label.setText(subtitle)
         if source is not None:
             self.set_source(source)
-        self._fit_value_text()
+        if value_changed:
+            self._fit_value_text()
 
 
 class LineChart(QWidget):
@@ -145,7 +149,9 @@ class LineChart(QWidget):
         self.cursor_x: float | None = None
         self.external_cursor_ratio: float | None = None
         self.drag_origin: float | None = None
-        self.setMinimumHeight(235)
+        self._fingerprint = ""
+        self.empty_text = "No live reports yet — move a stick"
+        self.setMinimumHeight(220)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMouseTracking(True)
         controls = "Wheel: zoom • drag: pan • move pointer: inspect"
@@ -158,11 +164,31 @@ class LineChart(QWidget):
         x_values: Sequence[float] | None = None,
         x_label: str | None = None,
     ) -> None:
+        fingerprint = self._series_fingerprint(series, x_values, x_label)
+        if fingerprint == self._fingerprint:
+            return
+        self._fingerprint = fingerprint
         self.series = [(name, [float(v) for v in values], QColor(color)) for name, values, color in series]
         self.x_values = [float(v) for v in x_values] if x_values is not None else None
         if x_label is not None:
             self.x_label = x_label
         self.update()
+
+    @staticmethod
+    def _series_fingerprint(
+        series: Sequence[tuple[str, Sequence[float], str]],
+        x_values: Sequence[float] | None,
+        x_label: str | None,
+    ) -> str:
+        parts = [x_label or "", str(0 if x_values is None else len(x_values))]
+        if x_values:
+            parts.append(f"{float(x_values[0]):.6g}:{float(x_values[-1]):.6g}")
+        for name, values, color in series:
+            count = len(values)
+            head = f"{float(values[0]):.7g}" if count else ""
+            tail = f"{float(values[-1]):.7g}" if count else ""
+            parts.append(f"{name}:{count}:{head}:{tail}:{color}")
+        return "|".join(parts)
 
     def reset_view(self) -> None:
         self.zoom = 1.0
@@ -222,10 +248,38 @@ class LineChart(QWidget):
             return self.x_values[start:end]
         return [float(i) for i in range(start, end)]
 
+    @staticmethod
+    def _decimate(xs: list[float], values: list[float], width: int) -> tuple[list[float], list[float]]:
+        count = len(values)
+        if count <= max(4, width * 2) or width < 2:
+            return xs, values
+        out_x: list[float] = []
+        out_y: list[float] = []
+        buckets = max(2, width)
+        for bucket in range(buckets):
+            start = int(bucket * count / buckets)
+            end = int((bucket + 1) * count / buckets)
+            if start >= end:
+                continue
+            segment = values[start:end]
+            min_offset = min(range(len(segment)), key=lambda index: segment[index])
+            max_offset = max(range(len(segment)), key=lambda index: segment[index])
+            first, second = (min_offset, max_offset) if min_offset <= max_offset else (max_offset, min_offset)
+            for offset in (first, second) if first != second else (first,):
+                index = start + offset
+                out_x.append(xs[index] if index < len(xs) else float(index))
+                out_y.append(values[index])
+        return out_x, out_y
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        bg, border, text, grid = QColor("#0C141F"), QColor("#23334A"), QColor("#A9B8CB"), QColor("#1C293B")
+        bg, border, text, grid = (
+            QColor(PAINT["chart_bg"]),
+            QColor(PAINT["chart_border"]),
+            QColor(PAINT["chart_text"]),
+            QColor(PAINT["chart_grid"]),
+        )
         painter.setPen(QPen(border, 1))
         painter.setBrush(bg)
         painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 16, 16)
@@ -246,8 +300,8 @@ class LineChart(QWidget):
 
         all_values = [v for _, values, _ in self.series for v in values if math.isfinite(v)]
         if not all_values:
-            painter.setPen(text)
-            painter.drawText(area, Qt.AlignmentFlag.AlignCenter, "Unavailable")
+            painter.setPen(QColor(PAINT["empty"]))
+            painter.drawText(area, Qt.AlignmentFlag.AlignCenter, self.empty_text)
             painter.drawText(
                 QRectF(area.left(), area.bottom() + 12, area.width(), 20),
                 Qt.AlignmentFlag.AlignHCenter,
@@ -279,11 +333,13 @@ class LineChart(QWidget):
         painter.drawText(QRectF(2, area.top() - 8, 60, 18), Qt.AlignmentFlag.AlignRight, _axis_text(high))
         painter.drawText(QRectF(2, area.bottom() - 10, 60, 18), Qt.AlignmentFlag.AlignRight, _axis_text(low))
 
+        pixel_width = max(2, int(area.width()))
         for name, values, color in self.series:
             segment = values[start:end]
             if len(segment) < 2:
                 continue
             x_segment = xs[:len(segment)]
+            x_segment, segment = self._decimate(x_segment, segment, pixel_width)
             path = QPainterPath()
             started = False
             for i, value in enumerate(segment):
@@ -301,7 +357,7 @@ class LineChart(QWidget):
             painter.setPen(QPen(color, 1.7))
             painter.drawPath(path)
 
-        painter.setPen(QColor("#7E91AA"))
+        painter.setPen(QColor(PAINT["chart_muted"]))
         painter.drawText(QRectF(area.left(), area.bottom() + 4, 90, 18), Qt.AlignmentFlag.AlignLeft, _axis_text(x_low))
         painter.drawText(QRectF(area.right() - 90, area.bottom() + 4, 90, 18), Qt.AlignmentFlag.AlignRight, _axis_text(x_high))
         painter.drawText(
@@ -349,12 +405,16 @@ class StickView(QWidget):
     def __init__(self, label: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.label, self.x, self.y = label, 0.0, 0.0
-        self.setMinimumSize(190, 190)
+        self.setMinimumSize(168, 168)
         self.setToolTip("Decoded stick position normalized to -1…+1 on each axis.")
 
     def set_position(self, x: float, y: float) -> None:
-        self.x = max(-1.0, min(1.0, float(x)))
-        self.y = max(-1.0, min(1.0, float(y)))
+        next_x = max(-1.0, min(1.0, float(x)))
+        next_y = max(-1.0, min(1.0, float(y)))
+        if next_x == self.x and next_y == self.y:
+            return
+        self.x = next_x
+        self.y = next_y
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -362,18 +422,18 @@ class StickView(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         side = min(self.width(), self.height()) - 46
         rect = QRectF((self.width() - side) / 2, 28, side, side)
-        painter.setPen(QPen(QColor("#2B3A54"), 1))
-        painter.setBrush(QColor("#0C141F"))
+        painter.setPen(QPen(QColor(PAINT["chart_border"]), 1))
+        painter.setBrush(QColor(PAINT["chart_bg"]))
         painter.drawEllipse(rect)
         center = rect.center()
         painter.drawLine(QPointF(rect.left(), center.y()), QPointF(rect.right(), center.y()))
         painter.drawLine(QPointF(center.x(), rect.top()), QPointF(center.x(), rect.bottom()))
         px = center.x() + self.x * rect.width() * 0.45
         py = center.y() - self.y * rect.height() * 0.45
-        painter.setBrush(QColor("#5D93FF"))
-        painter.setPen(QPen(QColor("#9EC0FF"), 2))
+        painter.setBrush(QColor(PAINT["stick_dot"]))
+        painter.setPen(QPen(QColor(PAINT["stick_ring"]), 2))
         painter.drawEllipse(QPointF(px, py), 9, 9)
-        painter.setPen(QColor("#A8B5C9"))
+        painter.setPen(QColor(PAINT["chart_text"]))
         painter.drawText(QRectF(0, 3, self.width(), 20), Qt.AlignmentFlag.AlignHCenter, self.label)
 
 
@@ -394,7 +454,7 @@ class ControllerView(QWidget):
         self.source = ""
         self.skin = "generic"
         self.mapping_family = "generic"
-        self.setMinimumHeight(390)
+        self.setMinimumHeight(300)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setToolTip(
             "Live decoded controller state. Auto skin detection is separate from input mapping. "
@@ -409,10 +469,21 @@ class ControllerView(QWidget):
         skin: str = "generic",
         mapping_family: str = "generic",
     ) -> None:
-        self.sample = dict(sample or {})
-        self.source = str(source or "")
-        self.skin = skin if skin in {"xbox", "dualsense", "vader5pro", "generic"} else "generic"
-        self.mapping_family = mapping_family if mapping_family in {"xbox", "dualsense", "generic"} else "generic"
+        next_sample = dict(sample or {})
+        next_source = str(source or "")
+        next_skin = skin if skin in {"xbox", "dualsense", "vader5pro", "generic"} else "generic"
+        next_mapping = mapping_family if mapping_family in {"xbox", "dualsense", "generic"} else "generic"
+        if (
+            next_sample == self.sample
+            and next_source == self.source
+            and next_skin == self.skin
+            and next_mapping == self.mapping_family
+        ):
+            return
+        self.sample = next_sample
+        self.source = next_source
+        self.skin = next_skin
+        self.mapping_family = next_mapping
         self.update()
 
     @staticmethod
@@ -741,10 +812,10 @@ class HeatMapWidget(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setPen(QPen(QColor("#23334A"), 1))
-        painter.setBrush(QColor("#0C141F"))
+        painter.setPen(QPen(QColor(PAINT["chart_border"]), 1))
+        painter.setBrush(QColor(PAINT["chart_bg"]))
         painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 16, 16)
-        painter.setPen(QColor("#A8B5C9"))
+        painter.setPen(QColor(PAINT["chart_text"]))
         font = painter.font(); font.setBold(True); painter.setFont(font)
         painter.drawText(QRectF(16, 12, self.width() - 32, 24), Qt.AlignmentFlag.AlignLeft, self.title)
         area = QRectF(62, 48, max(10, self.width() - 86), max(10, self.height() - 88))
@@ -765,5 +836,5 @@ class HeatMapWidget(QWidget):
             color = QColor.fromHsvF((0.62 - ratio * 0.58) % 1.0, 0.72, 0.95)
             painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(color)
             painter.drawRoundedRect(QRectF(x - 9, y - 9, 18, 18), 4, 4)
-        painter.setPen(QColor("#8595AB"))
+        painter.setPen(QColor(PAINT["chart_muted"]))
         painter.drawText(QRectF(area.left(), area.bottom() + 8, area.width(), 20), Qt.AlignmentFlag.AlignHCenter, "Stimulus frequency (log scale)")

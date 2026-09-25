@@ -15,7 +15,7 @@ import time
 import webbrowser
 
 from PySide6.QtCore import QSettings, QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
@@ -46,7 +46,7 @@ from .trace_capture import (
     scan_sigrok,
 )
 from .stick_cleaner_page import StickCleanerPage
-from .theme import DARK, LIGHT
+from .theme import DARK, LIGHT, PAINT, set_paint_theme
 from .widgets import ControllerView, HeatMapWidget, LineChart, MetricCard
 from support import (
     SESSION_ID as SUPPORT_SESSION_ID,
@@ -64,7 +64,7 @@ from support import (
 
 LOGGER = logging.getLogger(__name__)
 
-NAV = ["Dashboard", "Controller Lab", "Electrical Trace", "Reports", "Support", "Settings"]
+NAV = ["Dashboard", "Controller Lab", "Reports", "Support", "Settings"]
 
 TESTER_SHARE_URL = "https://rcm-tool-share.sensoredrooster-com.workers.dev"
 
@@ -90,7 +90,7 @@ def page(title: str, subtitle: str) -> tuple[QWidget, QVBoxLayout]:
     desc = QLabel(subtitle)
     desc.setObjectName("Muted")
     desc.setWordWrap(True)
-    desc.setMinimumHeight(34)
+    desc.setMinimumHeight(24)
     layout.addWidget(desc)
     return outer, layout
 
@@ -133,7 +133,7 @@ class WelcomeDialog(QDialog):
         self.setWindowTitle("Welcome to RcmTool")
         self.setMinimumWidth(560)
         layout = QVBoxLayout(self)
-        title = QLabel("GAMEPAD SIGNAL LAB")
+        title = QLabel("RcmTool")
         title.setObjectName("Title")
         layout.addWidget(title)
         copy = QLabel(
@@ -160,6 +160,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1120, 720)
         self.settings = QSettings("SensoredRooster", "GamepadSignalLab")
         self.theme_name = str(self.settings.value("theme", "Dark"))
+        set_paint_theme(self.theme_name)
         self.setStyleSheet(LIGHT if self.theme_name == "Light" else DARK)
 
         data_root = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "GamepadSignalLab"
@@ -256,6 +257,8 @@ class MainWindow(QMainWindow):
         self.trace_controller_raw_reports: list[str | None] = []
         self._last_gui_resource_audit = 0.0
         self._last_gui_resource_count: int | None = None
+        self._last_full_timing_at = 0.0
+        self._last_hid_enum_at = 0.0
         self._resource_startup_until = time.monotonic() + 30.0
         self._startup_gui_snapshot_logged = False
         self._gui_resource_limit_triggered = False
@@ -275,7 +278,7 @@ class MainWindow(QMainWindow):
 
         self.db_flush_timer = QTimer(self)
         self.db_flush_timer.timeout.connect(self._flush_database_buffer)
-        self.db_flush_timer.start(500)
+        self.db_flush_timer.start(1000)
 
         self.controller_discovery_timer = QTimer(self)
         self.controller_discovery_timer.setInterval(2000)
@@ -318,7 +321,7 @@ class MainWindow(QMainWindow):
 
         side.addStretch(1)
         self.hardware_status = QLabel("HARDWARE • select a named Raw HID device")
-        self.hardware_status.setObjectName("Muted")
+        self._restyle(self.hardware_status, "Muted")
         self.hardware_status.setWordWrap(True)
         side.addWidget(self.hardware_status)
         self.database_status = QLabel(f"DB • {self.db.path.name}")
@@ -347,6 +350,13 @@ class MainWindow(QMainWindow):
         self.top_title.setObjectName("PageTitle")
         top.addWidget(self.top_title)
         top.addStretch(1)
+        self.live_rate_label = QLabel("Rate • —")
+        self.live_rate_label.setObjectName("LiveRate")
+        top.addWidget(self.live_rate_label)
+        self.pause_visualization = QCheckBox("Pause graphs")
+        self.pause_visualization.setToolTip("Freezes graph repainting only. Acquisition and raw storage continue.")
+        self.pause_visualization.toggled.connect(lambda checked: setattr(self, "visualization_paused", bool(checked)))
+        top.addWidget(self.pause_visualization)
         self.capture_button = QPushButton("Record Session")
         self.capture_button.setObjectName("Primary")
         self.capture_button.clicked.connect(self._toggle_capture)
@@ -357,7 +367,6 @@ class MainWindow(QMainWindow):
         for builder in (
             self._dashboard_page,
             self._controller_page,
-            self._trace_page,
             self._reports_page,
             self._support_page,
             self._settings_page,
@@ -416,24 +425,25 @@ class MainWindow(QMainWindow):
             grid.addWidget(c, i // 4, i % 4)
         layout.addLayout(grid)
 
-        evidence, evidence_layout = card("NOISE & SMOOTHING TEST")
+        evidence, evidence_layout = card("GUIDED TEST")
         evidence_help = QLabel(
-            "The guided test checks stick noise while still, then compares movement before and after an offline smoother. "
-            "It analyzes a copy only; controller input is never changed."
+            "Leave both sticks still, then follow the on-screen movement. RcmTool analyzes a copy of the capture; controller input is never changed."
         )
         evidence_help.setWordWrap(True)
         evidence_help.setObjectName("Muted")
         evidence_layout.addWidget(evidence_help)
         evidence_actions = QHBoxLayout()
-        guided = QPushButton("Start guided test")
-        guided.clicked.connect(self._run_noise_wizard)
+        full_test = QPushButton("Full guided controller test")
+        full_test.setObjectName("Primary")
+        full_test.clicked.connect(self._run_noise_wizard)
+        self.guided_test_buttons.append(full_test)
+        guided = QPushButton("Quick 10s check")
+        guided.clicked.connect(lambda: self._start_noise_test("neutral"))
         self.guided_test_buttons.append(guided)
-        open_controller = QPushButton("Open Controller Lab")
-        open_controller.clicked.connect(lambda: self._navigate(NAV.index("Controller Lab")))
-        export_evidence = QPushButton("Open results report")
+        export_evidence = QPushButton("Open results")
         export_evidence.clicked.connect(self._export_noise_evidence)
+        evidence_actions.addWidget(full_test)
         evidence_actions.addWidget(guided)
-        evidence_actions.addWidget(open_controller)
         evidence_actions.addWidget(export_evidence)
         evidence_actions.addStretch(1)
         evidence_layout.addLayout(evidence_actions)
@@ -441,20 +451,15 @@ class MainWindow(QMainWindow):
         self.dashboard_noise_status.setObjectName("Muted")
         self.dashboard_noise_status.setWordWrap(True)
         evidence_layout.addWidget(self.dashboard_noise_status)
-        layout.addWidget(evidence)
-
-        baseline, bl = card("SAVE A RAW SESSION")
-        state_row = QHBoxLayout()
-        self.baseline_state = QLabel("Record Session saves incoming controller reports and measurements on this PC for review or export.")
+        self.baseline_state = QLabel("Use Record Session in the top bar to save incoming reports on this PC.")
         self.baseline_state.setObjectName("Muted")
         self.baseline_state.setWordWrap(True)
+        evidence_layout.addWidget(self.baseline_state)
         self.baseline_progress = QProgressBar()
         self.baseline_progress.setRange(0,1000)
         self.baseline_progress.setVisible(False)
-        state_row.addWidget(self.baseline_state,2)
-        state_row.addWidget(self.baseline_progress,1)
-        bl.addLayout(state_row)
-        layout.addWidget(baseline)
+        evidence_layout.addWidget(self.baseline_progress)
+        layout.addWidget(evidence)
 
         charts = QGridLayout()
         charts.setHorizontalSpacing(14)
@@ -471,9 +476,10 @@ class MainWindow(QMainWindow):
         charts.addWidget(self.dashboard_timing_chart,0,0)
         charts.addWidget(self.dashboard_noise_chart,0,1)
         charts.setColumnStretch(0,1); charts.setColumnStretch(1,1)
-        layout.addLayout(charts)
+        charts.setRowStretch(0,1)
+        layout.addLayout(charts, 1)
 
-        q, ql = card("ABOUT THESE READINGS (DETAILS)")
+        q, ql = card("ABOUT THESE READINGS")
         self.quality_label = QLabel("Connect a controller and move a stick to see recent readings.")
         self.quality_label.setWordWrap(True)
         self.quality_label.setToolTip(
@@ -481,7 +487,6 @@ class MainWindow(QMainWindow):
         )
         ql.addWidget(self.quality_label)
         layout.addWidget(q)
-        layout.addStretch(1)
         return self._scroll(w)
 
     def _live_page(self) -> QWidget:
@@ -490,9 +495,10 @@ class MainWindow(QMainWindow):
             "Acquisition remains raw and lossless. Pause and smoothing affect only the display layer.",
         )
         controls, controls_layout = card("DISPLAY CONTROLS")
-        self.pause_visualization = QCheckBox("Pause visualization")
-        self.pause_visualization.setToolTip("Freezes graph repainting only. Acquisition and raw storage continue.")
-        self.pause_visualization.toggled.connect(lambda checked: setattr(self, "visualization_paused", bool(checked)))
+        if not hasattr(self, "pause_visualization"):
+            self.pause_visualization = QCheckBox("Pause graphs")
+            self.pause_visualization.setToolTip("Freezes graph repainting only. Acquisition and raw storage continue.")
+            self.pause_visualization.toggled.connect(lambda checked: setattr(self, "visualization_paused", bool(checked)))
         self.smoothing_window = QSpinBox()
         self.smoothing_window.setRange(1, 51)
         self.smoothing_window.setValue(1)
@@ -507,8 +513,7 @@ class MainWindow(QMainWindow):
         control_grid = QGridLayout()
         control_grid.setHorizontalSpacing(10)
         control_grid.setVerticalSpacing(10)
-        control_grid.addWidget(self.pause_visualization,0,0)
-        control_grid.addWidget(self.smoothing_window,0,1,1,2)
+        control_grid.addWidget(self.smoothing_window,0,0,1,2)
         control_grid.addWidget(reset,0,3)
         control_grid.addWidget(export,1,0)
         control_grid.addWidget(fullscreen,1,1)
@@ -543,6 +548,38 @@ class MainWindow(QMainWindow):
             "The picture follows the connected model when recognized. Stick dots use live readings; button names are shown only when their mapping is known.",
         )
 
+        source_card, source_layout = card("INPUT SOURCE")
+        source_row = QHBoxLayout()
+        self.controller_source_combo = QComboBox()
+        self.controller_source_combo.setMinimumWidth(420)
+        self.controller_source_combo.setToolTip(
+            "Only a specifically selected Raw HID device is measured. XInput polling is excluded; a virtual device that exposes a HID interface may still appear and must be independently verified."
+        )
+        self.controller_source_combo.currentIndexChanged.connect(self._controller_source_changed)
+        refresh_sources = QPushButton("Refresh Raw HID")
+        refresh_sources.clicked.connect(lambda: self._refresh_controller_sources(force=True))
+        source_row.addWidget(self.controller_source_combo, 1)
+        source_row.addWidget(refresh_sources)
+        self.refresh_controller_button = refresh_sources
+        source_layout.addLayout(source_row)
+        self.controller_source_status = QLabel(
+            "Choose the named controller, then move a stick to confirm live readings. This tool reads controller reports; it does not change controller settings."
+        )
+        self.controller_source_status.setObjectName("Muted")
+        self.controller_source_status.setWordWrap(True)
+        source_layout.addWidget(self.controller_source_status)
+        layout.addWidget(source_card)
+
+        visual, vl = card("LIVE CONTROLLER")
+        self.controller_view = ControllerView()
+        vl.addWidget(self.controller_view)
+        self.controller_axes_readout = QLabel("LX —   LY —   RX —   RY —   LT —   RT —")
+        self.controller_axes_readout.setObjectName("Muted")
+        self.controller_axes_readout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.controller_axes_readout.setWordWrap(True)
+        vl.addWidget(self.controller_axes_readout)
+        layout.addWidget(visual, 1)
+
         identity, il = card("CONNECTED CONTROLLER")
         identity_row = QHBoxLayout()
         self.controller_meta = QLabel("No live Raw HID report stream; select a named device to begin")
@@ -573,16 +610,6 @@ class MainWindow(QMainWindow):
         il.addLayout(identity_row)
         layout.addWidget(identity)
 
-        visual, vl = card("LAST REPORTED STICK POSITION")
-        self.controller_view = ControllerView()
-        vl.addWidget(self.controller_view)
-        self.controller_axes_readout = QLabel("LX unavailable  •  LY unavailable  •  RX unavailable  •  RY unavailable  •  LT unavailable  •  RT unavailable")
-        self.controller_axes_readout.setObjectName("Muted")
-        self.controller_axes_readout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.controller_axes_readout.setWordWrap(True)
-        vl.addWidget(self.controller_axes_readout)
-        layout.addWidget(visual)
-
         diagnostics = QGridLayout()
         diagnostics.setHorizontalSpacing(14)
         diagnostics.setVerticalSpacing(14)
@@ -608,57 +635,25 @@ class MainWindow(QMainWindow):
         device_layout.addWidget(self.controller_capability)
         diagnostics.addWidget(device_card,1,0,1,2)
 
-        source_card, source_layout = card("INPUT SOURCE")
-        source_row = QHBoxLayout()
-        self.controller_source_combo = QComboBox()
-        self.controller_source_combo.setMinimumWidth(420)
-        self.controller_source_combo.setToolTip(
-            "Only a specifically selected Raw HID device is measured. XInput polling is excluded; a virtual device that exposes a HID interface may still appear and must be independently verified."
-        )
-        self.controller_source_combo.currentIndexChanged.connect(self._controller_source_changed)
-        refresh_sources = QPushButton("Refresh Raw HID")
-        refresh_sources.clicked.connect(lambda: self._refresh_controller_sources(force=True))
-        source_row.addWidget(self.controller_source_combo, 1)
-        source_row.addWidget(refresh_sources)
-        self.refresh_controller_button = refresh_sources
-        source_layout.addLayout(source_row)
-        self.controller_source_status = QLabel(
-            "Choose the named controller above, then move a stick to confirm live readings. This tool reads controller reports; it does not change controller settings."
-        )
-        self.controller_source_status.setObjectName("Muted")
-        self.controller_source_status.setWordWrap(True)
-        source_layout.addWidget(self.controller_source_status)
-        diagnostics.addWidget(source_card, 2, 0, 1, 2)
-
         evidence_card, evidence_layout = card("RAW HID NOISE + SMOOTHING TEST")
         evidence_help = QLabel(
-            "Raw HID only: the first test measures stationary output noise; the second measures movement/settling behavior. "
-            "Neither can prove firmware filtering without an oscilloscope or logic analyzer upstream of USB."
+            "Put both sticks in the center, click the quick check, and leave the controller alone for 10 seconds. "
+            "RcmTool will report live input, stick drift, report rate, and a host-observed smoothing estimate."
         )
         evidence_help.setObjectName("Muted")
         evidence_help.setWordWrap(True)
         evidence_layout.addWidget(evidence_help)
-        smoothing_row = QHBoxLayout()
-        smoothing_row.addWidget(QLabel("Offline smoother time constant"))
-        self.noise_smoothing_tau_ms = QDoubleSpinBox()
-        self.noise_smoothing_tau_ms.setRange(1.0, 200.0)
-        self.noise_smoothing_tau_ms.setDecimals(1)
-        self.noise_smoothing_tau_ms.setSingleStep(1.0)
-        self.noise_smoothing_tau_ms.setValue(50.0)
-        self.noise_smoothing_tau_ms.setSuffix(" ms")
-        self.noise_smoothing_tau_ms.setToolTip(
-            "Applies a first-order smoother to a duplicate of the captured Raw HID data for comparison only. "
-            "It does not change the controller or game input."
-        )
-        smoothing_row.addWidget(self.noise_smoothing_tau_ms)
-        smoothing_row.addStretch(1)
-        evidence_layout.addLayout(smoothing_row)
         evidence_row = QHBoxLayout()
-        guided_test = QPushButton("Guided Raw HID + smoothing test")
+        quick_test = QPushButton("Quick smoothing check (10 seconds)")
+        quick_test.setObjectName("Primary")
+        quick_test.clicked.connect(lambda: self._start_noise_test("neutral"))
+        self.guided_test_buttons.append(quick_test)
+        guided_test = QPushButton("Full guided controller test")
         guided_test.clicked.connect(self._run_noise_wizard)
         self.guided_test_buttons.append(guided_test)
         export_evidence = QPushButton("Export + open results report")
         export_evidence.clicked.connect(self._export_noise_evidence)
+        evidence_row.addWidget(quick_test)
         evidence_row.addWidget(guided_test)
         evidence_row.addWidget(export_evidence)
         evidence_row.addStretch(1)
@@ -667,13 +662,12 @@ class MainWindow(QMainWindow):
         self.noise_test_status.setObjectName("Muted")
         self.noise_test_status.setWordWrap(True)
         evidence_layout.addWidget(self.noise_test_status)
-        diagnostics.addWidget(evidence_card, 3, 0, 1, 2)
+        diagnostics.addWidget(evidence_card, 2, 0, 1, 2)
 
         diagnostics.setColumnStretch(0,1)
         diagnostics.setColumnStretch(1,1)
         layout.addLayout(diagnostics)
         self._refresh_controller_sources()
-        layout.addStretch(1)
         return self._scroll(w)
 
     def _stick_cleaner_page(self) -> QWidget:
@@ -1160,7 +1154,7 @@ class MainWindow(QMainWindow):
         self.late_factor=QDoubleSpinBox(); self.late_factor.setRange(1.01,10.0); self.late_factor.setDecimals(2); self.late_factor.setValue(1.50); self.late_factor.setSuffix(" × reference interval")
         self.stationary_excursion=QDoubleSpinBox(); self.stationary_excursion.setRange(0.0001,0.5000); self.stationary_excursion.setDecimals(4); self.stationary_excursion.setValue(0.0200)
         self.stationary_excursion.setToolTip("Maximum max−min excursion allowed on every normalized stick axis before the window is considered moving rather than stationary.")
-        self.graph_refresh=QSpinBox(); self.graph_refresh.setRange(100,1000); self.graph_refresh.setValue(200); self.graph_refresh.setSuffix(" ms")
+        self.graph_refresh=QSpinBox(); self.graph_refresh.setRange(16,1000); self.graph_refresh.setValue(33); self.graph_refresh.setSuffix(" ms")
         self.graph_refresh.valueChanged.connect(lambda v: self.ui_timer.setInterval(v) if hasattr(self,"ui_timer") else None)
         form.addRow("Theme",self.theme_combo)
         form.addRow("Default baseline duration",self.baseline_seconds)
@@ -1275,7 +1269,7 @@ class MainWindow(QMainWindow):
                 "RcmTool scans for controllers automatically. Connect by USB; if several are found, choose the one to test."
             )
             self.hardware_status.setText("CONTROLLER • scanning for a device")
-            self.hardware_status.setObjectName("Muted")
+            self._restyle(self.hardware_status, "Muted")
             return
         identity = self.controller_source_info.get("product_string") or "Selected Raw HID device"
         self._clear_controller_state(str(identity))
@@ -1293,11 +1287,28 @@ class MainWindow(QMainWindow):
             f"Controller found: {name}. Waiting for its first report; being still will not be treated as unplugged."
         )
         self.hardware_status.setText(f"CONTROLLER • {name} found; waiting for input")
-        self.hardware_status.setObjectName("Good")
+        self._restyle(self.hardware_status, "Good")
 
     def _refresh_controller_sources(self, force: bool = False) -> None:
         if not hasattr(self, "controller_source_combo"):
             return
+        now = time.monotonic()
+        if (
+            not force
+            and self.controller_connected
+            and now - self._last_hid_enum_at < 8.0
+        ):
+            acquisition = self.controller_acquisition
+            thread = acquisition.thread if acquisition is not None else None
+            if (
+                self.controller_source_kind == "raw_hid"
+                and self.controller_source_path
+                and hasattr(self, "sample_timer")
+                and (thread is None or not thread.is_alive())
+            ):
+                self._start_controller_acquisition()
+            return
+        self._last_hid_enum_at = now
         selected_path = self.controller_source_path
         raw_devices = [
             info for info in ControllerAcquisition.enumerate_raw_hid_devices()
@@ -1456,8 +1467,6 @@ class MainWindow(QMainWindow):
             enabled = ready and not self.noise_test_active
             if button.isEnabled() != enabled:
                 button.setEnabled(enabled)
-        if hasattr(self, "noise_smoothing_tau_ms"):
-            self.noise_smoothing_tau_ms.setEnabled(not self.noise_test_active)
         if hasattr(self, "start_trace_button"):
             enabled = ready and not self.trace_capture_active
             if self.start_trace_button.isEnabled() != enabled:
@@ -1479,7 +1488,9 @@ class MainWindow(QMainWindow):
         self.noise_test_active = True
         self._sync_hardware_controls()
         self.noise_test_kind = capture_kind
-        self.noise_test_smoothing_tau_seconds = self.noise_smoothing_tau_ms.value() / 1000.0
+        # Keep the comparison fixed so beginners do not have to tune an
+        # arbitrary parameter before they can get a useful result.
+        self.noise_test_smoothing_tau_seconds = 0.05
         self.noise_test_deadline = time.monotonic() + (10.0 if capture_kind == "neutral" else 20.0)
         self.noise_test_start_timestamp_ns = time.perf_counter_ns()
         self.noise_capture_timestamps.clear()
@@ -2215,7 +2226,7 @@ class MainWindow(QMainWindow):
                     self.controller_input_active = True
                     message = "Fresh Raw HID reports received. HID identity alone does not verify the device is physical."
                     self.hardware_status.setText("CONTROLLER • connected; reports arriving")
-                    self.hardware_status.setObjectName("Good")
+                    self._restyle(self.hardware_status, "Good")
                 else:
                     self.controller_connected = False
                     message = "Non-Raw-HID source ignored; it cannot be used as Raw HID report evidence."
@@ -2230,21 +2241,21 @@ class MainWindow(QMainWindow):
                     "Controller is back. Waiting for a fresh report; move a stick or press a button to confirm input."
                 )
                 self.hardware_status.setText("CONTROLLER • device found; waiting for input")
-                self.hardware_status.setObjectName("Good")
+                self._restyle(self.hardware_status, "Good")
             elif event_name == "controller_input_idle":
                 self.controller_input_active = False
                 self.controller_source_status.setText(
                     "Controller remains connected; no new reports while idle. Move a stick or press a button to resume readings."
                 )
                 self.hardware_status.setText("CONTROLLER • connected, idle")
-                self.hardware_status.setObjectName("Good")
+                self._restyle(self.hardware_status, "Good")
             elif event_name == "controller_input_active":
                 self.controller_input_active = True
                 self.controller_source_status.setText(
                     "Controller connected • fresh reports are arriving."
                 )
                 self.hardware_status.setText("CONTROLLER • connected; reports arriving")
-                self.hardware_status.setObjectName("Good")
+                self._restyle(self.hardware_status, "Good")
             elif event_name == "controller_disconnected":
                 self.controller_connected = False
                 self.controller_device_present = False
@@ -2260,7 +2271,7 @@ class MainWindow(QMainWindow):
                         "Controller connection was lost. RcmTool is checking whether the device is still present."
                     )
                     self.hardware_status.setText("CONTROLLER • connection lost")
-                self.hardware_status.setObjectName("Warn")
+                self._restyle(self.hardware_status, "Warn")
                 if self.noise_test_active:
                     sample_count = len(self.noise_capture_samples)
                     self.noise_test_active = False
@@ -2345,7 +2356,7 @@ class MainWindow(QMainWindow):
             self.controller_input_active = True
             if became_live:
                 self.hardware_status.setText("HARDWARE • Raw HID reports received; identity unverified")
-                self.hardware_status.setObjectName("Good")
+                self._restyle(self.hardware_status, "Good")
         if (metadata_changed or became_live) and self.controller_connected:
             self._sync_hardware_controls()
         if duplicate_raw:
@@ -2377,39 +2388,41 @@ class MainWindow(QMainWindow):
             self.db.add_oscillator_sample(self.session_id,timestamp_ns,frequency_hz,source=source,duty_cycle_percent=duty_cycle_percent,quality=quality)
 
     def _refresh_ui(self) -> None:
-        timestamps=list(self.controller_ts)[-5000:]
-        interval_pairs=[(b,(b-a)/1e6) for a,b in zip(timestamps,timestamps[1:]) if b>a]
-        interval_times=[item[0] for item in interval_pairs]
-        intervals=[item[1] for item in interval_pairs]
-        expected_override=self._timing_reference_ms(intervals)
-        reference_ms=expected_override if expected_override is not None else self._median(intervals)
-        self.current_timing=timing_metrics(
-            timestamps,
-            expected_interval_ms=expected_override,
-            late_factor=self.late_factor.value(),
-        )
+        current_page = NAV[self.stack.currentIndex()] if hasattr(self, "stack") else "Dashboard"
+        if current_page not in {"Dashboard", "Controller Lab"}:
+            return
+
+        graphs_live = not self.visualization_paused
+        timestamps = self._deque_tail(self.controller_ts, 5000)
+        recent_ts = self._timestamps_since(self.controller_ts, 1.0)
+        recent_intervals = [
+            (after - before) / 1_000_000.0
+            for before, after in zip(recent_ts, recent_ts[1:])
+            if after > before
+        ]
+        expected_override = self._timing_reference_ms(recent_intervals)
+        now_mono = time.monotonic()
+        if now_mono - self._last_full_timing_at >= 0.25:
+            self.current_timing = timing_metrics(
+                timestamps,
+                expected_interval_ms=self._timing_reference_ms(
+                    [(b - a) / 1e6 for a, b in zip(timestamps, timestamps[1:]) if b > a]
+                ) if timestamps else expected_override,
+                late_factor=self.late_factor.value(),
+            )
+            self._last_full_timing_at = now_mono
         recent_timing = recent_window_timing_metrics(
-            timestamps,
+            recent_ts,
             now_ns=time.perf_counter_ns(),
             window_s=1.0,
             stale_after_s=0.5,
             expected_interval_ms=expected_override,
             late_factor=self.late_factor.value(),
         )
-        recent_intervals = [
-            (after - before) / 1_000_000.0
-            for before, after in zip(timestamps, timestamps[1:])
-            if after > before and after >= (timestamps[-1] - 1_000_000_000 if timestamps else 0)
-        ]
         recent_reference_ms = expected_override if expected_override is not None else self._median(recent_intervals)
         recent_report_count = recent_timing.sample_count
         recent_rate_available = recent_report_count >= 2
-        raw_history = list(self.controller_raw_report_hex)[-len(timestamps):] if timestamps else []
-        recent_payloads = [
-            payload
-            for timestamp_ns, payload in zip(timestamps, raw_history)
-            if timestamps and timestamp_ns >= timestamps[-1] - 1_000_000_000
-        ]
+        recent_payloads = self._deque_tail(self.controller_raw_report_hex, len(recent_ts)) if recent_ts else []
         recent_repeats = sum(
             1 for before, after in zip(recent_payloads, recent_payloads[1:])
             if before and after and before == after
@@ -2421,9 +2434,6 @@ class MainWindow(QMainWindow):
         self.current_osc = oscillator_metrics([], nominal)
         self.current_corr = None
         t,o=self.current_timing,self.current_osc
-        current_page = NAV[self.stack.currentIndex()] if hasattr(self, "stack") else "Dashboard"
-        if current_page not in {"Dashboard", "Controller Lab"}:
-            return
 
         osc_source="UNAVAILABLE"
         controller_samples_available = t.sample_count > 0
@@ -2484,44 +2494,68 @@ class MainWindow(QMainWindow):
                 source="CALCULATED",
             )
 
-        deviations=[value-reference_ms for value in intervals] if intervals else []
+        if hasattr(self, "live_rate_label"):
+            if live_raw_hid and recent_rate_available:
+                self.live_rate_label.setText(f"Rate • {recent_timing.effective_rate_hz:,.1f} Hz")
+            elif live_raw_hid:
+                self.live_rate_label.setText("Rate • idle")
+            else:
+                self.live_rate_label.setText("Rate • —")
+
         ppm_values=[(f-nominal)/nominal*1e6 for f in freqs] if nominal>0 else []
-        interval_elapsed=self._elapsed_seconds(interval_times,timestamps[0] if timestamps else None)
         osc_elapsed=self._elapsed_seconds(osc_times,osc_times[0] if osc_times else None)
 
-        if current_page == "Dashboard":
+        if current_page == "Dashboard" and graphs_live:
+            chart_ts = self._deque_tail(self.controller_ts, 500) if live_raw_hid else []
+            chart_pairs = [(b, (b - a) / 1e6) for a, b in zip(chart_ts, chart_ts[1:]) if b > a]
+            chart_intervals = [item[1] for item in chart_pairs]
+            chart_elapsed = self._elapsed_seconds(
+                [item[0] for item in chart_pairs],
+                chart_ts[0] if chart_ts else None,
+            )
             self.dashboard_timing_chart.set_series(
-                [("interval ms",intervals[-500:],"#6AA2FF")] if live_raw_hid else [],
-                x_values=interval_elapsed[-500:] if live_raw_hid else [],
+                [("interval ms", chart_intervals, PAINT["line_blue"])] if live_raw_hid else [],
+                x_values=chart_elapsed if live_raw_hid else [],
                 x_label="Elapsed controller capture time (s)",
             )
-            dashboard_samples = list(self.controller_samples)[-500:] if live_raw_hid else []
-            dashboard_sample_ts = list(self.controller_ts)[-len(dashboard_samples):] if dashboard_samples else []
+            dashboard_samples = self._deque_tail(self.controller_samples, 500) if live_raw_hid else []
+            dashboard_sample_ts = self._deque_tail(self.controller_ts, len(dashboard_samples)) if dashboard_samples else []
             dashboard_elapsed = self._elapsed_seconds(
                 dashboard_sample_ts,
                 dashboard_sample_ts[0] if dashboard_sample_ts else None,
             )
             self.dashboard_noise_chart.set_series(
                 [
-                    ("LX", [float(item.get("lx", 0.0)) for item in dashboard_samples], "#6AA2FF"),
-                    ("LY", [float(item.get("ly", 0.0)) for item in dashboard_samples], "#6DE0B1"),
+                    ("LX", [float(item.get("lx", 0.0)) for item in dashboard_samples], PAINT["line_blue"]),
+                    ("LY", [float(item.get("ly", 0.0)) for item in dashboard_samples], PAINT["line_green"]),
                 ],
                 x_values=dashboard_elapsed,
                 x_label="Elapsed controller capture time (s)",
             )
+
+        if current_page == "Dashboard":
             if self.noise_test_result:
+                estimate = self.noise_test_result.get("smoothing_estimate") or {}
+                estimate_value = estimate.get("estimated_smoothing_percent")
+                if isinstance(estimate_value, (int, float)):
+                    estimate_text = (
+                        f"{estimate.get('label', 'Observed smoothing')} • "
+                        f"{float(estimate_value):.1f}% relative indicator"
+                    )
+                else:
+                    estimate_text = str(estimate.get("label", "Smoothing estimate not measurable"))
                 self.dashboard_noise_status.setText(
                     f"Latest {self.noise_test_result['capture_kind']} capture: "
                     f"{self.noise_test_result['sample_count']} samples • "
-                    "host-observed only; firmware attribution requires an upstream electrical trace."
+                    f"{estimate_text} • host-observed only; firmware attribution requires an upstream electrical trace."
                 )
             else:
                 self.dashboard_noise_status.setText("No Raw HID smoothing evidence captured.")
 
-        samples=list(self.controller_samples)[-800:] if current_page in {"Live Capture","Controller Lab","Stick Cleaner"} else []
-        sample_ts=list(self.controller_ts)[-len(samples):] if samples and current_page == "Live Capture" else []
+        samples=self._deque_tail(self.controller_samples, 800) if current_page in {"Live Capture","Controller Lab","Stick Cleaner"} else []
+        sample_ts=self._deque_tail(self.controller_ts, len(samples)) if samples and current_page == "Live Capture" else []
         sample_elapsed=self._elapsed_seconds(sample_ts,sample_ts[0] if sample_ts else None)
-        hist_x,hist_y=self._histogram_xy(intervals[-3000:],32) if current_page == "Live Capture" else ([],[])
+        hist_x,hist_y=([],[])
 
         if current_page == "Live Capture" and not self.visualization_paused:
             smooth=max(1,self.smoothing_window.value()) if hasattr(self,"smoothing_window") else 1
@@ -2606,7 +2640,7 @@ class MainWindow(QMainWindow):
         if current_page == "Stick Cleaner" and hasattr(self, "stick_cleaner"):
             self.stick_cleaner.update_from_lab(
                 timestamps,
-                list(self.controller_samples)[-800:],
+                self._deque_tail(self.controller_samples, 800),
                 evidence_class=evidence_class,
                 timing=t,
             )
@@ -2763,6 +2797,41 @@ class MainWindow(QMainWindow):
             return []
         origin=int(timestamps_ns[0] if origin_ns is None else origin_ns)
         return [(int(ts)-origin)/1_000_000_000.0 for ts in timestamps_ns]
+
+    @staticmethod
+    def _deque_tail(items, count: int):
+        length = len(items)
+        if count <= 0 or length == 0:
+            return []
+        if count >= length:
+            return list(items)
+        start = length - count
+        return [items[i] for i in range(start, length)]
+
+    @staticmethod
+    def _timestamps_since(timestamps, window_s: float) -> list[int]:
+        if not timestamps:
+            return []
+        last = int(timestamps[-1])
+        cutoff = last - int(window_s * 1_000_000_000.0)
+        recent: list[int] = []
+        for index in range(len(timestamps) - 1, -1, -1):
+            value = int(timestamps[index])
+            if value < cutoff:
+                break
+            recent.append(value)
+        recent.reverse()
+        return recent
+
+    @staticmethod
+    def _restyle(widget, object_name: str) -> None:
+        if widget.objectName() == object_name:
+            return
+        widget.setObjectName(object_name)
+        style = widget.style()
+        style.unpolish(widget)
+        style.polish(widget)
+        widget.update()
 
     @staticmethod
     def _histogram_xy(values:list[float],bins:int) -> tuple[list[float],list[float]]:
@@ -3613,7 +3682,7 @@ class MainWindow(QMainWindow):
         self.expected_rate.setValue(float(self.settings.value("expected_rate",1000)))
         self.late_factor.setValue(float(self.settings.value("late_factor",1.5)))
         self.stationary_excursion.setValue(float(self.settings.value("stationary_excursion",0.02)))
-        self.graph_refresh.setValue(int(self.settings.value("graph_refresh",200)))
+        self.graph_refresh.setValue(int(self.settings.value("graph_refresh",33)))
         saved_skin=str(self.settings.value("controller_skin","auto"))
         skin_index=self.controller_skin_combo.findData(saved_skin)
         self.controller_skin_combo.setCurrentIndex(max(0,skin_index))
@@ -3637,7 +3706,16 @@ class MainWindow(QMainWindow):
             self.safety_limits.max_abs_offset_v=self.max_offset.value()
 
     def _change_theme(self,name:str) -> None:
-        self.theme_name=name; self.setStyleSheet(LIGHT if name=="Light" else DARK); self.settings.setValue("theme",name)
+        self.theme_name=name
+        set_paint_theme(name)
+        self.setStyleSheet(LIGHT if name=="Light" else DARK)
+        self.settings.setValue("theme",name)
+        for chart in self.findChildren(LineChart):
+            chart._fingerprint = ""
+            chart.update()
+        if hasattr(self, "controller_view"):
+            self.controller_view.update()
+        self._schedule_ui_refresh()
 
     def _controller_skin_changed(self, _index:int=0) -> None:
         if not hasattr(self,"controller_skin_combo"):
@@ -3679,11 +3757,29 @@ class MainWindow(QMainWindow):
         self.db.close(); event.accept()
 
 
+def _app_icon() -> QIcon:
+    pix = QPixmap(64, 64)
+    pix.fill(QColor("#070A10"))
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#2E6AE8"))
+    painter.drawRoundedRect(8, 8, 48, 48, 14, 14)
+    painter.setBrush(QColor("#F5F8FF"))
+    painter.drawEllipse(22, 22, 20, 20)
+    painter.setBrush(QColor("#2E6AE8"))
+    painter.drawEllipse(28, 28, 8, 8)
+    painter.end()
+    return QIcon(pix)
+
+
 def main() -> int:
     app=QApplication.instance() or QApplication([])
     app.setApplicationName("RcmTool")
     app.setOrganizationName("SensoredRooster")
     app.setStyle("Fusion")
+    app.setWindowIcon(_app_icon())
     window=MainWindow()
+    window.setWindowIcon(app.windowIcon())
     window.show()
     return app.exec()
