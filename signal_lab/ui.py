@@ -2541,8 +2541,8 @@ class MainWindow(QMainWindow):
             self.db.add_oscillator_sample(self.session_id,timestamp_ns,frequency_hz,source=source,duty_cycle_percent=duty_cycle_percent,quality=quality)
 
     def _refresh_ui(self) -> None:
-        current_page = NAV[self.stack.currentIndex()] if hasattr(self, "stack") else "Dashboard"
-        if current_page not in {"Dashboard", "Controller Lab"}:
+        current_page = NAV[self.stack.currentIndex()] if hasattr(self, "stack") else "Test"
+        if current_page not in {"Test", "Results"}:
             return
 
         graphs_live = not self.visualization_paused
@@ -2598,7 +2598,7 @@ class MainWindow(QMainWindow):
             and controller_samples_available
         )
 
-        if current_page == "Dashboard":
+        if current_page == "Results":
             if live_raw_hid and recent_rate_available:
                 rate_text = f"{recent_timing.effective_rate_hz:,.1f} Hz"
                 rate_note = f"Last 1 s • {recent_report_count:,} fresh reports received"
@@ -2685,7 +2685,7 @@ class MainWindow(QMainWindow):
                 x_label="Elapsed controller capture time (s)",
             )
 
-        if current_page == "Dashboard":
+        if current_page == "Results":
             if self.noise_test_result:
                 estimate = self.noise_test_result.get("smoothing_estimate") or {}
                 estimate_value = estimate.get("estimated_smoothing_percent")
@@ -2706,7 +2706,7 @@ class MainWindow(QMainWindow):
 
         samples = self._deque_tail(
             self.controller_samples, 800
-        ) if current_page in {"Controller Lab", "Stick Cleaner"} else []
+        ) if current_page in {"Test", "Stick Cleaner"} else []
 
         if current_page == "Oscillator Lab":
             self.osc_stability_chart.set_series(
@@ -2757,7 +2757,7 @@ class MainWindow(QMainWindow):
                 timing=t,
             )
 
-        if current_page == "Controller Lab" and samples and self.controller_connected:
+        if current_page == "Test" and samples and self.controller_connected:
             last=samples[-1]
             visual_source=self.controller_sources[-1][0] if self.controller_sources else ""
             self._set_controller_visual(last, visual_source)
@@ -2807,7 +2807,7 @@ class MainWindow(QMainWindow):
                 input_parts.append("D-pad: unavailable/source-specific")
             self.button_capability.setText(" • ".join(input_parts))
 
-        if current_page == "Controller Lab" and self.controller_sources:
+        if current_page == "Test" and self.controller_sources:
             source,quality=self.controller_sources[-1]
             meta=self.controller_metadata
             name=meta.get("controller_name") or source
@@ -2836,7 +2836,7 @@ class MainWindow(QMainWindow):
                 detail_parts.append(f"USB path {meta['usb_path']}")
             self.controller_capability.setText("  •  ".join(detail_parts))
 
-        if current_page == "Dashboard":
+        if current_page == "Results":
             history_note = (
                 f"The retained history contains {t.sample_count:,} reports across {t.duration_s:.2f} s "
                 f"(overall average {t.effective_rate_hz:.1f} reports/s)."
@@ -4021,7 +4021,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self,"controller_skin_combo"):
             return
         self.settings.setValue("controller_skin",self.controller_skin_combo.currentData())
-        if hasattr(self,"stack") and NAV[self.stack.currentIndex()]=="Controller Lab":
+        if hasattr(self,"stack") and NAV[self.stack.currentIndex()]=="Test":
             if self.controller_connected and self.controller_samples:
                 source = self.controller_sources[-1][0] if self.controller_sources else ""
                 self._set_controller_visual(self.controller_samples[-1], source)
