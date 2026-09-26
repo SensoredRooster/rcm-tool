@@ -86,13 +86,25 @@ def page(title: str, subtitle: str) -> tuple[QWidget, QVBoxLayout]:
     outer = QWidget()
     outer.setObjectName("PageSurface")
     layout = QVBoxLayout(outer)
-    layout.setContentsMargins(28, 22, 28, 28)
+    layout.setContentsMargins(26, 22, 26, 28)
     layout.setSpacing(18)
+
+    hero = QFrame()
+    hero.setObjectName("PageHeader")
+    hero_layout = QVBoxLayout(hero)
+    hero_layout.setContentsMargins(22, 18, 22, 19)
+    hero_layout.setSpacing(5)
+    eyebrow = QLabel("RCMTOOL  /  HARDWARE WORKSPACE")
+    eyebrow.setObjectName("Eyebrow")
+    hero_layout.addWidget(eyebrow)
+    heading = QLabel(title)
+    heading.setObjectName("PageHeroTitle")
+    hero_layout.addWidget(heading)
     desc = QLabel(subtitle)
     desc.setObjectName("PageSubtitle")
     desc.setWordWrap(True)
-    desc.setMinimumHeight(28)
-    layout.addWidget(desc)
+    hero_layout.addWidget(desc)
+    layout.addWidget(hero)
     return outer, layout
 
 
@@ -301,19 +313,39 @@ class MainWindow(QMainWindow):
 
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(224)
+        sidebar.setFixedWidth(246)
         side = QVBoxLayout(sidebar)
-        side.setContentsMargins(14, 18, 14, 16)
+        side.setContentsMargins(16, 18, 16, 16)
+        side.setSpacing(8)
 
+        brand_card = QFrame()
+        brand_card.setObjectName("BrandCard")
+        brand_layout = QVBoxLayout(brand_card)
+        brand_layout.setContentsMargins(15, 14, 15, 14)
+        brand_layout.setSpacing(2)
         brand = QLabel("RcmTool")
         brand.setObjectName("Brand")
-        brand.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        side.addWidget(brand)
-        side.addSpacing(18)
+        brand_layout.addWidget(brand)
+        brand_subtitle = QLabel("Controller Signal Workspace")
+        brand_subtitle.setObjectName("BrandSubtitle")
+        brand_layout.addWidget(brand_subtitle)
+        side.addWidget(brand_card)
+        side.addSpacing(14)
 
+        nav_label = QLabel("WORKSPACE")
+        nav_label.setObjectName("NavSection")
+        side.addWidget(nav_label)
+
+        nav_labels = {
+            "Dashboard": "01   Dashboard",
+            "Controller Lab": "02   Controller Lab",
+            "Reports": "03   Reports",
+            "Support": "04   Support",
+            "Settings": "05   Settings",
+        }
         self.nav_buttons: dict[str, QPushButton] = {}
         for index, name in enumerate(NAV):
-            button = QPushButton(name)
+            button = QPushButton(nav_labels.get(name, name))
             button.setObjectName("Nav")
             button.setCheckable(True)
             button.clicked.connect(lambda checked=False, i=index: self._navigate(i))
@@ -321,37 +353,48 @@ class MainWindow(QMainWindow):
             self.nav_buttons[name] = button
 
         side.addStretch(1)
+        system_label = QLabel("SYSTEM")
+        system_label.setObjectName("NavSection")
+        side.addWidget(system_label)
         self.hardware_status = QLabel("HARDWARE  •  waiting for controller")
         self._restyle(self.hardware_status, "StatusPill")
         self.hardware_status.setWordWrap(True)
         side.addWidget(self.hardware_status)
-        self.database_status = QLabel(f"DB • {self.db.path.name}")
+        self.database_status = QLabel(f"LOCAL DB  •  {self.db.path.name}")
         self.database_status.setObjectName("StatusPillSecondary")
+        self.database_status.setWordWrap(True)
         side.addWidget(self.database_status)
         self.error_banner = QLabel()
         self.error_banner.setObjectName("Warn")
         self.error_banner.setWordWrap(True)
         self.error_banner.hide()
         side.addWidget(self.error_banner)
-        version = QLabel(f"v{__version__}")
-        version.setObjectName("Muted")
+        version = QLabel(f"RcmTool  v{__version__}")
+        version.setObjectName("SidebarFooter")
         side.addWidget(version)
         root_layout.addWidget(sidebar)
 
         work = QWidget()
+        work.setObjectName("WorkSurface")
         work_layout = QVBoxLayout(work)
-        work_layout.setContentsMargins(0, 0, 0, 0)
-        work_layout.setSpacing(0)
+        work_layout.setContentsMargins(16, 16, 16, 16)
+        work_layout.setSpacing(14)
 
         topbar = QFrame()
         topbar.setObjectName("Topbar")
         top = QHBoxLayout(topbar)
-        top.setContentsMargins(24, 12, 24, 12)
+        top.setContentsMargins(18, 11, 14, 11)
+        top_context = QVBoxLayout()
+        top_context.setSpacing(0)
+        top_kicker = QLabel("ACTIVE VIEW")
+        top_kicker.setObjectName("TopKicker")
+        top_context.addWidget(top_kicker)
         self.top_title = QLabel("Dashboard")
-        self.top_title.setObjectName("PageTitle")
-        top.addWidget(self.top_title)
+        self.top_title.setObjectName("TopViewTitle")
+        top_context.addWidget(self.top_title)
+        top.addLayout(top_context)
         top.addStretch(1)
-        self.live_rate_label = QLabel("Rate • —")
+        self.live_rate_label = QLabel("LIVE RATE  •  —")
         self.live_rate_label.setObjectName("StatusPillSecondary")
         top.addWidget(self.live_rate_label)
         self.pause_visualization = QCheckBox("Pause graphs")
@@ -365,6 +408,7 @@ class MainWindow(QMainWindow):
         work_layout.addWidget(topbar)
 
         self.stack = QStackedWidget()
+        self.stack.setObjectName("WorkspaceStack")
         for builder in (
             self._dashboard_page,
             self._controller_page,
@@ -408,6 +452,11 @@ class MainWindow(QMainWindow):
             "Dashboard",
             "Start here: select your controller, move a stick, then run the guided test. Readings show what this PC received—not a firmware guarantee.",
         )
+        snapshot, snapshot_layout = card("LIVE CONTROLLER SNAPSHOT")
+        snapshot_hint = QLabel("Fresh Raw HID readings appear here only when a named controller is actually connected.")
+        snapshot_hint.setObjectName("SectionHint")
+        snapshot_hint.setWordWrap(True)
+        snapshot_layout.addWidget(snapshot_hint)
         grid = QGridLayout()
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(12)
@@ -424,7 +473,8 @@ class MainWindow(QMainWindow):
             c = MetricCard(title, help_text=METRIC_HELP[key], source=source)
             self.cards[key] = c
             grid.addWidget(c, i // 4, i % 4)
-        layout.addLayout(grid)
+        snapshot_layout.addLayout(grid)
+        layout.addWidget(snapshot)
 
         evidence, evidence_layout = card("GUIDED TEST")
         evidence_help = QLabel(
@@ -569,17 +619,6 @@ class MainWindow(QMainWindow):
         self.controller_source_status.setObjectName("Muted")
         self.controller_source_status.setWordWrap(True)
         source_layout.addWidget(self.controller_source_status)
-        layout.addWidget(source_card)
-
-        visual, vl = card("LIVE CONTROLLER")
-        self.controller_view = ControllerView()
-        vl.addWidget(self.controller_view)
-        self.controller_axes_readout = QLabel("LX —   LY —   RX —   RY —   LT —   RT —")
-        self.controller_axes_readout.setObjectName("Muted")
-        self.controller_axes_readout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.controller_axes_readout.setWordWrap(True)
-        vl.addWidget(self.controller_axes_readout)
-        layout.addWidget(visual, 1)
 
         identity, il = card("CONNECTED CONTROLLER")
         identity_row = QHBoxLayout()
@@ -609,7 +648,25 @@ class MainWindow(QMainWindow):
         selector_box.addWidget(self.controller_skin_status)
         identity_row.addLayout(selector_box)
         il.addLayout(identity_row)
-        layout.addWidget(identity)
+        overview_grid = QGridLayout()
+        overview_grid.setHorizontalSpacing(14)
+        overview_grid.setVerticalSpacing(14)
+        overview_grid.addWidget(source_card, 0, 0)
+        overview_grid.addWidget(identity, 0, 1)
+        overview_grid.setColumnStretch(0, 1)
+        overview_grid.setColumnStretch(1, 1)
+        layout.addLayout(overview_grid)
+
+        visual, vl = card("LIVE CONTROLLER")
+        self.controller_view = ControllerView()
+        vl.addWidget(self.controller_view)
+        self.controller_axes_readout = QLabel("LX —   LY —   RX —   RY —   LT —   RT —")
+        self.controller_axes_readout.setObjectName("Muted")
+        self.controller_axes_readout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.controller_axes_readout.setWordWrap(True)
+        vl.addWidget(self.controller_axes_readout)
+        layout.addWidget(visual, 1)
+
 
         diagnostics = QGridLayout()
         diagnostics.setHorizontalSpacing(14)
