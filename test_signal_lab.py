@@ -214,7 +214,7 @@ class SignalLabTests(unittest.TestCase):
             report = paths["report"].read_text(encoding="utf-8")
             self.assertIn("neutral", report)
             self.assertIn("movement", report)
-            self.assertGreaterEqual(report.count("Axis results"), 3)
+            self.assertEqual(report.count("Axis results"), 2)  # one table per capture
         summary = guided_test_summary_html(captures)
         self.assertIn("Neutral capture", summary)
         self.assertIn("Movement capture", summary)

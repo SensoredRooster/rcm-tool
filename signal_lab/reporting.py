@@ -237,7 +237,8 @@ def _number(metrics: dict, key: str, decimals: int, suffix: str = "") -> str:
 
 
 def _axis_table_html(result: dict) -> str:
-    """Per-axis measured noise for one capture."""
+    """Per-axis measured variation for one capture."""
+    rms_label = "Movement RMS (your motion)" if result.get("capture_kind") == "movement" else "Noise RMS"
     rows = "".join(
         "<tr>"
         f"<td>{escape(str(axis).upper())}</td>"
@@ -248,7 +249,7 @@ def _axis_table_html(result: dict) -> str:
         for axis, metrics in (result.get("axes") or {}).items()
     )
     return (
-        "<table><thead><tr><th>Axis</th><th>Noise RMS</th><th>Peak-to-peak</th>"
+        f"<table><thead><tr><th>Axis</th><th>{rms_label}</th><th>Peak-to-peak</th>"
         "<th>High-frequency energy</th></tr></thead>"
         f"<tbody>{rows or '<tr><td colspan=4>No samples</td></tr>'}</tbody></table>"
     )
@@ -384,7 +385,8 @@ def guided_test_summary_html(captures: dict[str, dict]) -> str:
             f"<h3>{escape(str(name).title())} capture</h3>"
             f"<table cellpadding='3'>{headline}</table>"
             "<table cellpadding='4' border='1' style='border-collapse:collapse;margin-top:6px'>"
-            "<tr><th>Axis</th><th>Noise RMS</th><th>Peak-to-peak</th><th>High-frequency energy</th></tr>"
+            f"<tr><th>Axis</th><th>{'Movement RMS (your motion)' if result.get('capture_kind') == 'movement' else 'Noise RMS'}</th>"
+            "<th>Peak-to-peak</th><th>High-frequency energy</th></tr>"
             f"{axes}</table>"
             f"<p>{escape(str(result.get('interpretation', '')))}</p>"
             f"{filter_simulation_html(result)}"
@@ -482,7 +484,6 @@ def write_noise_evidence_report(
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     quality = result.get("capture_quality") or {}
-    stationary = result.get("stationary_check") or {}
     smoothing = result.get("smoothing_comparison") or {}
     smoothing_estimate = result.get("smoothing_estimate") or {}
     smoothing_tau_ms = smoothing.get("time_constant_ms")
@@ -509,7 +510,6 @@ def write_noise_evidence_report(
         "Observed rate": sample_rate_text,
         "Rate vs configured reference": rate_reference_text,
         "Duration": f"{float(result.get('duration_s', 0.0)):.3f} s",
-        "Offline smoothing setting": smoothing_tau_text,
         "Raw report coverage": f"{float(result.get('raw_report_coverage_percent', 0.0)):.1f}%",
         "Duplicate payloads": f"{float(duplicate_percent):.2f}%" if isinstance(duplicate_percent, (int, float)) else "Unavailable (<2 raw reports)",
         "Capture checks": quality.get("label", "unavailable"),
@@ -558,36 +558,22 @@ def write_noise_evidence_report(
         f"<tbody>{''.join(quality_rows) or '<tr><td colspan=4>Unavailable</td></tr>'}</tbody></table></div>"
     )
     axis_table = _axis_table_html(result)
-    capture_rows = []
-    for name, capture in (captures or {}).items():
-        capture_sample_count = int(capture.get("sample_count", 0))
-        capture_rate = capture.get("sample_rate_hz")
-        capture_rate_text = (
-            f"{float(capture_rate):.2f}"
-            if capture_sample_count >= 2 and isinstance(capture_rate, (int, float)) else "Unavailable"
-        )
-        capture_stationary = (capture.get("stationary_check") or {}).get("is_stationary")
-        capture_smoothing = (capture.get("smoothing_comparison") or {}).get("time_constant_ms")
-        capture_smoothing_text = (
-            f"{float(capture_smoothing):.1f} ms"
-            if isinstance(capture_smoothing, (int, float)) else "Unavailable"
-        )
-        capture_rows.append(
-            "<tr>"
-            f"<td>{escape(str(name))}</td>"
-            f"<td>{capture_sample_count}</td>"
-            f"<td>{capture_rate_text}</td>"
-            f"<td>{capture_smoothing_text}</td>"
-            f"<td>{float(capture.get('duration_s', 0.0)):.3f}</td>"
-            f"<td>{escape(str((capture.get('capture_quality') or {}).get('label', 'unavailable')))}</td>"
-            f"<td>{escape(str(capture_stationary if capture_stationary is not None else 'Unavailable'))}</td>"
-            "</tr>"
-        )
+    capture_rows = [
+        "<tr>"
+        f"<td>{escape(str(name))}</td>"
+        f"<td>{int(capture.get('sample_count', 0)):,}</td>"
+        f"<td>{float(capture.get('sample_rate_hz') or 0.0):,.1f} Hz</td>"
+        f"<td>{float(capture.get('duration_s', 0.0)):.2f} s</td>"
+        f"<td>{escape(str((capture.get('capture_quality') or {}).get('label', '')))}</td>"
+        "</tr>"
+        for name, capture in (captures or {}).items()
+        if int(capture.get('sample_count', 0)) >= 2
+    ]
     capture_table = ""
     if capture_rows:
         capture_table = (
             "<div class='card'><h2>All guided captures</h2>"
-            "<table><thead><tr><th>Capture</th><th>Samples</th><th>Rate</th><th>Offline filter</th><th>Duration</th><th>Capture checks</th><th>Stationary check</th></tr></thead>"
+            "<table><thead><tr><th>Capture</th><th>Reports</th><th>Report rate</th><th>Duration</th><th>Capture checks</th></tr></thead>"
             f"<tbody>{''.join(capture_rows)}</tbody></table></div>"
         )
         # Every capture's own numbers, not only the latest one's.
@@ -612,35 +598,17 @@ def write_noise_evidence_report(
         f"<p>{escape(str(smoothing_estimate.get('explanation', 'No estimate is available.')))}</p>"
         "<p class='small'>Treat this as a clue about the signal received by Windows, not as proof of a controller firmware setting.</p></div>"
     )
-    if result.get("capture_kind") == "movement":
-        stationary_text = "This was an intentional movement capture; a stationary noise-floor check does not apply."
-    elif stationary.get("is_stationary") is True:
-        stationary_text = "The capture stayed within the stationary threshold."
-    elif stationary.get("is_stationary") is False:
-        stationary_text = "The capture exceeded the stationary threshold; do not call this a stationary noise floor."
-    else:
-        stationary_text = "Stationarity is unavailable because the capture did not meet the sample-count screening minimum."
     body = (
         "<div class='card'><h2>Bottom line</h2>"
-        f"<p>{interpretation}</p><p class='small'>{escape(stationary_text)} "
+        f"<p>{interpretation}</p><p class='small'>"
         "These percentages describe the captured signal; they are not probabilities that firmware is cheating or filtering.</p></div>"
         f"<div class='card'><h2>Capture summary</h2>{summary}</div>"
         f"{quality_table}"
         f"{estimate_card}"
         f"{smoothing_card}"
         f"{capture_table}"
-        "<div class='card'><h2>How to read the numbers</h2>"
-        "<ul><li><b>Raw RMS</b> is the measured axis variation around its mean during this capture.</li>"
-        "<li><b>Beginner-friendly smoothing estimate</b> is a relative indicator based on neighboring samples and repeated reports. It is not an exact percentage setting.</li>"
-        "<li><b>After smoother RMS</b> is the variation in the offline-filtered copy using the selected time constant; it is not a firmware or game-input result.</li>"
-        "<li><b>Variation change</b> compares raw RMS with the filtered-copy RMS. For neutral captures it is called noise change only when the stationary check passes; movement results include intended movement.</li>"
-        "<li><b>Raw-to-filter delta RMS</b> quantifies how far the software smoother moved samples from their measured values; a larger value also means more response alteration.</li>"
-        "<li><b>Rate vs configured reference</b> compares the observed Raw HID arrival rate with the reference you entered. It is a warning signal, not proof that the controller or firmware dropped reports.</li>"
-        "<li><b>50 ms residual RMS</b> subtracts a documented slow trend. It is a repeatable comparison metric, not a direct firmware measurement.</li>"
-        "<li><b>High-frequency energy</b> is the squared residual RMS as a percentage of total AC energy. Higher means more captured variation remains above the slow trend.</li>"
-        "<li><b>Duplicate payloads</b> is the percentage of adjacent Raw HID reports with identical bytes. It is not automatically bad: a centered stick can legitimately repeat.</li>"
-        "<li><b>Capture checks</b> show duration, sample count, timestamp order, and Raw HID report-byte coverage separately. Their screening requirements are visible above; they are not a combined score or confidence percentage.</li></ul></div>"
-        f"<div class='card'><h2>Axis results</h2>{axis_table}</div>"
+        + (f"<div class='card'><h2>Axis results</h2>{axis_table}</div>" if not captures else "")
+        + ""
         f"<div class='card'><h2>How every number is calculated</h2>{calculations_html()}</div>"
         "<div class='card'><h2>What this test can prove</h2>"
         "<p>This is a host-observed Raw HID result downstream of the controller firmware and USB transport. It can document report cadence, repeated bytes, output noise, and the amount of variation left after the slow-trend comparison.</p>"
