@@ -80,7 +80,7 @@ class SignalLabTests(unittest.TestCase):
     def test_observed_report_throughput_is_stable_for_batched_8khz(self):
         # Simulate an 8 kHz controller delivered by HIDAPI in 1 ms batches.
         timestamps = []
-        for millisecond in range(1001):
+        for millisecond in range(1000):
             base = millisecond * 1_000_000
             timestamps.extend(base + offset for offset in range(8))
         rate = observed_report_throughput_hz(
