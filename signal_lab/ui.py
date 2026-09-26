@@ -441,6 +441,8 @@ class MainWindow(QMainWindow):
         self.top_title.setText(NAV[index])
         for name, button in self.nav_buttons.items():
             button.setChecked(NAV[index] == name)
+        if NAV[index] == "Results":
+            self._refresh_session_history()
         if hasattr(self, "ui_timer"):
             self._schedule_ui_refresh()
 
@@ -540,17 +542,61 @@ class MainWindow(QMainWindow):
         ql.addWidget(self.quality_label)
         layout.addWidget(q)
 
-        history, history_layout = card("SESSION HISTORY")
-        history_hint = QLabel("Guided tests save sessions automatically. Technical event details are available here when needed.")
+        history, history_layout = card("PREVIOUS TESTS")
+        history_hint = QLabel("Completed guided tests are saved automatically on this PC.")
         history_hint.setObjectName("Muted")
         history_hint.setWordWrap(True)
         history_layout.addWidget(history_hint)
+        self.sessions_table = QTableWidget(0,4)
+        self.sessions_table.setHorizontalHeaderLabels(["Date / time","Session","Controller samples","Events"])
+        self.sessions_table.setAlternatingRowColors(True)
+        history_layout.addWidget(self.sessions_table)
+        history_actions = QHBoxLayout()
+        refresh_history = QPushButton("Refresh")
+        refresh_history.clicked.connect(self._refresh_session_history)
+        advanced_results = QPushButton("Advanced Result Details…")
+        advanced_results.clicked.connect(self._open_advanced_results_dialog)
+        history_actions.addWidget(refresh_history)
+        history_actions.addWidget(advanced_results)
+        history_actions.addStretch(1)
+        history_layout.addLayout(history_actions)
+        layout.addWidget(history)
+
+        self.advanced_results_dialog = QDialog(self)
+        self.advanced_results_dialog.setWindowTitle("Advanced Result Details")
+        self.advanced_results_dialog.resize(900, 650)
+        advanced_results_layout = QVBoxLayout(self.advanced_results_dialog)
+        event_card, event_layout = card("CURRENT SESSION EVENT TIMELINE")
         self.timeline_table = QTableWidget(0,3)
         self.timeline_table.setHorizontalHeaderLabels(["Timestamp ns","Event","Details"])
         self.timeline_table.setAlternatingRowColors(True)
-        history_layout.addWidget(self.timeline_table)
-        layout.addWidget(history)
+        event_layout.addWidget(self.timeline_table)
+        advanced_results_layout.addWidget(event_card)
+        close_results = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close_results.rejected.connect(self.advanced_results_dialog.hide)
+        advanced_results_layout.addWidget(close_results)
+        self._refresh_session_history()
         return self._scroll(w)
+
+    def _open_advanced_results_dialog(self) -> None:
+        self.advanced_results_dialog.show()
+        self.advanced_results_dialog.raise_()
+        self.advanced_results_dialog.activateWindow()
+
+    def _refresh_session_history(self) -> None:
+        if not hasattr(self, "sessions_table"):
+            return
+        sessions = self.db.list_sessions(limit=25)
+        self.sessions_table.setRowCount(len(sessions))
+        for row, session in enumerate(sessions):
+            values = (
+                str(session.get("created_utc") or ""),
+                str(session.get("name") or "Controller test"),
+                f"{int(session.get('controller_samples') or 0):,}",
+                str(int(session.get("events") or 0)),
+            )
+            for column, value in enumerate(values):
+                self.sessions_table.setItem(row, column, QTableWidgetItem(value))
 
     def _live_page(self) -> QWidget:
         w, layout = page(
@@ -655,10 +701,6 @@ class MainWindow(QMainWindow):
         self.controller_skin_combo.currentIndexChanged.connect(self._controller_skin_changed)
         self.controller_skin_status = QLabel("Waiting for a named controller")
         self.controller_skin_status.setObjectName("Muted")
-        selector_box.addWidget(selector_label)
-        selector_box.addWidget(self.controller_skin_combo)
-        selector_box.addWidget(self.controller_skin_status)
-        identity_row.addLayout(selector_box)
         il.addLayout(identity_row)
         overview_grid = QGridLayout()
         overview_grid.setHorizontalSpacing(14)
@@ -757,6 +799,12 @@ class MainWindow(QMainWindow):
         self.advanced_controller_dialog.setWindowTitle("Advanced Controller Tools")
         self.advanced_controller_dialog.resize(820, 700)
         advanced_dialog_layout = QVBoxLayout(self.advanced_controller_dialog)
+
+        appearance_card, appearance_layout = card("CONTROLLER APPEARANCE")
+        appearance_layout.addWidget(selector_label)
+        appearance_layout.addWidget(self.controller_skin_combo)
+        appearance_layout.addWidget(self.controller_skin_status)
+        advanced_dialog_layout.addWidget(appearance_card)
         advanced_dialog_layout.addWidget(input_card)
         advanced_dialog_layout.addWidget(signal_card)
         advanced_dialog_layout.addWidget(device_card)
@@ -1319,7 +1367,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(g)
 
         dbcard, dbl=card("DATA")
-        label=QLabel(f"SQLite database:\n{self.db.path}\n\nRaw samples are retained and can be exported from Reports.")
+        label=QLabel(f"SQLite database:\n{self.db.path}\n\nRaw samples are retained and can be exported from Results.")
         label.setWordWrap(True); dbl.addWidget(label); layout.addWidget(dbcard); layout.addStretch(1)
         return self._scroll(w)
 
@@ -1727,16 +1775,11 @@ class MainWindow(QMainWindow):
         intro_title.setObjectName("Eyebrow")
         intro_layout.addWidget(intro_title)
         intro_text = QLabel(
-            "This wizard runs only against the selected Raw HID device. It does not simulate input, inject noise, "
-            "or modify the controller.\n\n"
-            f"Selected source: {self.controller_source_combo.currentText()}\n"
-            "Before starting: verify the selected VID/PID and product against your controller; HID descriptors cannot rule out a virtual device. Keep one controller connected, do not change USB ports or input modes, and "
-            "close other tools that read the same controller.\n\n"
-            "Step 2 leaves the sticks untouched for 10 seconds. Step 3 uses one stick: slowly center → full deflection "
-            "→ center, then one quick reversal, for 20 seconds. The export contains every dedicated-test timestamp, "
-            "normalized sample, and Raw HID report byte captured during each step. If no session is already recording, "
-            "the wizard starts and saves one automatically in the local database. Step 4 compares the untouched raw "
-            "measurements with a software-only smoother applied offline to the same samples at the selected time constant."
+            f"Controller: {self.controller_source_combo.currentText()}\n\n"
+            "This test takes about 30 seconds. First, leave both sticks alone for 10 seconds. "
+            "Then move one stick as shown for 20 seconds.\n\n"
+            "RcmTool records, saves, and analyzes everything automatically. It only reads the controller; "
+            "it never changes controller settings or injects input."
         )
         intro_text.setWordWrap(True)
         intro_layout.addWidget(intro_text)
@@ -1790,6 +1833,7 @@ class MainWindow(QMainWindow):
         review_layout.addWidget(review_status)
         review_export = QPushButton("Export + open results report")
         review_export.setEnabled(False)
+        review_export.setVisible(False)
         review_export.clicked.connect(self._export_noise_evidence)
         review_layout.addWidget(review_export, alignment=Qt.AlignmentFlag.AlignLeft)
         limitation = QLabel(
