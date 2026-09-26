@@ -2503,7 +2503,6 @@ class MainWindow(QMainWindow):
             else:
                 self.live_rate_label.setText("Rate • —")
 
-        ppm_values=[(f-nominal)/nominal*1e6 for f in freqs] if nominal>0 else []
         osc_elapsed=self._elapsed_seconds(osc_times,osc_times[0] if osc_times else None)
 
         if current_page == "Dashboard" and graphs_live:
