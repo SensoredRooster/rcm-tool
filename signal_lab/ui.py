@@ -35,6 +35,7 @@ from .controller_profiles import (
     ButtonMapping,
     ControllerProfileStore,
     POSITION_PRESETS,
+    report_signature,
     stable_bit_changes,
 )
 from .instruments import SafetyLimits, UnavailableInstrument, VisaScpiGenerator, VisaScpiMeasurementInstrument, list_visa_resources
@@ -3927,6 +3928,9 @@ class MainWindow(QMainWindow):
                 return
             byte_index, mask = candidate
             _preset_x, _preset_y, kind = POSITION_PRESETS[position_name]
+            report_id, report_length = report_signature(
+                state["pressed"][-1] if state["pressed"] else None
+            )
             layout_name = detect_controller_layout(metadata)
             profile = self.controller_profile_store.upsert_button(
                 metadata,
@@ -3937,6 +3941,8 @@ class MainWindow(QMainWindow):
                     x=float(position_x.value()),
                     y=float(position_y.value()),
                     kind=kind,
+                    report_id=report_id,
+                    report_length=report_length,
                 ),
                 layout=layout_name,
             )
@@ -3950,6 +3956,8 @@ class MainWindow(QMainWindow):
                     "position": position_name,
                     "x": float(position_x.value()),
                     "y": float(position_y.value()),
+                    "report_id": report_id,
+                    "report_length": report_length,
                 },
             )
             self._set_controller_visual(
