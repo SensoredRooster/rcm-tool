@@ -12,6 +12,7 @@ hundredths of a percent swung the displayed stick across its whole range.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Optional
 
 GENERIC_DESKTOP = 0x01
@@ -175,13 +176,6 @@ def parse_input_fields(descriptor) -> Optional[tuple[list[InputField], list[Butt
     return fields, arrays
 
 
-def _axis(control: InputField, report_bits: int, invert: bool = False) -> float:
-    low, high = control.value_range
-    center = (low + high + 1) / 2.0
-    half = (high - low + 1) / 2.0
-    value = max(-1.0, min(1.0, (control.read(report_bits) - center) / half))
-    return -value if invert else value
-
 
 def _trigger(control: InputField, report_bits: int) -> float:
     low, high = control.value_range
@@ -205,6 +199,34 @@ class GamepadLayout:
     button_arrays: tuple[ButtonArray, ...] = ()
     min_bytes: int = 0
 
+    @cached_property
+    def _plan(self) -> tuple:
+        """Per-control shifts, masks, and scaling, worked out once per device.
+
+        8 kHz controllers need every report decoded in a few microseconds.
+        """
+        def axis(control: InputField, invert: bool) -> tuple:
+            low, high = control.value_range
+            return (
+                control.bit_offset, (1 << control.bit_size) - 1,
+                (1 << (control.bit_size - 1)) if low < 0 else 0, 1 << control.bit_size,
+                (low + high + 1) / 2.0, (high - low + 1) / 2.0, -1.0 if invert else 1.0,
+            )
+
+        axes = (
+            ("lx", axis(self.left_x, False)), ("ly", axis(self.left_y, True)),
+            ("rx", axis(self.right_x, False)), ("ry", axis(self.right_y, True)),
+        )
+        single_bit_buttons = tuple(
+            (button.bit_offset, 1 << (button.usage - 1))
+            for button in self.buttons
+            if 1 <= button.usage <= 32 and button.bit_size == 1
+        )
+        wide_buttons = tuple(
+            button for button in self.buttons if 1 <= button.usage <= 32 and button.bit_size != 1
+        )
+        return axes, single_bit_buttons, wide_buttons
+
     def decode(self, report) -> Optional[dict]:
         data = bytes(report)
         if len(data) < self.min_bytes:
@@ -212,13 +234,15 @@ class GamepadLayout:
         if self.report_id and data[0] != self.report_id:
             return None
         bits = int.from_bytes(data, "little")
-        # HID Y axes grow downward; the app reports up as positive.
-        sample: dict = {
-            "lx": _axis(self.left_x, bits),
-            "ly": _axis(self.left_y, bits, invert=True),
-            "rx": _axis(self.right_x, bits),
-            "ry": _axis(self.right_y, bits, invert=True),
-        }
+        axes, single_bit_buttons, wide_buttons = self._plan
+        # HID Y axes grow downward; the plan flips them so up is positive.
+        sample: dict = {}
+        for name, (offset, mask, sign_bit, wrap, center, half, direction) in axes:
+            raw = (bits >> offset) & mask
+            if sign_bit and raw & sign_bit:
+                raw -= wrap
+            value = (raw - center) / half
+            sample[name] = direction * (1.0 if value > 1.0 else -1.0 if value < -1.0 else value)
         if self.left_trigger is not None and self.right_trigger is not None:
             sample["lt"] = _trigger(self.left_trigger, bits)
             sample["rt"] = _trigger(self.right_trigger, bits)
@@ -227,8 +251,11 @@ class GamepadLayout:
             sample["combined_trigger_raw"] = self.combined_trigger.read(bits)
         if self.buttons or self.button_arrays:
             mask = 0
-            for button in self.buttons:
-                if 1 <= button.usage <= 32 and button.read(bits):
+            for offset, bit in single_bit_buttons:
+                if (bits >> offset) & 1:
+                    mask |= bit
+            for button in wide_buttons:
+                if button.read(bits):
                     mask |= 1 << (button.usage - 1)
             for array in self.button_arrays:
                 for slot in range(array.count):

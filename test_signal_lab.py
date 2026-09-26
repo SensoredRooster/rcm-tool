@@ -1,5 +1,6 @@
 import tempfile
 import threading
+import time
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -58,10 +59,10 @@ class SignalLabTests(unittest.TestCase):
     def test_xinput_hid_devices_use_windows_button_order_and_shared_trigger(self):
         from signal_lab.controller import is_xinput_hid, split_shared_trigger, xinput_hid_button_names
 
-        vader_path = "\\?\HID#VID_37D7&PID_2401&IG_00#8&1ff4cb4&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}"
+        vader_path = r"\\?\HID#VID_37D7&PID_2401&IG_00#8&1ff4cb4&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}"
         self.assertTrue(is_xinput_hid({"usb_path": vader_path}))
-        self.assertTrue(is_xinput_hid({"path": b"\\?\hid#vid_045e&pid_02ff&ig_00#7&abc"}))
-        self.assertFalse(is_xinput_hid({"usb_path": "\\?\HID#VID_054C&PID_0CE6&MI_03#7&abc"}))
+        self.assertTrue(is_xinput_hid({"path": rb"\\?\hid#vid_045e&pid_02ff&ig_00#7&abc"}))
+        self.assertFalse(is_xinput_hid({"usb_path": r"\\?\HID#VID_054C&PID_0CE6&MI_03#7&abc"}))
         self.assertFalse(is_xinput_hid({}))
         self.assertEqual(xinput_hid_button_names(0x211), ["A", "LB", "RS"])
         self.assertEqual(xinput_hid_button_names(0x0C0), ["VIEW", "MENU"])
@@ -91,6 +92,139 @@ class SignalLabTests(unittest.TestCase):
         )
         self.assertIsNotNone(rate)
         self.assertAlmostEqual(rate, 8000.0, delta=16.0)
+
+    def test_rate_window_ends_at_newest_report_not_at_ui_time(self):
+        from signal_lab.analysis import recent_report_count
+
+        # 8 kHz for two seconds; the UI looks 20 ms after the newest report,
+        # while that report's successors are still on their way to the UI.
+        timestamps = [index * 125_000 for index in range(16_000)]
+        now_ns = timestamps[-1] + 20_000_000
+        rate = observed_report_throughput_hz(timestamps, now_ns=now_ns, window_s=1.0, stale_after_s=0.5)
+        self.assertAlmostEqual(rate, 8000.0, delta=2.0)
+        self.assertEqual(recent_report_count(timestamps, now_ns=now_ns), 8001)
+        self.assertEqual(recent_report_count(timestamps, now_ns=timestamps[-1] + 600_000_000), 0)
+
+    def test_raw_hid_reader_skips_device_scans_while_reports_flow(self):
+        import controller_integrity
+        import signal_lab.controller as controller_module
+
+        scans = []
+        timeouts = []
+        samples = []
+        path = b"streaming-pad"
+
+        class FakeHIDModule:
+            @staticmethod
+            def enumerate():
+                scans.append(time.monotonic())
+                return [{"path": path}]
+
+        class Drain:
+            @staticmethod
+            def read(_size):
+                return []
+
+        class StreamingPad:
+            name = "Streaming pad"
+            supports_timed_read = True
+            device = Drain()
+
+            def __init__(self, path=None, info=None):
+                self.info = dict(info or {})
+                self.pending = []
+
+            def read(self, timeout_ms=0):
+                timeouts.append(timeout_ms)
+                time.sleep(0.001)
+                self.pending = [[1, 128, 128, 128, 128, 0, 0]]
+                return {"lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0}
+
+            def drain_raw_reports(self):
+                reports, self.pending = self.pending, []
+                return reports
+
+            @staticmethod
+            def _parse_report(_report):
+                return {"lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0}
+
+            @staticmethod
+            def status():
+                return "Streaming pad"
+
+        original_backend, original_hid = controller_integrity.HIDGamepad, controller_integrity.hid
+        controller_integrity.HIDGamepad = StreamingPad
+        controller_integrity.hid = FakeHIDModule()
+        acquisition = ControllerAcquisition(samples.append, source_kind="raw_hid", hid_path=path)
+        try:
+            with patch.object(controller_module, "RAW_HID_PRESENCE_CHECK_S", 0.01):
+                acquisition.start()
+                time.sleep(0.3)
+        finally:
+            acquisition.stop()
+            controller_integrity.HIDGamepad, controller_integrity.hid = original_backend, original_hid
+        self.assertGreater(len(samples), 20)
+        # One scan at most, before the first report; none while reports arrive.
+        self.assertLessEqual(len(scans), 1)
+        self.assertTrue(timeouts and all(value == controller_module.RAW_HID_WAIT_MS for value in timeouts))
+
+    def test_finished_test_saves_results_report_and_raw_reports(self):
+        import csv
+        import gzip
+        import json as json_module
+
+        from signal_lab.reporting import guided_test_summary_html, save_guided_test_results
+
+        def capture(kind, count):
+            timestamps = [index * 125_000 for index in range(count)]
+            samples = [
+                {"lx": 0.001 * (index % 3), "ly": 0.0, "rx": 0.0, "ry": -0.002, "buttons": 0}
+                for index in range(count)
+            ]
+            return analyze_noise_capture(
+                timestamps_ns=timestamps,
+                samples=samples,
+                raw_report_hex=[f"01{index % 256:02x}" for index in range(count)],
+                capture_kind=kind,
+                device_metadata={"controller_name": "GameSir 8K Test Pad"},
+            )
+
+        captures = {"neutral": capture("neutral", 400), "movement": capture("movement", 600)}
+        with tempfile.TemporaryDirectory() as td:
+            paths = save_guided_test_results(
+                Path(td) / "results",
+                captures,
+                app_version="0.6.0",
+                session_id="session-1",
+                device_metadata={"controller_name": "GameSir 8K Test Pad", "vid": 0x3537},
+            )
+            self.assertEqual(set(paths), {"results", "report", "raw"})
+            self.assertTrue(all(item.parent == Path(td) / "results" for item in paths.values()))
+            self.assertIn("GameSir-8K-Test-Pad", paths["report"].name)
+            saved = json_module.loads(paths["results"].read_text(encoding="utf-8"))
+            self.assertEqual(saved["session_id"], "session-1")
+            self.assertEqual(set(saved["captures"]), {"neutral", "movement"})
+            self.assertNotIn("records", saved["captures"]["neutral"])
+            self.assertEqual(saved["captures"]["movement"]["sample_count"], 600)
+            with gzip.open(paths["raw"], "rt", encoding="utf-8", newline="") as handle:
+                rows = list(csv.reader(handle))
+            self.assertEqual(rows[0][:3], ["capture", "timestamp_ns", "lx"])
+            self.assertEqual(len(rows), 1 + 400 + 600)
+            self.assertEqual({row[0] for row in rows[1:]}, {"neutral", "movement"})
+            report = paths["report"].read_text(encoding="utf-8")
+            self.assertIn("neutral", report)
+            self.assertIn("movement", report)
+            self.assertGreaterEqual(report.count("Axis results"), 3)
+        summary = guided_test_summary_html(captures)
+        self.assertIn("Neutral capture", summary)
+        self.assertIn("Movement capture", summary)
+        self.assertIn("Report rate", summary)
+        self.assertIn("LX", summary)
+
+    def test_results_folder_is_in_the_repository_when_run_from_source(self):
+        from signal_lab.ui import results_directory
+
+        self.assertEqual(results_directory(), Path(__file__).resolve().parent / "results")
 
     def test_observed_report_throughput_is_unavailable_when_stale(self):
         rate = observed_report_throughput_hz(

@@ -10,21 +10,28 @@ import math
 import os
 from pathlib import Path
 import queue
+import sys
 import threading
 import time
 import webbrowser
 
-from PySide6.QtCore import QSettings, QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QSettings, QStandardPaths, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QStackedWidget,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+    QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget
 )
 
 from . import __version__
-from .analysis import observed_report_throughput_hz, oscillator_metrics, pearson_correlation, recent_window_timing_metrics, timing_metrics
+from .analysis import (
+    observed_report_throughput_hz,
+    oscillator_metrics,
+    pearson_correlation,
+    recent_report_count as count_recent_reports,
+    timing_metrics,
+)
 from .controller import (
     ControllerAcquisition,
     ControllerMeasurement,
@@ -45,7 +52,14 @@ from .instruments import SafetyLimits, UnavailableInstrument, VisaScpiGenerator,
 from .metric_catalog import CHART_HELP, METRIC_HELP
 from .noise_attribution import analyze_noise_capture
 from .oscillator import OscillatorAcquisition, OscillatorMeasurement
-from .reporting import write_html_report, write_noise_evidence_report, write_trace_evidence_report
+from .reporting import (
+    guided_test_one_line,
+    guided_test_summary_html,
+    save_guided_test_results,
+    write_html_report,
+    write_noise_evidence_report,
+    write_trace_evidence_report,
+)
 from .storage import LabDatabase
 from .sweep import make_sweep
 from .trace_capture import (
@@ -82,6 +96,19 @@ TESTER_SHARE_URL = "https://rcm-tool-share.sensoredrooster-com.workers.dev"
 # complete event history in SQLite.
 MAX_TIMELINE_EVENTS = 1000
 TIMELINE_DETAIL_CHARS = 2000
+
+
+def results_directory() -> Path:
+    """Folder where every finished guided test is saved automatically.
+
+    Run from the repository, this is its results folder, which the Submit
+    Reports launcher pushes for developers. The packaged app has no
+    repository next to it, so it saves under the user's Documents folder.
+    """
+    if not getattr(sys, "frozen", False):
+        return Path(__file__).resolve().parents[1] / "results"
+    documents = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+    return Path(documents or Path.home()) / "RcmTool Results"
 
 
 
@@ -269,6 +296,9 @@ class MainWindow(QMainWindow):
         self.noise_test_start_timestamp_ns = 0
         self.noise_test_result: dict | None = None
         self.noise_test_results: dict[str, dict] = {}
+        # Files written for the latest finished guided test (results, report, raw).
+        self.latest_result_paths: dict[str, Path] = {}
+        self.latest_guided_results: dict[str, dict] = {}
         self.guided_test_buttons: list[QPushButton] = []
         self.noise_capture_timestamps: list[int] = []
         self.noise_capture_samples: list[dict] = []
@@ -287,6 +317,11 @@ class MainWindow(QMainWindow):
         self._last_gui_resource_audit = 0.0
         self._last_gui_resource_count: int | None = None
         self._last_full_timing_at = 0.0
+        # Live-card statistics, refreshed four times a second (see _refresh_ui).
+        self._live_rate_hz: float | None = None
+        self._live_report_count = 0
+        self._live_repeats = 0
+        self._live_untouched = False
         self._last_hid_enum_at = 0.0
         self._resource_startup_until = time.monotonic() + 30.0
         self._startup_gui_snapshot_logged = False
@@ -517,12 +552,15 @@ class MainWindow(QMainWindow):
         actions = QHBoxLayout()
         latest_report = QPushButton("Open Latest Report")
         latest_report.setObjectName("Primary")
-        latest_report.clicked.connect(self._export_noise_evidence)
+        latest_report.clicked.connect(self._open_latest_report)
         save_result_image = QPushButton("Save Result Image")
         save_result_image.clicked.connect(self._save_result_image)
         export_results = QPushButton("Export Results…")
         export_results.clicked.connect(self._open_export_dialog)
+        open_results_folder = QPushButton("Open Results Folder")
+        open_results_folder.clicked.connect(self._open_results_folder)
         actions.addWidget(latest_report)
+        actions.addWidget(open_results_folder)
         actions.addWidget(save_result_image)
         actions.addWidget(export_results)
         actions.addStretch(1)
@@ -1497,6 +1535,7 @@ class MainWindow(QMainWindow):
         self.controller_raw_report_hex.clear()
         self.controller_metadata = {}
         self.duplicate_raw_reports = 0
+        self._last_full_timing_at = 0.0  # recompute live statistics on the next refresh
         self.noise_capture_timestamps.clear()
         self.noise_capture_samples.clear()
         self.noise_capture_raw_reports.clear()
@@ -1812,7 +1851,7 @@ class MainWindow(QMainWindow):
         dialog = QDialog(self)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dialog.setWindowTitle("Raw HID smoothing evidence wizard")
-        dialog.resize(720, 420)
+        dialog.resize(940, 720)
         layout = QVBoxLayout(dialog)
         stack = QStackedWidget()
         layout.addWidget(stack, 1)
@@ -1879,11 +1918,19 @@ class MainWindow(QMainWindow):
         review_status = QLabel("Your results will be saved automatically and shown in Results.")
         review_status.setWordWrap(True)
         review_layout.addWidget(review_status)
-        review_export = QPushButton("Export + open results report")
-        review_export.setEnabled(False)
-        review_export.setVisible(False)
-        review_export.clicked.connect(self._export_noise_evidence)
-        review_layout.addWidget(review_export, alignment=Qt.AlignmentFlag.AlignLeft)
+        review_results = QTextBrowser()
+        review_results.setHtml("<p>Results appear here as each step finishes.</p>")
+        review_layout.addWidget(review_results, 1)
+        review_actions = QHBoxLayout()
+        review_open_report = QPushButton("Open full report")
+        review_open_report.setEnabled(False)
+        review_open_report.clicked.connect(self._open_latest_report)
+        review_open_folder = QPushButton("Open results folder")
+        review_open_folder.clicked.connect(self._open_results_folder)
+        review_actions.addWidget(review_open_report)
+        review_actions.addWidget(review_open_folder)
+        review_actions.addStretch(1)
+        review_layout.addLayout(review_actions)
         limitation = QLabel(
             "Interpretation boundary: Raw HID is downstream of firmware and USB. This package can show a "
             "host-observed smoothing signature, but it cannot identify firmware as the cause without a synchronized "
@@ -1892,7 +1939,6 @@ class MainWindow(QMainWindow):
         limitation.setObjectName("Muted")
         limitation.setWordWrap(True)
         review_layout.addWidget(limitation)
-        review_layout.addStretch(1)
 
         for page_widget in (intro, neutral, movement, review):
             stack.addWidget(page_widget)
@@ -1911,6 +1957,8 @@ class MainWindow(QMainWindow):
             "neutral_status": neutral_status,
             "movement_status": movement_status,
             "review_status": review_status,
+            "review_results": review_results,
+            "review_open_report": review_open_report,
             "movement_start": movement_start,
             "next": next_button,
         }
@@ -1930,7 +1978,6 @@ class MainWindow(QMainWindow):
             else:
                 next_button.setText("Close")
                 next_button.setEnabled(bool(state["neutral_done"] and state["movement_done"]))
-                review_export.setEnabled(bool(state["neutral_done"] and state["movement_done"]))
 
         def start_neutral() -> None:
             if self.noise_test_active:
@@ -2102,40 +2149,56 @@ class MainWindow(QMainWindow):
                     f"integrity checks: {quality.get('label', 'review required')}."
                 )
             self.noise_wizard["next"].setEnabled(True)
-            neutral_result = state["results"].get("neutral")
-            movement_result = state["results"].get("movement")
-            review_lines = []
-            if neutral_result:
-                if neutral_result["smoothing_comparison"]["basis"] == "stationary-noise-RMS":
-                    axis_notes = []
-                    for axis in ("lx", "ly", "rx", "ry"):
-                        metrics = neutral_result["axes"][axis]
-                        raw = metrics["noise_rms"]
-                        filtered = metrics["variation_rms_after_smoothing"]
-                        change = metrics["variation_change_percent"]
-                        if raw is not None and filtered is not None and change is not None:
-                            axis_notes.append(
-                                f"{axis.upper()} {raw:.6f} → {filtered:.6f} ({change:+.1f}%)"
-                            )
-                    review_lines.append("Neutral stationary noise RMS, raw → filtered: " + "; ".join(axis_notes))
-                elif neutral_result["smoothing_comparison"]["basis"] == "variation-includes-unwanted-movement":
-                    review_lines.append("Neutral capture was not stationary; do not interpret its filter change as noise reduction.")
-                else:
-                    review_lines.append("Neutral capture did not have enough samples to determine stationarity.")
-            if movement_result:
-                movement_axis = movement_result["axes"]["lx"]
-                delta = movement_axis["smoothing_delta_rms"]
-                if delta is not None:
-                    review_lines.append(
-                        f"Movement LX filter delta RMS: {delta:.6f} (includes intended motion and response lag)."
+            saved_note = ""
+            if state["neutral_done"] and state["movement_done"]:
+                paths = self._save_guided_results(state["results"])
+                if paths:
+                    self.noise_wizard["review_open_report"].setEnabled(True)
+                    saved_note = (
+                        f"Saved automatically to {paths['report'].parent}: "
+                        f"{paths['report'].name}, {paths['results'].name}, and {paths['raw'].name}."
                     )
-            captures = self.noise_test_results
+                else:
+                    saved_note = "Automatic saving failed; see the error banner. Use Export Results on the Results page."
             self.noise_wizard["review_status"].setText(
-                "Evidence ready from the selected Raw HID device.\n"
-                + "\n".join(review_lines)
-                + f"\nThe {self.noise_test_smoothing_tau_seconds * 1000.0:.1f} ms setting is calculated offline; original reports are unchanged. "
-                + f"{len(captures)} capture(s) are retained. Export opens the full explained report."
+                "All results from the Raw HID captures are below. The "
+                f"{self.noise_test_smoothing_tau_seconds * 1000.0:.1f} ms smoother is calculated offline; "
+                "original reports are unchanged. " + saved_note
             )
+            self.noise_wizard["review_results"].setHtml(guided_test_summary_html(state["results"]))
+
+    def _save_guided_results(self, captures: dict[str, dict]) -> dict[str, Path] | None:
+        """Write the finished test to the results folder for testers and developers."""
+        try:
+            paths = save_guided_test_results(
+                results_directory(),
+                captures,
+                app_version=__version__,
+                session_id=self.session_id,
+                device_metadata=self.controller_metadata or self.controller_source_info,
+            )
+        except Exception as exc:
+            self._report_error("Saving test results failed", exc)
+            return None
+        self.latest_result_paths = paths
+        self.latest_guided_results = dict(captures)
+        self._add_event("test_results_saved", {name: str(saved) for name, saved in paths.items()})
+        return paths
+
+    def _open_latest_report(self) -> None:
+        report = self.latest_result_paths.get("report")
+        if report is not None and report.exists():
+            webbrowser.open(report.resolve().as_uri())
+            return
+        self._export_noise_evidence()
+
+    def _open_results_folder(self) -> None:
+        folder = results_directory()
+        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            os.startfile(str(folder))  # type: ignore[attr-defined]
+        except (AttributeError, OSError):
+            webbrowser.open(folder.resolve().as_uri())
 
     def _export_noise_evidence(self) -> None:
         if not self.noise_test_result:
@@ -2728,46 +2791,41 @@ class MainWindow(QMainWindow):
             return
 
         graphs_live = not self.visualization_paused
-        timestamps = self._deque_tail(self.controller_ts, 5000)
-        recent_ts = self._timestamps_since(self.controller_ts, 1.0)
-        recent_intervals = [
-            (after - before) / 1_000_000.0
-            for before, after in zip(recent_ts, recent_ts[1:])
-            if after > before
-        ]
-        expected_override = self._timing_reference_ms(recent_intervals)
         now_mono = time.monotonic()
+        # These statistics walk every report of the last seconds: tens of
+        # thousands at 8 kHz. Recomputing them on every 33 ms tick kept the UI
+        # thread busy over half of each second and starved the Raw HID reader
+        # (both share Python's GIL), so reports overflowed the device buffer.
+        # They refresh four times a second; the charts still redraw every tick.
         if now_mono - self._last_full_timing_at >= 0.25:
+            self._last_full_timing_at = now_mono
             self.current_timing = timing_metrics(
-                timestamps,
-                expected_interval_ms=self._timing_reference_ms(
-                    [(b - a) / 1e6 for a, b in zip(timestamps, timestamps[1:]) if b > a]
-                ) if timestamps else expected_override,
+                self._deque_tail(self.controller_ts, 5000),
+                expected_interval_ms=self._timing_reference_ms([]),
                 late_factor=self.late_factor.value(),
             )
-            self._last_full_timing_at = now_mono
-        now_ns = time.perf_counter_ns()
-        recent_timing = recent_window_timing_metrics(
-            recent_ts,
-            now_ns=now_ns,
-            window_s=1.0,
-            stale_after_s=0.5,
-            expected_interval_ms=expected_override,
-            late_factor=self.late_factor.value(),
-        )
-        observed_rate_hz = observed_report_throughput_hz(
-            self.controller_ts,
-            now_ns=now_ns,
-            window_s=1.0,
-            stale_after_s=0.5,
-        )
-        recent_report_count = recent_timing.sample_count
+            now_ns = time.perf_counter_ns()
+            self._live_rate_hz = observed_report_throughput_hz(
+                self.controller_ts, now_ns=now_ns, window_s=1.0, stale_after_s=0.5,
+            )
+            self._live_report_count = count_recent_reports(
+                self.controller_ts, now_ns=now_ns, window_s=1.0, stale_after_s=0.5,
+            )
+            recent_payloads = self._deque_tail(self.controller_raw_report_hex, self._live_report_count)
+            self._live_repeats = sum(
+                1 for before, after in zip(recent_payloads, recent_payloads[1:])
+                if before and after and before == after
+            )
+            # A quarter second of samples is plenty to tell an untouched stick.
+            recent_samples = self._deque_tail(self.controller_samples, min(self._live_report_count, 250))
+            self._live_untouched = bool(recent_samples) and (
+                self._stationary_analog_noise(recent_samples, self.stationary_excursion.value())[0] is not None
+                and not any(sample.get("buttons") for sample in recent_samples)
+            )
+        observed_rate_hz = self._live_rate_hz
+        recent_report_count = self._live_report_count
         recent_rate_available = observed_rate_hz is not None
-        recent_payloads = self._deque_tail(self.controller_raw_report_hex, len(recent_ts)) if recent_ts else []
-        recent_repeats = sum(
-            1 for before, after in zip(recent_payloads, recent_payloads[1:])
-            if before and after and before == after
-        )
+        recent_repeats = self._live_repeats
 
         nominal = 12_000_000.0  # Retained only for the legacy, non-visible report schema.
         osc_times: list[int] = []
@@ -2790,19 +2848,20 @@ class MainWindow(QMainWindow):
             if live_raw_hid and recent_rate_available:
                 rate_text = f"{observed_rate_hz:,.1f} Hz"
                 rate_note = f"Rolling 1 s host-observed throughput • {recent_report_count:,} fresh reports"
-                recent_samples = self._deque_tail(self.controller_samples, recent_report_count)
-                untouched = (
-                    self._stationary_analog_noise(recent_samples, self.stationary_excursion.value())[0] is not None
-                    and not any(sample.get("buttons") for sample in recent_samples)
-                )
-                if untouched:
-                    rate_note += " • controller is still reporting while untouched"
+                if self._live_untouched:
+                    rate_note += (
+                        f" • untouched: this controller still sends its stick position about every "
+                        f"{1000.0 / observed_rate_hz:.2f} ms"
+                    )
                 interval_text = f"{1000.0 / observed_rate_hz:.3f} ms"
                 interval_note = "Throughput-equivalent spacing; not a per-report USB timestamp"
                 jitter_text = "USB trace required"
                 jitter_note = "HIDAPI can batch reports, so queue-drain timing is not valid USB jitter"
                 late_text = f"{recent_repeats:,} repeats"
-                late_note = "Repeated payloads in the last second; missing-report estimates are hidden for batched HID data"
+                late_note = (
+                    "Consecutive reports with identical bytes in the last second. Stick sensor noise "
+                    "changes the position slightly in most reports, so 0 is normal even at rest."
+                )
             elif live_raw_hid:
                 rate_text = "Waiting for fresh reports"
                 rate_note = (
@@ -2883,23 +2942,19 @@ class MainWindow(QMainWindow):
             )
 
         if current_page == "Results":
-            if self.noise_test_result:
-                estimate = self.noise_test_result.get("smoothing_estimate") or {}
-                estimate_value = estimate.get("estimated_smoothing_percent")
-                if isinstance(estimate_value, (int, float)):
-                    estimate_text = (
-                        f"{estimate.get('label', 'Observed smoothing')} • "
-                        f"{float(estimate_value):.1f}% relative indicator"
-                    )
-                else:
-                    estimate_text = str(estimate.get("label", "Smoothing estimate not measurable"))
+            if self.latest_guided_results:
+                saved = self.latest_result_paths.get("report")
+                self.dashboard_noise_status.setText(
+                    "Latest test. " + guided_test_one_line(self.latest_guided_results)
+                    + (f" Full report with every calculation: {saved.name}" if saved else "")
+                )
+            elif self.noise_test_result:
                 self.dashboard_noise_status.setText(
                     f"Latest {self.noise_test_result['capture_kind']} capture: "
-                    f"{self.noise_test_result['sample_count']} samples • "
-                    f"{estimate_text} • host-observed only; firmware attribution requires an upstream electrical trace."
+                    f"{self.noise_test_result['sample_count']:,} reports. Finish both steps for a full result."
                 )
             else:
-                self.dashboard_noise_status.setText("No Raw HID smoothing evidence captured.")
+                self.dashboard_noise_status.setText("No completed controller test yet.")
 
         samples = self._deque_tail(
             self.controller_samples, 800
@@ -2948,7 +3003,7 @@ class MainWindow(QMainWindow):
 
         if current_page == "Stick Cleaner" and hasattr(self, "stick_cleaner"):
             self.stick_cleaner.update_from_lab(
-                timestamps,
+                self._deque_tail(self.controller_ts, 5000),
                 self._deque_tail(self.controller_samples, 800),
                 evidence_class=evidence_class,
                 timing=t,
@@ -4311,6 +4366,9 @@ def _app_icon() -> QIcon:
 
 
 def main() -> int:
+    # Let the Raw HID reader thread take the GIL within 1 ms (default 5 ms), so
+    # UI work cannot delay reads long enough to overflow an 8 kHz report buffer.
+    sys.setswitchinterval(0.001)
     app=QApplication.instance() or QApplication([])
     app.setApplicationName("RcmTool")
     app.setOrganizationName("SensoredRooster")
@@ -4319,4 +4377,7 @@ def main() -> int:
     window=MainWindow()
     window.setWindowIcon(app.windowIcon())
     window.show()
+    # Launched from a console, Windows may open the window behind others.
+    window.raise_()
+    window.activateWindow()
     return app.exec()

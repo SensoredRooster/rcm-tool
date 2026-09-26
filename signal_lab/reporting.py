@@ -1,7 +1,9 @@
 """Self-contained HTML engineering report generation."""
 from __future__ import annotations
 
+import csv
 from datetime import datetime, timezone
+import gzip
 from html import escape
 import json
 import math
@@ -201,6 +203,215 @@ def _metric_grid(metrics: dict[str, object]) -> str:
     ) + "</div>"
 
 
+# How every guided-test number is calculated. Shown in the saved report and
+# on the completion screen so anyone can check the math.
+CALCULATIONS: tuple[tuple[str, str], ...] = (
+    ("Reports received", "Count of Raw HID reports that reached this PC during the step."),
+    ("Duration", "Arrival time of the last report minus arrival time of the first, on this PC's clock."),
+    ("Report rate", "(Reports received - 1) / Duration. Counts what the controller actually sent; a controller that streams while untouched keeps this near its polling rate."),
+    ("Repeated payloads", "Consecutive reports whose raw bytes are identical / (reports - 1) x 100. Stick sensor noise usually changes every report, so 0% at rest is normal."),
+    ("Stick values", "Each axis is scaled from the controller's own HID range to -1 ... +1 (center 0)."),
+    ("Noise RMS", "Per axis: square root of the average of (value - average value) squared."),
+    ("Peak-to-peak", "Per axis: largest value minus smallest value."),
+    ("Stationary check", "Passes when every axis's peak-to-peak stays at or below the stationary limit (default 0.02) with at least 100 reports."),
+    ("Offline smoother", "Copy of the data filtered as y = y_prev + a x (x - y_prev), with a = 1 - e^(-dt / 50 ms). The recorded reports are never changed."),
+    ("Change after smoother", "(Noise RMS - RMS of the smoothed copy) / Noise RMS x 100."),
+    ("High-frequency energy", "(RMS of value minus its 50 ms smoothed trend / Noise RMS) squared x 100."),
+    ("Smoothing estimate", "Untouched step only. Per axis: 100 x (1 - RMS of report-to-report change / (1.414 x Noise RMS)), limited to 0-100. Estimate = 0.75 x median axis score + 0.25 x repeated payloads %. Below 25 is low, below 60 moderate, otherwise high."),
+    ("Estimate confidence", "45 + up to 30 as reports grow from 100 to 1,100 + 10 when at least 3 axes were scored."),
+    ("Capture checks", "Pass only if: duration is at least 90% of the step (9 s untouched, 18 s movement), at least 100 reports, every timestamp later than the one before, and at least 99% of reports carry raw bytes."),
+)
+
+
+def calculations_html() -> str:
+    rows = "".join(
+        f"<tr><td><b>{escape(name)}</b></td><td>{escape(how)}</td></tr>" for name, how in CALCULATIONS
+    )
+    return f"<table cellpadding='4'>{rows}</table>"
+
+
+def _number(metrics: dict, key: str, decimals: int, suffix: str = "") -> str:
+    value = metrics.get(key)
+    return f"{float(value):.{decimals}f}{suffix}" if isinstance(value, (int, float)) else "Unavailable"
+
+
+def _axis_table_html(result: dict) -> str:
+    """Per-axis noise and smoothing table for one capture."""
+    stationary = (result.get("stationary_check") or {}).get("is_stationary")
+    variation_label = (
+        "Stationary noise change"
+        if result.get("capture_kind") == "neutral" and stationary is True
+        else "Total variation change"
+    )
+    rows = []
+    for axis, metrics in (result.get("axes") or {}).items():
+        rows.append(
+            "<tr>"
+            f"<td>{escape(str(axis).upper())}</td>"
+            f"<td>{_number(metrics, 'noise_rms', 8)}</td>"
+            f"<td>{_number(metrics, 'variation_rms_after_smoothing', 8)}</td>"
+            f"<td>{_number(metrics, 'variation_change_percent', 2, '%')}</td>"
+            f"<td>{_number(metrics, 'smoothing_delta_rms', 8)}</td>"
+            f"<td>{_number(metrics, 'peak_to_peak', 8)}</td>"
+            f"<td>{_number(metrics, 'peak_to_peak_after_smoothing', 8)}</td>"
+            f"<td>{_number(metrics, 'high_frequency_energy_percent', 2, '%')}</td>"
+            "</tr>"
+        )
+    return (
+        "<table><thead><tr><th>Axis</th><th>Raw RMS</th><th>After smoother RMS</th>"
+        f"<th>{escape(variation_label)}</th><th>Raw-to-filter delta RMS</th><th>Raw peak-to-peak</th>"
+        "<th>After smoother peak-to-peak</th><th>High-frequency energy</th></tr></thead>"
+        f"<tbody>{''.join(rows) or '<tr><td colspan=8>Unavailable</td></tr>'}</tbody></table>"
+    )
+
+
+def _capture_headline(result: dict) -> dict[str, object]:
+    """The key numbers of one capture, in display order."""
+    estimate = result.get("smoothing_estimate") or {}
+    estimate_value = estimate.get("estimated_smoothing_percent")
+    confidence = estimate.get("confidence_percent")
+    stationary = (result.get("stationary_check") or {}).get("is_stationary")
+    duplicates = result.get("duplicate_report_percent")
+    sample_count = int(result.get("sample_count", 0) or 0)
+    rate = result.get("sample_rate_hz")
+    if result.get("capture_kind") == "movement":
+        stationary_text = "Not applicable (movement)"
+    elif stationary is True:
+        stationary_text = "Passed"
+    elif stationary is False:
+        stationary_text = "Movement detected"
+    else:
+        stationary_text = "Too few samples"
+    if result.get("capture_kind") == "movement":
+        estimate_text = "Calculated on the untouched step only"
+    elif isinstance(estimate_value, (int, float)):
+        estimate_text = f"{estimate.get('label', 'Observed smoothing')} • {float(estimate_value):.1f}%"
+        if isinstance(confidence, (int, float)):
+            estimate_text += f" (confidence {float(confidence):.0f}%)"
+    else:
+        estimate_text = str(estimate.get("label", "Not measurable"))
+    return {
+        "Reports received": f"{sample_count:,}",
+        "Report rate": (
+            f"{float(rate):,.1f} Hz" if sample_count >= 2 and isinstance(rate, (int, float)) else "Unavailable"
+        ),
+        "Duration": f"{float(result.get('duration_s', 0.0) or 0.0):.2f} s",
+        "Capture checks": (result.get("capture_quality") or {}).get("label", "unavailable"),
+        "Stationary check": stationary_text,
+        "Repeated payloads": f"{float(duplicates):.2f}%" if isinstance(duplicates, (int, float)) else "Unavailable",
+        "Smoothing estimate": estimate_text,
+    }
+
+
+def guided_test_summary_html(captures: dict[str, dict]) -> str:
+    """Every result of a guided test, as simple HTML for the in-app summary."""
+    sections = []
+    for name, result in captures.items():
+        headline = "".join(
+            f"<tr><td><b>{escape(str(key))}</b></td><td>{escape(str(value))}</td></tr>"
+            for key, value in _capture_headline(result).items()
+        )
+        axes = "".join(
+            "<tr>"
+            f"<td>{escape(str(axis).upper())}</td>"
+            f"<td>{_number(metrics, 'noise_rms', 6)}</td>"
+            f"<td>{_number(metrics, 'peak_to_peak', 6)}</td>"
+            f"<td>{_number(metrics, 'variation_change_percent', 1, '%')}</td>"
+            f"<td>{_number(metrics, 'high_frequency_energy_percent', 1, '%')}</td>"
+            "</tr>"
+            for axis, metrics in (result.get("axes") or {}).items()
+        )
+        sections.append(
+            f"<h3>{escape(str(name).title())} capture</h3>"
+            f"<table cellpadding='3'>{headline}</table>"
+            "<table cellpadding='4' border='1' style='border-collapse:collapse;margin-top:6px'>"
+            "<tr><th>Axis</th><th>Noise RMS</th><th>Peak-to-peak</th>"
+            "<th>Change after smoother</th><th>High-frequency energy</th></tr>"
+            f"{axes}</table>"
+            f"<p>{escape(str(result.get('interpretation', '')))}</p>"
+        )
+    if not sections:
+        return "<p>No completed captures.</p>"
+    return "".join(sections) + "<h3>How these numbers are calculated</h3>" + calculations_html()
+
+
+def guided_test_one_line(captures: dict[str, dict]) -> str:
+    """Short Results-page summary: the untouched step carries the meaningful estimate."""
+    parts = []
+    for kind, result in captures.items():
+        headline = _capture_headline(result)
+        text = f"{kind.title()}: {headline['Reports received']} reports at {headline['Report rate']}"
+        if kind == "neutral":
+            text += f", stationary check {str(headline['Stationary check']).lower()}, smoothing {headline['Smoothing estimate']}"
+        parts.append(text)
+    return ". ".join(parts) + "." if parts else "No completed test yet."
+
+
+def _file_slug(value: str, fallback: str = "controller") -> str:
+    cleaned = "".join(character if character.isalnum() or character in "-_" else "-" for character in value)
+    return "-".join(part for part in cleaned.split("-") if part)[:60] or fallback
+
+
+RAW_CSV_COLUMNS = (
+    "capture", "timestamp_ns", "lx", "ly", "rx", "ry", "lt", "rt",
+    "combined_trigger_raw", "buttons", "dpad_x", "dpad_y", "raw_report_hex",
+)
+
+
+def save_guided_test_results(
+    directory: str | Path,
+    captures: dict[str, dict],
+    *,
+    app_version: str,
+    session_id: str | None,
+    device_metadata: dict | None,
+) -> dict[str, Path]:
+    """Save a finished guided test: results JSON, readable report, raw reports.
+
+    The JSON keeps every computed result but not the per-report records; those
+    go to a compressed CSV so testers and developers can re-analyze them.
+    """
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    metadata = dict(device_metadata or {})
+    name = str(metadata.get("controller_name") or metadata.get("product_string") or "controller")
+    stem = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}_{_file_slug(name)}"
+    paths = {
+        "results": directory / f"{stem}_results.json",
+        "report": directory / f"{stem}_report.html",
+        "raw": directory / f"{stem}_raw-reports.csv.gz",
+    }
+    summary = {
+        "app": "RcmTool",
+        "app_version": app_version,
+        "saved_utc": datetime.now(timezone.utc).isoformat(),
+        "session_id": session_id,
+        "controller": metadata,
+        "raw_reports_file": paths["raw"].name,
+        "captures": {
+            kind: {key: value for key, value in result.items() if key != "records"}
+            for kind, result in captures.items()
+        },
+    }
+    paths["results"].write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+    write_noise_evidence_report(
+        paths["report"], list(captures.values())[-1], captures=captures,
+        title=f"RcmTool Test Results • {name}",
+    )
+    with gzip.open(paths["raw"], "wt", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(RAW_CSV_COLUMNS)
+        for kind, result in captures.items():
+            for record in result.get("records") or []:
+                sample = record.get("sample") or {}
+                writer.writerow(
+                    [kind, record.get("timestamp_ns")]
+                    + [sample.get(column, "") for column in RAW_CSV_COLUMNS[2:-1]]
+                    + [record.get("raw_report_hex") or ""]
+                )
+    return paths
+
+
 def write_noise_evidence_report(
     destination: str | Path,
     result: dict,
@@ -283,40 +494,7 @@ def write_noise_evidence_report(
         "<table><thead><tr><th>Check</th><th>Observed</th><th>Screening requirement</th><th>Result</th></tr></thead>"
         f"<tbody>{''.join(quality_rows) or '<tr><td colspan=4>Unavailable</td></tr>'}</tbody></table></div>"
     )
-    def axis_number(metrics: dict, key: str, decimals: int) -> str:
-        value = metrics.get(key)
-        return f"{float(value):.{decimals}f}" if isinstance(value, (int, float)) else "Unavailable"
-
-    axis_rows = []
-    variation_label = (
-        "Stationary noise change"
-        if result.get("capture_kind") == "neutral" and stationary.get("is_stationary") is True
-        else "Total variation change"
-    )
-    for axis, metrics in (result.get("axes") or {}).items():
-        variation_change = metrics.get("variation_change_percent")
-        variation_change_text = (
-            f"{float(variation_change):.2f}%" if isinstance(variation_change, (int, float)) else "Unavailable"
-        )
-        axis_rows.append(
-            "<tr>"
-            f"<td>{escape(str(axis).upper())}</td>"
-            f"<td>{axis_number(metrics, 'noise_rms', 8)}</td>"
-            f"<td>{axis_number(metrics, 'variation_rms_after_smoothing', 8)}</td>"
-            f"<td>{variation_change_text}</td>"
-            f"<td>{axis_number(metrics, 'smoothing_delta_rms', 8)}</td>"
-            f"<td>{axis_number(metrics, 'peak_to_peak', 8)}</td>"
-            f"<td>{axis_number(metrics, 'peak_to_peak_after_smoothing', 8)}</td>"
-            f"<td>{axis_number(metrics, 'high_frequency_energy_percent', 2)}"
-            f"{'%' if metrics.get('high_frequency_energy_percent') is not None else ''}</td>"
-            "</tr>"
-        )
-    axis_table = (
-        "<table><thead><tr><th>Axis</th><th>Raw RMS</th><th>After smoother RMS</th>"
-        f"<th>{escape(variation_label)}</th><th>Raw-to-filter delta RMS</th><th>Raw peak-to-peak</th>"
-        "<th>After smoother peak-to-peak</th><th>High-frequency energy</th></tr></thead>"
-        f"<tbody>{''.join(axis_rows) or '<tr><td colspan=8>Unavailable</td></tr>'}</tbody></table>"
-    )
+    axis_table = _axis_table_html(result)
     capture_rows = []
     for name, capture in (captures or {}).items():
         capture_sample_count = int(capture.get("sample_count", 0))
@@ -349,6 +527,13 @@ def write_noise_evidence_report(
             "<table><thead><tr><th>Capture</th><th>Samples</th><th>Rate</th><th>Offline filter</th><th>Duration</th><th>Capture checks</th><th>Stationary check</th></tr></thead>"
             f"<tbody>{''.join(capture_rows)}</tbody></table></div>"
         )
+        # Every capture's own numbers, not only the latest one's.
+        for name, capture in (captures or {}).items():
+            capture_table += (
+                f"<div class='card'><h2>{escape(str(name))}</h2>"
+                f"{_metric_grid(_capture_headline(capture))}"
+                f"<h2 style='margin-top:18px'>Axis results</h2>{_axis_table_html(capture)}</div>"
+            )
     interpretation = escape(str(result.get("interpretation", "No interpretation available.")))
     smoothing_note = escape(str(smoothing.get("note", "No offline smoothing comparison is available.")))
     smoothing_card = (
@@ -392,6 +577,7 @@ def write_noise_evidence_report(
         "<li><b>Duplicate payloads</b> is the percentage of adjacent Raw HID reports with identical bytes. It is not automatically bad: a centered stick can legitimately repeat.</li>"
         "<li><b>Capture checks</b> show duration, sample count, timestamp order, and Raw HID report-byte coverage separately. Their screening requirements are visible above; they are not a combined score or confidence percentage.</li></ul></div>"
         f"<div class='card'><h2>Axis results</h2>{axis_table}</div>"
+        f"<div class='card'><h2>How every number is calculated</h2>{calculations_html()}</div>"
         "<div class='card'><h2>What this test can prove</h2>"
         "<p>This is a host-observed Raw HID result downstream of the controller firmware and USB transport. It can document report cadence, repeated bytes, output noise, and the amount of variation left after the slow-trend comparison.</p>"
         "<p>It cannot identify whether smoothing was introduced by the sensor, analog circuit, firmware, USB transport, or the host. Use the Electrical Trace test with a real upstream probe and a hardware trigger to support that attribution.</p></div>"

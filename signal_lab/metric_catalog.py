@@ -7,19 +7,22 @@ from __future__ import annotations
 
 METRIC_HELP: dict[str, str] = {
     "rate": (
-        "Reports per second during the most recent 1-second burst. Windows timestamps reports after USB, so this is a host-observed rate—not a guarantee of the controller's internal polling rate. "
-        "If the controller sends nothing while idle, the card waits for fresh reports instead of turning silence into a low rate."
+        "Report rate = reports that reached this PC in the 1 second ending at the newest report. "
+        "Many controllers send their stick position on every USB poll even when untouched, so this stays near the polling rate at rest. "
+        "Controllers that only send on change drop lower at rest. If nothing arrives for 0.5 s, the card waits instead of showing a rate."
     ),
     "interval": (
-        "Average time between fresh reports in the same recent 1-second window. Long quiet periods are shown separately from active report cadence. "
-        "Host timing includes Windows and USB scheduling."
+        "Average time between reports = 1000 / report rate, in milliseconds. "
+        "It is an average over the last second, not a per-report USB timestamp."
     ),
     "jitter": (
-        "How much the spacing between fresh reports varied during the same 1-second window. This is timing variation—not stick noise or a smoothing percentage. "
-        "The comparison rate can be a configured reference or the measured median."
+        "Timing variation (jitter) is how much the gaps between reports differ from even spacing. "
+        "Windows hands reports to apps in bunches, so gaps seen by an app measure the PC's reading schedule, not the controller. "
+        "A USB capture (USBPcap + Wireshark, or a hardware USB analyzer) is needed to measure it honestly."
     ),
     "late": (
-        "Long gaps are intervals that exceeded the selected reference by the chosen threshold. The missing-report count is an estimate; repeated payloads mean adjacent HID messages carried identical bytes and may be normal when a stick is still."
+        "Repeats = consecutive reports in the last second whose raw bytes are identical. "
+        "Stick sensor noise usually changes the position slightly in each report, so 0 repeats at rest is normal."
     ),
     "osc": (
         "Mean oscillator frequency from positive frequency samples returned by the active measurement source. "

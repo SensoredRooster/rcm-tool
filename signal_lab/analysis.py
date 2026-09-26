@@ -133,7 +133,9 @@ def timing_metrics(
         mean_interval_ms=mean,
         min_interval_ms=min(intervals_ms),
         max_interval_ms=max(intervals_ms),
-        stdev_ms=statistics.pstdev(intervals_ms) if len(intervals_ms) > 1 else 0.0,
+        # Float arithmetic: statistics.pstdev computes with exact fractions,
+        # which is far too slow for thousands of intervals per UI refresh.
+        stdev_ms=math.sqrt(math.fsum((dt - mean) ** 2 for dt in intervals_ms) / len(intervals_ms)) if len(intervals_ms) > 1 else 0.0,
         rms_deviation_ms=_rms(deviations),
         peak_to_peak_jitter_ms=max(deviations) - min(deviations),
         successive_interval_variation_ms=_rms(successive),
@@ -188,31 +190,58 @@ def observed_report_throughput_hz(
     readout, while sub-millisecond USB jitter still requires a hardware/USB
     trace with trustworthy per-report timestamps.
     """
-    if not timestamps_ns or window_s <= 0 or stale_after_s < 0:
-        return None
-    now = int(now_ns)
-    ordered = [int(value) for value in timestamps_ns]
-    last = ordered[-1]
-    if last < 0 or now < last or now - last > stale_after_s * 1_000_000_000.0:
-        return None
-
-    cutoff = now - int(window_s * 1_000_000_000.0)
-    start = bisect_left(ordered, cutoff)
-    count = len(ordered) - start
+    count, has_older = _count_recent_reports(timestamps_ns, now_ns, window_s, stale_after_s)
     if count < 2:
         return None
 
     # Once we have history older than the window, divide by the fixed window
     # duration. During startup, use the actual covered duration instead.
-    if start > 0:
+    if has_older:
         duration_s = float(window_s)
         events = count
     else:
-        duration_s = (now - ordered[0]) / 1_000_000_000.0
+        duration_s = (int(timestamps_ns[-1]) - int(timestamps_ns[0])) / 1_000_000_000.0
         events = count - 1
     if duration_s <= 0:
         return None
     return events / duration_s
+
+
+def recent_report_count(
+    timestamps_ns: Sequence[int],
+    *,
+    now_ns: int,
+    window_s: float = 1.0,
+    stale_after_s: float = 0.5,
+) -> int:
+    """Reports received in the last window_s seconds; 0 once the stream is stale."""
+    return _count_recent_reports(timestamps_ns, now_ns, window_s, stale_after_s)[0]
+
+
+def _count_recent_reports(
+    timestamps_ns: Sequence[int], now_ns: int, window_s: float, stale_after_s: float,
+) -> tuple[int, bool]:
+    """Count reports inside the window by walking back from the newest.
+
+    The window ends at the newest report rather than at "now": reports reach
+    the UI in batches, so the last few milliseconds before "now" are always
+    still in flight and would make the rate read low. now_ns only decides
+    whether the stream has gone stale. Only reports inside the window are
+    visited, so a long history (60,000 reports at 8 kHz) is never copied.
+    """
+    if not timestamps_ns or window_s <= 0 or stale_after_s < 0:
+        return 0, False
+    now = int(now_ns)
+    last = int(timestamps_ns[-1])
+    if last < 0 or now < last or now - last > stale_after_s * 1_000_000_000.0:
+        return 0, False
+    cutoff = last - int(window_s * 1_000_000_000.0)
+    count = 0
+    for value in reversed(timestamps_ns):
+        if int(value) < cutoff:
+            return count, True
+        count += 1
+    return count, False
 
 
 def recent_window_timing_metrics(

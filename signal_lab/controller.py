@@ -14,6 +14,12 @@ DUALSENSE_PRODUCT_IDS = frozenset({0x0CE6, 0x0DF2})
 DISCONNECT_TIMEOUT_S = 2.0
 RAW_HID_PRESENCE_CHECK_S = 1.0
 RAW_HID_IDLE_AFTER_S = 0.75
+# Longest a timed Raw HID read waits for the next report. The read returns as
+# soon as a report arrives, so this only bounds idle/presence bookkeeping.
+RAW_HID_WAIT_MS = 25
+# Device descriptions rarely change; rebuilding them on every loop pass costs
+# reader time that 8 kHz controllers cannot spare.
+METADATA_REFRESH_S = 1.0
 LOGGER = logging.getLogger(__name__)
 
 
@@ -467,12 +473,25 @@ class ControllerAcquisition:
         last_buttons: int | None = None
         last_raw_hex: str | None = None
         last_error: str | None = None
+        # Timed reads wait inside hidapi (which releases the GIL) and return the
+        # moment a report arrives, instead of sleeping between polls.
+        timed_reads = self.source_kind == "raw_hid" and bool(getattr(self.backend, "supports_timed_read", False))
+        metadata: dict = {}
+        source = "Controller"
+        described_backend = None
+        described_device = None
+        described_at = 0.0
 
         while not self.stop_event.is_set():
             raw_report_count = 0
             if self.source_kind == "raw_hid":
                 now_monotonic = time.monotonic()
-                if now_monotonic - last_presence_check >= RAW_HID_PRESENCE_CHECK_S:
+                # Enumerating every HID device stalls reads for 10 ms or more,
+                # long enough to overflow an 8 kHz controller's report buffer.
+                # A device that is delivering reports is present, so presence
+                # is only checked once reports have stopped arriving.
+                quiet = not last_seen or now_monotonic - last_seen >= RAW_HID_PRESENCE_CHECK_S
+                if quiet and now_monotonic - last_presence_check >= RAW_HID_PRESENCE_CHECK_S:
                     last_presence_check = now_monotonic
                     present = self.raw_hid_path_present(self.hid_path)
                     if present is False:
@@ -495,23 +514,29 @@ class ControllerAcquisition:
                     self.stop_event.wait(self.poll_sleep_s)
                     continue
             try:
-                sample = self.backend.read()
+                sample = self.backend.read(timeout_ms=RAW_HID_WAIT_MS) if timed_reads else self.backend.read()
                 now = time.perf_counter_ns()
                 active = getattr(self.backend, "active", None)
                 if active is None and self.source_kind == "raw_hid":
                     active = self.backend
-                source = (
-                    getattr(active, "status", lambda: getattr(active, "name", "Controller"))()
-                    if active is not None else "Controller"
-                )
-
-                metadata = self._backend_metadata(active)
-                if active is not None and active.__class__.__name__ == "HIDGamepad":
-                    metadata["evidence_class"] = "measured-host-observed-raw-hid"
-                    metadata["capture_timestamp"] = "host-arrival-per-report"
-                elif active is not None:
-                    metadata["evidence_class"] = "host-poll-estimate"
-                    metadata["capture_timestamp"] = "host-poll"
+                device_handle = getattr(active, "device", None)
+                if (
+                    active is not described_backend
+                    or device_handle is not described_device
+                    or time.monotonic() - described_at >= METADATA_REFRESH_S
+                ):
+                    described_backend, described_device, described_at = active, device_handle, time.monotonic()
+                    source = (
+                        getattr(active, "status", lambda: getattr(active, "name", "Controller"))()
+                        if active is not None else "Controller"
+                    )
+                    metadata = self._backend_metadata(active)
+                    if active is not None and active.__class__.__name__ == "HIDGamepad":
+                        metadata["evidence_class"] = "measured-host-observed-raw-hid"
+                        metadata["capture_timestamp"] = "host-arrival-per-report"
+                    elif active is not None:
+                        metadata["evidence_class"] = "host-poll-estimate"
+                        metadata["capture_timestamp"] = "host-poll"
 
                 if sample is not None:
                     last_seen = time.monotonic()
@@ -604,6 +629,10 @@ class ControllerAcquisition:
                         "controller_disconnected",
                         {"reason": "read_error", "message": self.error},
                     )
+            if timed_reads and getattr(self.backend, "device", None) is not None:
+                # The next timed read does the waiting; sleeping here would
+                # only let reports pile up in the device buffer.
+                continue
             if raw_report_count:
                 # A short yield prevents a hot loop from starving the rest of
                 # the process without imposing a 1 ms ceiling on Raw HID.

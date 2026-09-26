@@ -530,13 +530,21 @@ class HIDGamepad:
         self.last_sample = sample
         return sample
 
-    def read(self) -> Optional[dict[str, float]]:
+    # read() accepts timeout_ms: hidapi then waits for the next report with the
+    # GIL released and returns as soon as one arrives.
+    supports_timed_read = True
+
+    def read(self, timeout_ms: int = 0) -> Optional[dict[str, float]]:
         if self.device is None and not self._open():
             return None
         try:
-            report = self.device.read(128)
+            report = self.device.read(128, timeout_ms) if timeout_ms > 0 else self.device.read(128)
         except Exception:
-            self.device = None
+            device, self.device = self.device, None
+            try:
+                device.close()
+            except Exception:
+                pass
             return None
         if report:
             self.raw_reports.append(list(report))
