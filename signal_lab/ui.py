@@ -3817,12 +3817,34 @@ class MainWindow(QMainWindow):
         position_combo = QComboBox()
         for label in POSITION_PRESETS:
             position_combo.addItem(label, label)
+        position_x = QDoubleSpinBox()
+        position_x.setRange(0.02, 0.98)
+        position_x.setSingleStep(0.01)
+        position_x.setDecimals(2)
+        position_y = QDoubleSpinBox()
+        position_y.setRange(0.02, 0.98)
+        position_y.setSingleStep(0.01)
+        position_y.setDecimals(2)
+        first_x, first_y, _first_kind = POSITION_PRESETS[position_combo.currentData()]
+        position_x.setValue(first_x)
+        position_y.setValue(first_y)
         candidate_combo = QComboBox()
         candidate_combo.setEnabled(False)
         form.addRow("Button name", name_edit)
-        form.addRow("Physical location", position_combo)
+        form.addRow("Physical location preset", position_combo)
+        form.addRow("Horizontal position (0–1)", position_x)
+        form.addRow("Vertical position (0–1)", position_y)
         form.addRow("Detected Raw HID bit", candidate_combo)
         layout.addLayout(form)
+
+        def apply_position_preset(_index: int = 0) -> None:
+            preset_name = position_combo.currentData()
+            if preset_name in POSITION_PRESETS:
+                x, y, _kind = POSITION_PRESETS[preset_name]
+                position_x.setValue(x)
+                position_y.setValue(y)
+
+        position_combo.currentIndexChanged.connect(apply_position_preset)
 
         status = QLabel("Step 1: release all controls, then capture the released state.")
         status.setObjectName("Muted")
@@ -3895,7 +3917,7 @@ class MainWindow(QMainWindow):
                 status.setText("Detect a stable Raw HID button bit before saving.")
                 return
             byte_index, mask = candidate
-            x, y, kind = POSITION_PRESETS[position_name]
+            _preset_x, _preset_y, kind = POSITION_PRESETS[position_name]
             layout_name = detect_controller_layout(metadata)
             profile = self.controller_profile_store.upsert_button(
                 metadata,
@@ -3903,8 +3925,8 @@ class MainWindow(QMainWindow):
                     name=name,
                     byte_index=int(byte_index),
                     bit_mask=int(mask),
-                    x=float(x),
-                    y=float(y),
+                    x=float(position_x.value()),
+                    y=float(position_y.value()),
                     kind=kind,
                 ),
                 layout=layout_name,
@@ -3917,6 +3939,8 @@ class MainWindow(QMainWindow):
                     "byte_index": int(byte_index),
                     "bit_mask": int(mask),
                     "position": position_name,
+                    "x": float(position_x.value()),
+                    "y": float(position_y.value()),
                 },
             )
             self._set_controller_visual(
