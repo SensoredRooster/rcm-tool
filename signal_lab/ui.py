@@ -685,7 +685,6 @@ class MainWindow(QMainWindow):
         self.controller_meta.setWordWrap(True)
         identity_row.addWidget(self.controller_meta, 1)
 
-        selector_box = QVBoxLayout()
         selector_label = QLabel("CONTROLLER SHAPE")
         selector_label.setObjectName("Eyebrow")
         self.controller_skin_combo = QComboBox()
