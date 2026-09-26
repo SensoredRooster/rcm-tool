@@ -214,9 +214,8 @@ CALCULATIONS: tuple[tuple[str, str], ...] = (
     ("Noise RMS", "Per axis: square root of the average of (value - average value) squared."),
     ("Peak-to-peak", "Per axis: largest value minus smallest value."),
     ("Stationary check", "Passes when every axis's peak-to-peak stays at or below the stationary limit (default 0.02) with at least 100 reports."),
-    ("Offline smoother", "Copy of the data filtered as y = y_prev + a x (x - y_prev), with a = 1 - e^(-dt / 50 ms). The recorded reports are never changed."),
-    ("Change after smoother", "(Noise RMS - RMS of the smoothed copy) / Noise RMS x 100."),
-    ("High-frequency energy", "(RMS of value minus its 50 ms smoothed trend / Noise RMS) squared x 100."),
+    ("50 ms trend", "A slow average of the stick signal, y = y_prev + a x (x - y_prev) with a = 1 - e^(-dt / 50 ms), computed on a copy of the data. Nothing is applied to the controller or the recorded reports."),
+    ("High-frequency energy", "(RMS of value minus its 50 ms trend / Noise RMS) squared x 100: the share of the noise that is fast jitter rather than slow drift."),
     ("Smoothing estimate", "Untouched step only. Per axis: 100 x (1 - RMS of report-to-report change / (1.414 x Noise RMS)), limited to 0-100. Estimate = 0.75 x median axis score + 0.25 x repeated payloads %. Below 25 is low, below 60 moderate, otherwise high."),
     ("Estimate confidence", "45 + up to 30 as reports grow from 100 to 1,100 + 10 when at least 3 axes were scored."),
     ("Followed the guide", "Movement step: share of moments where the active stick was within 0.3 of the ring's position during the previous 0.4 s (reaction time). Other stick still: share where the resting stick stayed within 0.15 of center. Full travel: each stick reached at least 0.9 right, left, up, and down."),
@@ -237,32 +236,39 @@ def _number(metrics: dict, key: str, decimals: int, suffix: str = "") -> str:
 
 
 def _axis_table_html(result: dict) -> str:
-    """Per-axis noise and smoothing table for one capture."""
-    stationary = (result.get("stationary_check") or {}).get("is_stationary")
-    variation_label = (
-        "Stationary noise change"
-        if result.get("capture_kind") == "neutral" and stationary is True
-        else "Total variation change"
+    """Per-axis measured noise for one capture."""
+    rows = "".join(
+        "<tr>"
+        f"<td>{escape(str(axis).upper())}</td>"
+        f"<td>{_number(metrics, 'noise_rms', 8)}</td>"
+        f"<td>{_number(metrics, 'peak_to_peak', 8)}</td>"
+        f"<td>{_number(metrics, 'high_frequency_energy_percent', 2, '%')}</td>"
+        "</tr>"
+        for axis, metrics in (result.get("axes") or {}).items()
     )
-    rows = []
-    for axis, metrics in (result.get("axes") or {}).items():
-        rows.append(
-            "<tr>"
-            f"<td>{escape(str(axis).upper())}</td>"
-            f"<td>{_number(metrics, 'noise_rms', 8)}</td>"
-            f"<td>{_number(metrics, 'variation_rms_after_smoothing', 8)}</td>"
-            f"<td>{_number(metrics, 'variation_change_percent', 2, '%')}</td>"
-            f"<td>{_number(metrics, 'smoothing_delta_rms', 8)}</td>"
-            f"<td>{_number(metrics, 'peak_to_peak', 8)}</td>"
-            f"<td>{_number(metrics, 'peak_to_peak_after_smoothing', 8)}</td>"
-            f"<td>{_number(metrics, 'high_frequency_energy_percent', 2, '%')}</td>"
-            "</tr>"
-        )
     return (
-        "<table><thead><tr><th>Axis</th><th>Raw RMS</th><th>After smoother RMS</th>"
-        f"<th>{escape(variation_label)}</th><th>Raw-to-filter delta RMS</th><th>Raw peak-to-peak</th>"
-        "<th>After smoother peak-to-peak</th><th>High-frequency energy</th></tr></thead>"
-        f"<tbody>{''.join(rows) or '<tr><td colspan=8>Unavailable</td></tr>'}</tbody></table>"
+        "<table><thead><tr><th>Axis</th><th>Noise RMS</th><th>Peak-to-peak</th>"
+        "<th>High-frequency energy</th></tr></thead>"
+        f"<tbody>{rows or '<tr><td colspan=4>No samples</td></tr>'}</tbody></table>"
+    )
+
+
+def _smoother_simulation_html(result: dict) -> str:
+    """What a 50 ms software smoother would do to a copy of the data (a what-if)."""
+    rows = "".join(
+        "<tr>"
+        f"<td>{escape(str(axis).upper())}</td>"
+        f"<td>{_number(metrics, 'noise_rms', 8)}</td>"
+        f"<td>{_number(metrics, 'variation_rms_after_smoothing', 8)}</td>"
+        f"<td>{_number(metrics, 'variation_change_percent', 1, '%')}</td>"
+        "</tr>"
+        for axis, metrics in (result.get("axes") or {}).items()
+        if isinstance(metrics.get("variation_change_percent"), (int, float))
+    )
+    return (
+        "<table><thead><tr><th>Axis</th><th>Measured noise RMS</th><th>Simulated RMS after smoother</th>"
+        "<th>Simulated reduction</th></tr></thead>"
+        f"<tbody>{rows or '<tr><td colspan=4>Not enough variation to simulate</td></tr>'}</tbody></table>"
     )
 
 
@@ -339,7 +345,6 @@ def guided_test_summary_html(captures: dict[str, dict]) -> str:
             f"<td>{escape(str(axis).upper())}</td>"
             f"<td>{_number(metrics, 'noise_rms', 6)}</td>"
             f"<td>{_number(metrics, 'peak_to_peak', 6)}</td>"
-            f"<td>{_number(metrics, 'variation_change_percent', 1, '%')}</td>"
             f"<td>{_number(metrics, 'high_frequency_energy_percent', 1, '%')}</td>"
             "</tr>"
             for axis, metrics in (result.get("axes") or {}).items()
@@ -348,8 +353,7 @@ def guided_test_summary_html(captures: dict[str, dict]) -> str:
             f"<h3>{escape(str(name).title())} capture</h3>"
             f"<table cellpadding='3'>{headline}</table>"
             "<table cellpadding='4' border='1' style='border-collapse:collapse;margin-top:6px'>"
-            "<tr><th>Axis</th><th>Noise RMS</th><th>Peak-to-peak</th>"
-            "<th>Change after smoother</th><th>High-frequency energy</th></tr>"
+            "<tr><th>Axis</th><th>Noise RMS</th><th>Peak-to-peak</th><th>High-frequency energy</th></tr>"
             f"{axes}</table>"
             f"<p>{escape(str(result.get('interpretation', '')))}</p>"
         )
@@ -564,9 +568,9 @@ def write_noise_evidence_report(
     interpretation = escape(str(result.get("interpretation", "No interpretation available.")))
     smoothing_note = escape(str(smoothing.get("note", "No offline smoothing comparison is available.")))
     smoothing_card = (
-        "<div class='card'><h2>Offline smoothing comparison</h2>"
-        f"<p>A first-order exponential smoother with a {escape(smoothing_tau_text)} time constant was calculated from a copy of these exact captured Raw HID samples. The original reports were not changed.</p>"
-        f"<p>{smoothing_note} Positive variation change means the software-filtered copy varied less; negative means it varied more. This is a calculation, not a second hardware measurement, and it does not alter controller firmware or game input.</p></div>"
+        "<div class='card'><h2>Simulation only: what a software smoother would do</h2>"
+        f"<p>This is not a measurement of the controller. After the test, RcmTool ran a copy of the recorded data through a {escape(smoothing_tau_text)} software smoothing filter to show how much such a filter would reduce the noise. The controller, the game, and the recorded reports are never changed.</p>"
+        f"{_smoother_simulation_html(result)}<p class='small'>{smoothing_note}</p></div>"
     )
     estimate_card = (
         "<div class='card'><h2>Beginner-friendly smoothing estimate</h2>"

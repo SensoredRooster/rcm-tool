@@ -962,6 +962,8 @@ class GuidedStickView(QWidget):
         self.target: tuple[float, float] | None = None
         self.active: str | None = None
         self.on_target = False
+        self.preview: tuple[float, float] | None = None
+        self.demo = False
         self.setMinimumHeight(260)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -973,9 +975,12 @@ class GuidedStickView(QWidget):
         active: str | None = None,
         target: tuple[float, float] | None = None,
         on_target: bool = False,
+        preview: tuple[float, float] | None = None,
+        demo: bool = False,
     ) -> None:
         self.live = {"left": left, "right": right}
         self.active, self.target, self.on_target = active, target, on_target
+        self.preview, self.demo = preview, demo
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -998,8 +1003,16 @@ class GuidedStickView(QWidget):
                 y = max(-1.0, min(1.0, float(y)))
                 return QPointF(center.x() + x * radius * 0.88, center.y() - y * radius * 0.88)
 
+            if active and self.preview is not None:
+                # Where the ring is heading next, so the motion can flow.
+                painter.setPen(QPen(QColor("#5A6B84"), 2, Qt.PenStyle.DashLine))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(point(*self.preview), radius * 0.2, radius * 0.2)
             if active and self.target is not None:
-                ring = QColor("#6DE0B1") if self.on_target else QColor("#F0B862")
+                if self.demo:
+                    ring = QColor("#9EC0FF")
+                else:
+                    ring = QColor("#6DE0B1") if self.on_target else QColor("#F0B862")
                 painter.setPen(QPen(ring, 4))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawEllipse(point(*self.target), radius * 0.2, radius * 0.2)
@@ -1008,6 +1021,8 @@ class GuidedStickView(QWidget):
             painter.drawEllipse(point(*self.live[stick]), radius * 0.1, radius * 0.1)
             if self.active is None:
                 caption = f"{stick.upper()} STICK • hands off"
+            elif active and self.demo:
+                caption = f"{stick.upper()} STICK • demo, watch only"
             elif active:
                 caption = f"{stick.upper()} STICK • follow the ring"
             else:

@@ -1967,6 +1967,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(buttons)
 
         state = {"neutral_done": False, "movement_done": False, "results": {}}
+        # Step 2 first plays the whole routine (not recorded), then counts down.
+        demo = {"phase": None, "start": 0.0}
         wizard_capture = {"started": False}
         self.noise_wizard = {
             "dialog": dialog,
@@ -2041,7 +2043,8 @@ class MainWindow(QMainWindow):
             elif index == 1 and state["neutral_done"]:
                 stack.setCurrentIndex(2)
                 update_navigation()
-                QTimer.singleShot(150, start_movement)
+                demo.update(phase="demo", start=time.monotonic())
+                movement_status.setText("Watch the demo. Recording starts automatically right after it.")
             elif index == 2 and state["movement_done"]:
                 stack.setCurrentIndex(3)
                 update_navigation()
@@ -2050,6 +2053,7 @@ class MainWindow(QMainWindow):
 
         def navigate_back() -> None:
             if stack.currentIndex() > 0 and not self.noise_test_active:
+                demo["phase"] = None
                 stack.setCurrentIndex(stack.currentIndex() - 1)
                 update_navigation()
 
@@ -2106,19 +2110,45 @@ class MainWindow(QMainWindow):
                     hit = movement_guide.on_target(elapsed, x, y)
                     follow["total"] += 1
                     follow["on"] += hit
+                    upcoming = movement_guide.guide_at(elapsed + 0.5)
                     movement_guide_widget.set_state(
                         left, right, active=guide["stick"], target=guide["target"], on_target=hit,
+                        preview=upcoming["target"] if upcoming["stick"] == guide["stick"] else None,
                     )
                     movement_live.setText(
                         f"{guide['stick'].upper()} STICK: {guide['instruction']}\n"
                         f"Next: {guide['next']}  •  {guide['seconds_left']:.0f} s left  •  "
                         f"On target {100.0 * follow['on'] / follow['total']:.0f}%"
                     )
+                elif demo["phase"] == "demo":
+                    watched = time.monotonic() - demo["start"]
+                    countdown_s = 3.0
+                    if watched < movement_guide.STICK_SECONDS:
+                        shown = movement_guide.guide_at(watched)
+                        movement_guide_widget.set_state(
+                            left, right, active="left", target=shown["target"], demo=True,
+                            preview=movement_guide.guide_at(watched + 0.5)["target"],
+                        )
+                        movement_live.setText(
+                            "DEMO, not recording: watch the whole routine. Each stick will do exactly this.\n"
+                            f"{shown['instruction']}  •  demo ends in {movement_guide.STICK_SECONDS - watched:.0f} s"
+                        )
+                    elif watched < movement_guide.STICK_SECONDS + countdown_s:
+                        movement_guide_widget.set_state(
+                            left, right, active="left", target=(0.0, 0.0),
+                            on_target=math.hypot(*left) <= movement_guide.ON_TARGET_DISTANCE,
+                        )
+                        movement_live.setText(
+                            f"Recording starts in {math.ceil(movement_guide.STICK_SECONDS + countdown_s - watched)}…\n"
+                            "Thumb on the LEFT stick, at center. Then follow the ring."
+                        )
+                    else:
+                        demo["phase"] = None
+                        follow["on"] = follow["total"] = 0
+                        start_movement()
                 else:
                     follow["on"] = follow["total"] = 0
                     movement_guide_widget.set_state(left, right, active="left", target=(0.0, 0.0))
-                    if not state["movement_done"]:
-                        movement_live.setText("Get ready: LEFT stick first. Keep your dot on the ring.")
 
         guide_timer = QTimer(dialog)
         guide_timer.timeout.connect(refresh_guides)
@@ -2168,26 +2198,9 @@ class MainWindow(QMainWindow):
             stationarity_text = "movement exceeded stationary threshold"
         else:
             stationarity_text = "stationarity unavailable (below sample minimum)"
-        tau_ms = result["smoothing_comparison"]["time_constant_ms"]
-        if result["smoothing_comparison"]["basis"] == "stationary-noise-RMS":
-            left_change = result["axes"]["lx"]["variation_change_percent"]
-            up_change = result["axes"]["ly"]["variation_change_percent"]
-            smoothing_text = (
-                f"offline-filter RMS change at {tau_ms:.1f} ms: "
-                f"LX {left_change:.1f}%, LY {up_change:.1f}%"
-                if left_change is not None and up_change is not None
-                else f"offline-filter comparison at {tau_ms:.1f} ms is unavailable"
-            )
-        elif self.noise_test_kind == "movement":
-            smoothing_text = f"movement/filter tradeoff calculated at {tau_ms:.1f} ms; not a noise-only percentage"
-        elif result["smoothing_comparison"]["basis"] == "variation-includes-unwanted-movement":
-            smoothing_text = f"stationarity failed; filter change at {tau_ms:.1f} ms is not labeled noise reduction"
-        else:
-            smoothing_text = f"stationarity unavailable; filter change at {tau_ms:.1f} ms is not labeled noise reduction"
         self.noise_test_status.setText(
-            f"Complete • {result['sample_count']} Raw HID samples • "
-            f"{result['raw_hid_report_count']} reports • {result['sample_rate_hz']:.2f} reports/s • "
-            f"{stationarity_text} • {smoothing_text} • integrity checks: {quality.get('label', 'review required')}."
+            f"Complete • {result['raw_hid_report_count']:,} reports • {result['sample_rate_hz']:,.1f} reports/s • "
+            f"{stationarity_text} • capture checks: {quality.get('label', 'review required')}."
         )
         if self.noise_test_kind == "movement":
             result["movement_protocol"] = movement_guide.score_movement(
