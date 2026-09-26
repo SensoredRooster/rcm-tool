@@ -763,15 +763,15 @@ class SignalLabTests(unittest.TestCase):
 
         released = [
             "01000000",
-            "02000001",
-            "03000002",
-            "04000003",
+            "01000001",
+            "01000002",
+            "01000003",
         ]
         pressed = [
-            "05040000",
-            "06040001",
-            "07040002",
-            "08040003",
+            "01040000",
+            "01040001",
+            "01040002",
+            "01040003",
         ]
         changes = stable_bit_changes(released, pressed)
         self.assertEqual(changes, [(1, 0x04)])
@@ -796,6 +796,8 @@ class SignalLabTests(unittest.TestCase):
                     x=0.36,
                     y=0.76,
                     kind="rear",
+                    report_id=0x01,
+                    report_length=4,
                 ),
                 layout="generic",
             )
@@ -807,6 +809,8 @@ class SignalLabTests(unittest.TestCase):
             markers_on = reloaded.markers(metadata, "00000800")
             self.assertFalse(markers_off[0]["active"])
             self.assertTrue(markers_on[0]["active"])
+            self.assertFalse(reloaded.markers(metadata, "02000800")[0]["active"])
+            self.assertFalse(reloaded.markers(metadata, "0100080000")[0]["active"])
             self.assertAlmostEqual(markers_on[0]["x"], 0.36)
             self.assertAlmostEqual(markers_on[0]["y"], 0.76)
 
