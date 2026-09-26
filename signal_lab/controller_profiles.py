@@ -33,8 +33,14 @@ class ButtonMapping:
     x: float
     y: float
     kind: str = "extra"
+    report_id: int | None = None
+    report_length: int | None = None
 
     def active(self, raw: bytes) -> bool:
+        if self.report_length is not None and len(raw) != self.report_length:
+            return False
+        if self.report_id is not None and (not raw or raw[0] != self.report_id):
+            return False
         return 0 <= self.byte_index < len(raw) and bool(raw[self.byte_index] & self.bit_mask)
 
 
@@ -89,19 +95,45 @@ def _decode_hex(raw_hex: str | None) -> bytes:
         return b""
 
 
-def stable_bit_changes(released_reports: Iterable[str], pressed_reports: Iterable[str]) -> list[tuple[int, int]]:
-    """Return bits that are stable inside each phase and invert between phases.
+def report_signature(raw_hex: str | None) -> tuple[int | None, int | None]:
+    raw = _decode_hex(raw_hex)
+    if not raw:
+        return None, None
+    return raw[0], len(raw)
 
-    This rejects sequence counters, gyro/axis noise, and other changing packet
-    fields instead of guessing that every changed Raw HID bit is a button.
+
+def _same_signature_reports(reports: Iterable[str], signature: tuple[int, int]) -> list[bytes]:
+    report_id, report_length = signature
+    return [
+        raw for raw in (_decode_hex(item) for item in reports if item)
+        if len(raw) == report_length and raw and raw[0] == report_id
+    ]
+
+
+def stable_bit_changes(released_reports: Iterable[str], pressed_reports: Iterable[str]) -> list[tuple[int, int]]:
+    """Return stable bits that invert between released and pressed phases.
+
+    Only packets with the same HID report ID and packet length are compared.
+    This rejects changing counters/axes and prevents unrelated report types from
+    being mistaken for physical buttons.
     """
-    released = [_decode_hex(item) for item in released_reports if item]
-    pressed = [_decode_hex(item) for item in pressed_reports if item]
-    released = [item for item in released if item]
-    pressed = [item for item in pressed if item]
+    released_items = [item for item in released_reports if item]
+    pressed_items = [item for item in pressed_reports if item]
+    signatures: dict[tuple[int, int], int] = {}
+    for item in released_items + pressed_items:
+        raw = _decode_hex(item)
+        if raw:
+            signature = (raw[0], len(raw))
+            signatures[signature] = signatures.get(signature, 0) + 1
+    if not signatures:
+        return []
+    signature = max(signatures, key=signatures.get)
+    released = _same_signature_reports(released_items, signature)
+    pressed = _same_signature_reports(pressed_items, signature)
     if len(released) < 3 or len(pressed) < 3:
         return []
-    width = min(min(map(len, released)), min(map(len, pressed)))
+
+    width = signature[1]
     changed: list[tuple[int, int]] = []
     for byte_index in range(width):
         for bit_index in range(8):
@@ -219,6 +251,8 @@ class ControllerProfileStore:
                 "active": item.active(raw),
                 "byte_index": item.byte_index,
                 "bit_mask": item.bit_mask,
+                "report_id": item.report_id,
+                "report_length": item.report_length,
             }
             for item in profile.buttons
         ]
