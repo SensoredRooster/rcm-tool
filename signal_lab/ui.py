@@ -1139,17 +1139,47 @@ class MainWindow(QMainWindow):
             "Support & Diagnostics",
             "The existing local-first tester support pipeline is preserved here. Nothing is uploaded until the tester explicitly confirms it.",
         )
-        status_card, status_layout = card("PRIVATE SUPPORT SESSION")
-        session = QLabel(f"Session ID  •  {SUPPORT_SESSION_ID}")
-        session.setObjectName("Good")
-        status_layout.addWidget(session)
+        status_card, status_layout = card("NEED HELP?")
         privacy = QLabel(
-            "Runtime telemetry stays under %LOCALAPPDATA%\\RCMTool\\logs until you explicitly send a redacted support bundle."
+            "Nothing is uploaded automatically. Send Diagnostics creates a redacted support bundle and asks for confirmation before upload."
         )
         privacy.setObjectName("Muted")
         privacy.setWordWrap(True)
         status_layout.addWidget(privacy)
         layout.addWidget(status_card)
+
+        actions_card, actions_layout = card("SUPPORT")
+        primary = QHBoxLayout()
+        self.send_support_button = QPushButton("Send Diagnostics")
+        self.send_support_button.setObjectName("Primary")
+        self.send_support_button.clicked.connect(self._send_support_bundle)
+        tester_share = QPushButton("Open Tester Share")
+        tester_share.clicked.connect(lambda: webbrowser.open(TESTER_SHARE_URL))
+        advanced_support = QPushButton("Advanced Support Details…")
+        advanced_support.clicked.connect(self._open_advanced_support_dialog)
+        primary.addWidget(self.send_support_button)
+        primary.addWidget(tester_share)
+        primary.addWidget(advanced_support)
+        primary.addStretch(1)
+        actions_layout.addLayout(primary)
+
+        self.support_status = QLabel("No diagnostics have been sent.")
+        self.support_status.setObjectName("Muted")
+        self.support_status.setWordWrap(True)
+        actions_layout.addWidget(self.support_status)
+        layout.addWidget(actions_card)
+        layout.addStretch(1)
+
+        self.advanced_support_dialog = QDialog(self)
+        self.advanced_support_dialog.setWindowTitle("Advanced Support Details")
+        self.advanced_support_dialog.resize(760, 680)
+        advanced_layout = QVBoxLayout(self.advanced_support_dialog)
+
+        session_card, session_layout = card("PRIVATE SUPPORT SESSION")
+        session = QLabel(f"Session ID  •  {SUPPORT_SESSION_ID}")
+        session.setObjectName("Good")
+        session_layout.addWidget(session)
+        advanced_layout.addWidget(session_card)
 
         health_card, health_layout = card("HEALTH SNAPSHOT")
         self.support_health = QPlainTextEdit()
@@ -1159,38 +1189,32 @@ class MainWindow(QMainWindow):
         refresh = QPushButton("Refresh Snapshot")
         refresh.clicked.connect(self._refresh_support_health)
         health_layout.addWidget(refresh, alignment=Qt.AlignmentFlag.AlignRight)
-        layout.addWidget(health_card)
+        advanced_layout.addWidget(health_card)
 
-        actions_card, actions_layout = card("TESTER → DEVELOPER")
-        primary = QHBoxLayout()
+        tools_card, tools_layout = card("SUPPORT TOOLS")
+        tools_row = QHBoxLayout()
         bundle = QPushButton("Create Redacted Bundle")
         bundle.clicked.connect(self._create_support_bundle)
-        self.send_support_button = QPushButton("Send Diagnostics to Developer")
-        self.send_support_button.setObjectName("Primary")
-        self.send_support_button.clicked.connect(self._send_support_bundle)
-        primary.addWidget(bundle)
-        primary.addWidget(self.send_support_button)
-        primary.addStretch(1)
-        actions_layout.addLayout(primary)
-
-        secondary = QHBoxLayout()
         logs = QPushButton("Open Logs Folder"); logs.clicked.connect(open_logs_folder)
         issue = QPushButton("Report GitHub Issue"); issue.clicked.connect(report_issue)
         repo_button = QPushButton("Open Repository"); repo_button.clicked.connect(open_repository)
-        tester_share = QPushButton("Tester Share"); tester_share.clicked.connect(lambda: webbrowser.open(TESTER_SHARE_URL))
-        for button in (logs, issue, repo_button, tester_share):
-            secondary.addWidget(button)
-        secondary.addStretch(1)
-        actions_layout.addLayout(secondary)
+        for button in (bundle, logs, issue, repo_button):
+            tools_row.addWidget(button)
+        tools_row.addStretch(1)
+        tools_layout.addLayout(tools_row)
+        advanced_layout.addWidget(tools_card)
 
-        self.support_status = QLabel("No upload has been requested.")
-        self.support_status.setObjectName("Muted")
-        self.support_status.setWordWrap(True)
-        actions_layout.addWidget(self.support_status)
-        layout.addWidget(actions_card)
-        layout.addStretch(1)
+        close_advanced = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close_advanced.rejected.connect(self.advanced_support_dialog.hide)
+        advanced_layout.addWidget(close_advanced)
+
         self._refresh_support_health()
         return self._scroll(w)
+
+    def _open_advanced_support_dialog(self) -> None:
+        self.advanced_support_dialog.show()
+        self.advanced_support_dialog.raise_()
+        self.advanced_support_dialog.activateWindow()
 
     def _refresh_support_health(self) -> None:
         if hasattr(self, "support_health"):
