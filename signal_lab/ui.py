@@ -707,21 +707,21 @@ class MainWindow(QMainWindow):
         self.controller_profile_status.setObjectName("Muted")
         self.controller_profile_status.setWordWrap(True)
         input_layout.addWidget(self.controller_profile_status)
-        diagnostics.addWidget(input_card,0,0)
+
 
         signal_card, signal_layout = card("STICK SIGNAL QUALITY")
         self.axis_noise = QLabel("Stationary noise: waiting for samples")
         self.axis_noise.setObjectName("Muted")
         self.axis_noise.setWordWrap(True)
         signal_layout.addWidget(self.axis_noise)
-        diagnostics.addWidget(signal_card,0,1)
+
 
         device_card, device_layout = card("BACKEND / DEVICE DETAILS")
         self.controller_capability = QLabel("No live Raw HID stream. Device details appear only when the selected interface provides them.")
         self.controller_capability.setObjectName("Muted")
         self.controller_capability.setWordWrap(True)
         device_layout.addWidget(self.controller_capability)
-        diagnostics.addWidget(device_card,1,0,1,2)
+
 
         evidence_card, evidence_layout = card("RUN CONTROLLER TEST")
         evidence_help = QLabel(
@@ -741,13 +741,39 @@ class MainWindow(QMainWindow):
         self.noise_test_status.setObjectName("Muted")
         self.noise_test_status.setWordWrap(True)
         evidence_layout.addWidget(self.noise_test_status)
-        diagnostics.addWidget(evidence_card, 2, 0, 1, 2)
+        diagnostics.addWidget(evidence_card, 0, 0, 1, 2)
+
+        advanced_card, advanced_layout = card("ADVANCED")
+        advanced_hint = QLabel("Button mapping and technical device details are available when needed, but are not required for a normal test.")
+        advanced_hint.setObjectName("Muted")
+        advanced_hint.setWordWrap(True)
+        advanced_layout.addWidget(advanced_hint)
+        advanced_button = QPushButton("Advanced Controller Tools…")
+        advanced_button.clicked.connect(self._open_advanced_controller_dialog)
+        advanced_layout.addWidget(advanced_button, alignment=Qt.AlignmentFlag.AlignLeft)
+        diagnostics.addWidget(advanced_card, 1, 0, 1, 2)
+
+        self.advanced_controller_dialog = QDialog(self)
+        self.advanced_controller_dialog.setWindowTitle("Advanced Controller Tools")
+        self.advanced_controller_dialog.resize(820, 700)
+        advanced_dialog_layout = QVBoxLayout(self.advanced_controller_dialog)
+        advanced_dialog_layout.addWidget(input_card)
+        advanced_dialog_layout.addWidget(signal_card)
+        advanced_dialog_layout.addWidget(device_card)
+        close_advanced = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close_advanced.rejected.connect(self.advanced_controller_dialog.hide)
+        advanced_dialog_layout.addWidget(close_advanced)
 
         diagnostics.setColumnStretch(0,1)
         diagnostics.setColumnStretch(1,1)
         layout.addLayout(diagnostics)
         self._refresh_controller_sources()
         return self._scroll(w)
+
+    def _open_advanced_controller_dialog(self) -> None:
+        self.advanced_controller_dialog.show()
+        self.advanced_controller_dialog.raise_()
+        self.advanced_controller_dialog.activateWindow()
 
     def _stick_cleaner_page(self) -> QWidget:
         self.stick_cleaner = StickCleanerPage()
