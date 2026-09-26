@@ -54,6 +54,23 @@ class SignalLabTests(unittest.TestCase):
             "generic",
         )
 
+    def test_xinput_hid_devices_use_windows_button_order_and_shared_trigger(self):
+        from signal_lab.controller import is_xinput_hid, split_shared_trigger, xinput_hid_button_names
+
+        vader_path = "\\?\HID#VID_37D7&PID_2401&IG_00#8&1ff4cb4&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}"
+        self.assertTrue(is_xinput_hid({"usb_path": vader_path}))
+        self.assertTrue(is_xinput_hid({"path": b"\\?\hid#vid_045e&pid_02ff&ig_00#7&abc"}))
+        self.assertFalse(is_xinput_hid({"usb_path": "\\?\HID#VID_054C&PID_0CE6&MI_03#7&abc"}))
+        self.assertFalse(is_xinput_hid({}))
+        self.assertEqual(xinput_hid_button_names(0x211), ["A", "LB", "RS"])
+        self.assertEqual(xinput_hid_button_names(0x0C0), ["VIEW", "MENU"])
+        self.assertEqual(split_shared_trigger(32768), (0.0, 0.0))
+        self.assertEqual(split_shared_trigger(65535), (1.0, 0.0))
+        self.assertEqual(split_shared_trigger(0), (0.0, 1.0))
+        left, right = split_shared_trigger(49152)
+        self.assertAlmostEqual(left, 0.5, places=3)
+        self.assertEqual(right, 0.0)
+
     def test_flydigi_layout_detection_does_not_claim_a_button_mapping(self):
         metadata = {"controller_name": "Controller (Flydigi Vader 5 Pro)"}
         self.assertEqual(detect_controller_layout(metadata, "Raw HID"), "vader5pro")

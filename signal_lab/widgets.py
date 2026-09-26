@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 )
 
+from .controller import split_shared_trigger, xinput_hid_button_names
 from .theme import PAINT
 
 
@@ -474,7 +475,7 @@ class ControllerView(QWidget):
         next_sample = dict(sample or {})
         next_source = str(source or "")
         next_skin = skin if skin in {"xbox", "dualsense", "vader5pro", "generic"} else "generic"
-        next_mapping = mapping_family if mapping_family in {"xbox", "dualsense", "generic"} else "generic"
+        next_mapping = mapping_family if mapping_family in {"xbox", "xinput-hid", "dualsense", "generic"} else "generic"
         next_profile_buttons = [dict(item) for item in (profile_buttons or [])]
         if (
             next_sample == self.sample
@@ -506,12 +507,34 @@ class ControllerView(QWidget):
         mask = int(self.sample.get("buttons", 0))
         if self.mapping_family == "xbox":
             built_in = [name for bit, name in self.XINPUT_BUTTONS.items() if mask & bit]
+        elif self.mapping_family == "xinput-hid":
+            built_in = xinput_hid_button_names(mask)
         else:
             built_in = [f"B{index}" for index in range(32) if mask & (1 << index)]
         for name in built_in:
             if name not in names:
                 names.append(name)
         return names
+
+    def _standard_pressed(self) -> set[str]:
+        """Pressed buttons by standard name, only when the button map is known."""
+        if "buttons" not in self.sample:
+            return set()
+        mask = int(self.sample.get("buttons", 0))
+        if self.mapping_family == "xbox":
+            names = {name for bit, name in self.XINPUT_BUTTONS.items() if mask & bit}
+            renamed = {"START": "MENU", "BACK": "VIEW", "L3": "LS", "R3": "RS"}
+            return {renamed.get(name, name) for name in names}
+        if self.mapping_family == "xinput-hid":
+            return set(xinput_hid_button_names(mask))
+        return set()
+
+    def _trigger_values(self) -> tuple[float, float] | None:
+        if "lt" in self.sample or "rt" in self.sample:
+            return self._trigger(self.sample.get("lt", 0.0)), self._trigger(self.sample.get("rt", 0.0))
+        if self.mapping_family == "xinput-hid" and "combined_trigger_raw" in self.sample:
+            return split_shared_trigger(self.sample["combined_trigger_raw"])
+        return None
 
     def _dpad_state(self) -> tuple[int, int]:
         if "dpad_x" in self.sample or "dpad_y" in self.sample:
@@ -533,9 +556,9 @@ class ControllerView(QWidget):
 
     def _draw_stick(
         self, painter: QPainter, center: QPointF, radius: float,
-        x: float | None, y: float | None, label: str,
+        x: float | None, y: float | None, label: str, pressed: bool = False,
     ) -> None:
-        painter.setPen(QPen(QColor("#344761"), 1.4))
+        painter.setPen(QPen(QColor("#9EC0FF") if pressed else QColor("#344761"), 3.0 if pressed else 1.4))
         painter.setBrush(QColor("#0A121E"))
         painter.drawEllipse(center, radius, radius)
         painter.setPen(QPen(QColor("#23354C"), 1))
@@ -605,10 +628,10 @@ class ControllerView(QWidget):
         self, painter: QPainter, left: float, top: float, body_w: float,
         left_label: str, right_label: str,
     ) -> None:
-        if "lt" not in self.sample and "rt" not in self.sample:
+        triggers = self._trigger_values()
+        if triggers is None:
             return
-        lt = self._trigger(self.sample.get("lt", 0.0))
-        rt = self._trigger(self.sample.get("rt", 0.0))
+        lt, rt = triggers
         bar_w = body_w * 0.20
         for x, value, label in (
             (left + body_w * 0.12, lt, left_label),
@@ -676,27 +699,39 @@ class ControllerView(QWidget):
         painter.drawPath(self._shell_path(left, top, body_w, body_h))
         self._draw_trigger_bars(painter, left, top, body_w, "LT", "RT")
 
+        pressed = self._standard_pressed()
+        self._draw_shoulders(painter, left, top, body_w, body_h, pressed)
         stick_r = min(38.0, body_w * 0.055)
         self._draw_stick(
             painter, QPointF(left + body_w * 0.30, top + body_h * 0.37), stick_r,
-            self.sample.get("lx"), self.sample.get("ly"), "LEFT",
+            self.sample.get("lx"), self.sample.get("ly"), "LEFT", "LS" in pressed,
         )
         self._draw_stick(
             painter, QPointF(left + body_w * 0.61, top + body_h * 0.66), stick_r,
-            self.sample.get("rx"), self.sample.get("ry"), "RIGHT",
+            self.sample.get("rx"), self.sample.get("ry"), "RIGHT", "RS" in pressed,
         )
-        self._draw_dpad(painter, QPointF(left + body_w * 0.35, top + body_h * 0.66), 54)
+        self._draw_dpad(painter, QPointF(left + body_w * 0.39, top + body_h * 0.70), 54)
 
-        mask = int(self.sample.get("buttons", 0)) if "buttons" in self.sample else 0
-        mapped = self.mapping_family == "xbox"
         face = QPointF(left + body_w * 0.74, top + body_h * 0.38)
         gap = 26.0
-        self._draw_button(painter, QPointF(face.x(), face.y() + gap), 13, "A", mapped and bool(mask & 0x1000))
-        self._draw_button(painter, QPointF(face.x() + gap, face.y()), 13, "B", mapped and bool(mask & 0x2000))
-        self._draw_button(painter, QPointF(face.x() - gap, face.y()), 13, "X", mapped and bool(mask & 0x4000))
-        self._draw_button(painter, QPointF(face.x(), face.y() - gap), 13, "Y", mapped and bool(mask & 0x8000))
-        self._draw_button(painter, QPointF(left + body_w * 0.47, top + body_h * 0.39), 10, "≡", mapped and bool(mask & 0x0010))
-        self._draw_button(painter, QPointF(left + body_w * 0.53, top + body_h * 0.39), 10, "◫", mapped and bool(mask & 0x0020))
+        self._draw_button(painter, QPointF(face.x(), face.y() + gap), 13, "A", "A" in pressed)
+        self._draw_button(painter, QPointF(face.x() + gap, face.y()), 13, "B", "B" in pressed)
+        self._draw_button(painter, QPointF(face.x() - gap, face.y()), 13, "X", "X" in pressed)
+        self._draw_button(painter, QPointF(face.x(), face.y() - gap), 13, "Y", "Y" in pressed)
+        self._draw_button(painter, QPointF(left + body_w * 0.53, top + body_h * 0.39), 10, "≡", "MENU" in pressed)
+        self._draw_button(painter, QPointF(left + body_w * 0.47, top + body_h * 0.39), 10, "◫", "VIEW" in pressed)
+
+    def _draw_shoulders(
+        self, painter: QPainter, left: float, top: float, body_w: float, body_h: float, pressed: set[str],
+    ) -> None:
+        for x, name in ((left + body_w * 0.22, "LB"), (left + body_w * 0.71, "RB")):
+            active = name in pressed
+            painter.setPen(QPen(QColor("#A7C8FF") if active else QColor("#596575"), 1.2))
+            painter.setBrush(QColor("#3678E8") if active else QColor("#151B22"))
+            rect = QRectF(x, top + body_h * 0.09, body_w * 0.07, body_h * 0.07)
+            painter.drawRoundedRect(rect, 5, 5)
+            painter.setPen(QColor("#FFFFFF") if active else QColor("#8FA4BE"))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, name)
 
     def _paint_dualsense(self, painter: QPainter, left: float, top: float, body_w: float, body_h: float) -> None:
         painter.setPen(QPen(QColor("#B9C5D4"), 2))
@@ -741,44 +776,50 @@ class ControllerView(QWidget):
         self._draw_trigger_bars(painter, left, top, body_w, "LT", "RT")
 
         # Shoulder buttons, center mark, and the model's rear-button row.
-        painter.setBrush(QColor("#151B22"))
-        painter.setPen(QPen(QColor("#596575"), 1.2))
-        for x in (left + body_w * 0.22, left + body_w * 0.72):
-            painter.drawRoundedRect(QRectF(x, top + body_h * 0.09, body_w * 0.07, body_h * 0.07), 5, 5)
+        pressed = self._standard_pressed()
+        self._draw_shoulders(painter, left, top, body_w, body_h, pressed)
         logo = QPainterPath()
         logo.moveTo(left + body_w * 0.50, top + body_h * 0.12)
         logo.lineTo(left + body_w * 0.47, top + body_h * 0.23)
         logo.lineTo(left + body_w * 0.50, top + body_h * 0.20)
         logo.lineTo(left + body_w * 0.53, top + body_h * 0.23)
         logo.closeSubpath()
+        painter.setPen(QPen(QColor("#596575"), 1.2))
         painter.setBrush(QColor("#8D99A8"))
         painter.drawPath(logo)
 
         stick_r = min(34.0, body_w * 0.052)
         self._draw_stick(
             painter, QPointF(left + body_w * 0.30, top + body_h * 0.39), stick_r,
-            self.sample.get("lx"), self.sample.get("ly"), "LEFT STICK",
+            self.sample.get("lx"), self.sample.get("ly"), "LEFT", "LS" in pressed,
         )
         self._draw_stick(
             painter, QPointF(left + body_w * 0.65, top + body_h * 0.64), stick_r,
-            self.sample.get("rx"), self.sample.get("ry"), "RIGHT STICK",
+            self.sample.get("rx"), self.sample.get("ry"), "RIGHT", "RS" in pressed,
         )
-        self._draw_dpad(painter, QPointF(left + body_w * 0.34, top + body_h * 0.65), 48)
+        self._draw_dpad(painter, QPointF(left + body_w * 0.37, top + body_h * 0.63), 48)
+        self._draw_button(painter, QPointF(left + body_w * 0.45, top + body_h * 0.36), 9, "◫", "VIEW" in pressed)
+        self._draw_button(painter, QPointF(left + body_w * 0.55, top + body_h * 0.36), 9, "≡", "MENU" in pressed)
 
-        # The labels describe the model's face layout only; unknown HID bit maps are never highlighted.
+        # A/B/X/Y light up when the button map is known (Xbox-compatible mode).
+        # C and Z are not part of that report, so they stay labels only.
         face = QPointF(left + body_w * 0.76, top + body_h * 0.38)
         gap = 23.0
         for label, x, y in (
             ("Y", face.x(), face.y() - gap),
             ("B", face.x() + gap, face.y()),
             ("A", face.x(), face.y() + gap),
-            ("C", face.x() - gap, face.y()),
+            ("X", face.x() - gap, face.y()),
+        ):
+            self._draw_button(painter, QPointF(x, y), 11, label, label in pressed)
+        for label, x, y in (
+            ("C", face.x() + gap * 1.7, face.y() - gap * 1.4),
             ("Z", face.x() + gap * 1.7, face.y() + gap * 1.4),
         ):
-            self._draw_button(painter, QPointF(x, y), 11, label, False)
+            self._draw_button(painter, QPointF(x, y), 9, label, False)
 
         painter.setPen(QPen(QColor("#596575"), 1.1))
-        for label, x, y in (("M2", .39, .78), ("M1", .61, .78), ("M4", .39, .91), ("M3", .61, .91)):
+        for label, x, y in (("M2", .41, .80), ("M1", .55, .80), ("M4", .41, .92), ("M3", .55, .92)):
             tab = QRectF(left + body_w * (x - .045), top + body_h * (y - .035), body_w * .09, body_h * .07)
             painter.setBrush(QColor("#171D24"))
             painter.drawRoundedRect(tab, 5, 5)
@@ -791,19 +832,25 @@ class ControllerView(QWidget):
         painter.setBrush(QColor("#0E1826"))
         painter.drawPath(self._shell_path(left, top, body_w, body_h))
         self._draw_trigger_bars(painter, left, top, body_w, "L", "R")
+        pressed = self._standard_pressed()
+        if self.mapping_family in {"xbox", "xinput-hid"}:
+            self._draw_shoulders(painter, left, top, body_w, body_h, pressed)
         stick_r = min(37.0, body_w * 0.054)
         self._draw_stick(
             painter, QPointF(left + body_w * 0.38, top + body_h * 0.55), stick_r,
-            self.sample.get("lx"), self.sample.get("ly"), "LEFT",
+            self.sample.get("lx"), self.sample.get("ly"), "LEFT", "LS" in pressed,
         )
         self._draw_stick(
             painter, QPointF(left + body_w * 0.62, top + body_h * 0.55), stick_r,
-            self.sample.get("rx"), self.sample.get("ry"), "RIGHT",
+            self.sample.get("rx"), self.sample.get("ry"), "RIGHT", "RS" in pressed,
         )
         self._draw_dpad(painter, QPointF(left + body_w * 0.23, top + body_h * 0.43), 50)
         face = QPointF(left + body_w * 0.77, top + body_h * 0.43)
+        # Named only when the button map is known; otherwise positions 1-4.
+        named = self.mapping_family in {"xbox", "xinput-hid"}
         for index, (ox, oy) in enumerate(((0,24),(24,0),(-24,0),(0,-24))):
-            self._draw_button(painter, QPointF(face.x()+ox,face.y()+oy), 12, str(index+1), False)
+            label = ("A", "B", "X", "Y")[index] if named else str(index + 1)
+            self._draw_button(painter, QPointF(face.x()+ox,face.y()+oy), 12, label, label in pressed)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -840,12 +887,16 @@ class ControllerView(QWidget):
             mapping = "Outline only • waiting for the first live controller report"
         elif self.mapping_family == "xbox":
             mapping = "Xbox/XInput mapping active"
+        elif self.mapping_family == "xinput-hid":
+            mapping = "Xbox-compatible layout • LT and RT share one axis"
         elif self.mapping_family == "dualsense":
             mapping = "DualSense detected • named button mapping unavailable from current backend"
         else:
             mapping = "Generic/source-specific button mapping"
         if self.profile_buttons:
             mapping += f" • {len(self.profile_buttons)} learned button mapping(s)"
+        elif self.skin == "vader5pro" and self.mapping_family == "xinput-hid":
+            mapping += " • C, Z, M1-M4 only via Flydigi remap"
         elif self.skin == "vader5pro" and self.mapping_family != "xbox":
             mapping += " • extra-button labels are visual until learned"
         painter.drawText(

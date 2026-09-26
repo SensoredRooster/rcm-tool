@@ -58,6 +58,39 @@ def detect_controller_family(metadata: dict | None = None, source: str = "") -> 
     return "generic"
 
 
+# Windows presents every XInput controller as a HID device whose path contains
+# "IG_" (Microsoft's documented test). Its buttons arrive in XInput order and
+# both triggers share one axis, LT above center and RT below; SDL's Xbox 360,
+# Xbox One, and Steam Virtual Gamepad mappings use the same layout.
+XINPUT_HID_BUTTONS = ("A", "B", "X", "Y", "LB", "RB", "VIEW", "MENU", "LS", "RS")
+
+
+def is_xinput_hid(metadata: dict | None) -> bool:
+    """Whether the Raw HID source is Windows' view of an Xbox-compatible controller."""
+    meta = metadata or {}
+    path = meta.get("usb_path") or meta.get("path") or ""
+    if isinstance(path, bytes):
+        path = path.decode(errors="replace")
+    return "IG_" in str(path).upper()
+
+
+def xinput_hid_button_names(mask: int) -> list[str]:
+    """Names of the pressed buttons in an Xbox-compatible HID button mask."""
+    return [name for bit, name in enumerate(XINPUT_HID_BUTTONS) if int(mask) & (1 << bit)]
+
+
+def split_shared_trigger(raw: int) -> tuple[float, float]:
+    """Display-only LT/RT from the shared trigger axis (0..65535, rest 32768).
+
+    Pressing both triggers cancels out on this axis, so the two values are not
+    independent measurements and are never stored as separate triggers.
+    """
+    value = int(raw)
+    left = (value - 32768) / 32767.0
+    right = (32768 - value) / 32768.0
+    return max(0.0, min(1.0, left)), max(0.0, min(1.0, right))
+
+
 def detect_controller_layout(metadata: dict | None = None, source: str = "") -> str:
     """Choose a visual shell from an explicit model name, without guessing its button map."""
     meta = metadata or {}

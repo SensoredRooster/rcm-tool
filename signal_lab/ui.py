@@ -30,6 +30,8 @@ from .controller import (
     ControllerMeasurement,
     detect_controller_family,
     detect_controller_layout,
+    is_xinput_hid,
+    split_shared_trigger,
 )
 from .controller_profiles import (
     ButtonMapping,
@@ -1392,7 +1394,13 @@ class MainWindow(QMainWindow):
             str(metadata.get(key) or "")
             for key in ("backend", "connection_method")
         ).casefold()
-        verified_mapping_family = detected_family if "xinput" in backend_evidence else "generic"
+        if "xinput" in backend_evidence:
+            verified_mapping_family = detected_family
+        elif is_xinput_hid(metadata):
+            # Windows' Xbox-compatible HID layout has a fixed, documented button order.
+            verified_mapping_family = "xinput-hid"
+        else:
+            verified_mapping_family = "generic"
         requested_skin = (
             self.controller_skin_combo.currentData()
             if hasattr(self, "controller_skin_combo") else "auto"
@@ -1431,6 +1439,8 @@ class MainWindow(QMainWindow):
                 mapping_text = f"{learned_count} learned Raw HID mapping(s)"
             elif verified_mapping_family == "xbox":
                 mapping_text = "verified XInput button map available"
+            elif verified_mapping_family == "xinput-hid":
+                mapping_text = "Xbox-compatible button map: A, B, X, Y, LB, RB, View, Menu, stick clicks"
             else:
                 mapping_text = "Raw HID button names not guessed; use Learn / map button"
             if sample:
@@ -2741,6 +2751,14 @@ class MainWindow(QMainWindow):
             if live_raw_hid and recent_rate_available:
                 rate_text = f"{recent_timing.effective_rate_hz:,.1f} Hz"
                 rate_note = f"Last 1 s • {recent_report_count:,} fresh reports received"
+                recent_samples = self._deque_tail(self.controller_samples, recent_report_count)
+                untouched = (
+                    self._stationary_analog_noise(recent_samples, self.stationary_excursion.value())[0] is not None
+                    and not any(sample.get("buttons") for sample in recent_samples)
+                )
+                if untouched:
+                    # Many controllers report at their full USB rate even at rest.
+                    rate_note += " • controller untouched; it keeps reporting at this rate"
                 interval_text = f"{recent_timing.mean_interval_ms:.3f} ms"
                 interval_note = "Average gap in that same 1 s window"
                 jitter_text = f"{recent_timing.rms_deviation_ms:.3f} ms"
@@ -2903,7 +2921,7 @@ class MainWindow(QMainWindow):
             self.controller_axes_readout.setText(
                 f"LX {float(last.get('lx',0)):+.4f}  •  LY {float(last.get('ly',0)):+.4f}  •  "
                 f"RX {float(last.get('rx',0)):+.4f}  •  RY {float(last.get('ry',0)):+.4f}  •  "
-                + self._trigger_readout(last)
+                + self._trigger_readout(last, is_xinput_hid(self.controller_metadata or self.controller_source_info))
             )
             rolling=samples[-250:]
             stationary_noise,axis_spans=self._stationary_analog_noise(rolling,self.stationary_excursion.value())
@@ -3001,14 +3019,17 @@ class MainWindow(QMainWindow):
 
 
     @staticmethod
-    def _trigger_readout(sample:dict) -> str:
+    def _trigger_readout(sample:dict, xinput_hid:bool=False) -> str:
         """Describe triggers only as the decoder actually reported them."""
         parts=[
             f"{label} {float(sample[key])*100:.1f}%" if key in sample else f"{label} unavailable"
             for label,key in (("LT","lt"),("RT","rt"))
         ]
         if "lt" not in sample and "rt" not in sample and "combined_trigger_raw" in sample:
-            # One shared axis (e.g. Vader 5 Pro) cannot be split into LT/RT.
+            if xinput_hid:
+                # Windows puts both triggers on one axis; pressing both cancels.
+                lt,rt=split_shared_trigger(sample["combined_trigger_raw"])
+                return f"LT {lt*100:.1f}%  •  RT {rt*100:.1f}% (shared axis)"
             return f"Triggers: one combined axis, raw {int(sample['combined_trigger_raw'])}"
         return "  •  ".join(parts)
 
