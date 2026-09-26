@@ -118,6 +118,14 @@ QFrame#Card, QFrame#SectionCard {
     border: 1px solid #242D39;
     border-radius: 22px;
 }
+QFrame#ResultHero {
+    background: #101827;
+    border: 1px solid #35527A;
+    border-radius: 22px;
+}
+QFrame#ResultHero:hover {
+    border-color: #4E73A8;
+}
 QFrame#SectionCard:hover {
     border-color: #303C4D;
 }
@@ -168,6 +176,12 @@ QLabel#Metric {
     font-weight: 760;
 }
 QLabel#Muted { color: #8997AA; }
+QLabel#ResultSummary {
+    color: #F5F8FF;
+    font-size: 13pt;
+    font-weight: 700;
+    padding: 4px 0;
+}
 QLabel#Good { color: #6DE4B2; font-weight: 670; }
 QLabel#Warn { color: #F6C96A; font-weight: 670; }
 QLabel#LiveRate { color: #D6DFEC; font-weight: 650; }
@@ -398,6 +412,8 @@ QLabel#PageHeroTitle {
 QFrame#Sidebar { background: #FFFFFF; border-right: 1px solid #E1E5EC; }
 QFrame#Topbar { background: #FFFFFF; border: 1px solid #DFE5ED; border-radius: 18px; }
 QFrame#Card, QFrame#SectionCard { background: #FFFFFF; border: 1px solid #DFE5ED; border-radius: 22px; }
+QFrame#ResultHero { background:#F8FAFF; border:1px solid #BFD0ED; border-radius:22px; }
+QFrame#ResultHero:hover { border-color:#96B2DF; }
 QFrame#SectionCard:hover { border-color: #CBD5E1; }
 QFrame#MetricCard { background: #FFFFFF; border: 1px solid #DCE3EC; border-radius: 20px; }
 QFrame#MetricCard:hover { background: #FBFCFE; border-color: #C5D0DE; }
@@ -410,6 +426,7 @@ QLabel#Eyebrow { color: #386FD8; font-size: 8pt; font-weight: 760; letter-spacin
 QLabel#Title { color: #172236; font-size: 23pt; font-weight: 760; }
 QLabel#Metric { color: #111B2B; font-size: 17pt; font-weight: 760; }
 QLabel#Muted { color: #718095; }
+QLabel#ResultSummary { color:#172236; font-size:13pt; font-weight:700; padding:4px 0; }
 QLabel#Good { color: #147653; font-weight: 670; }
 QLabel#Warn { color: #A35C00; font-weight: 670; }
 QLabel#LiveRate { color: #45566D; font-weight: 650; }
