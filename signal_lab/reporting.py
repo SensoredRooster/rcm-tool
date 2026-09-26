@@ -291,7 +291,7 @@ def _capture_headline(result: dict) -> dict[str, object]:
             estimate_text += f" (confidence {float(confidence):.0f}%)"
     else:
         estimate_text = str(estimate.get("label", "Not measurable"))
-    return {
+    rows: dict[str, object] = {
         "Reports received": f"{sample_count:,}",
         "Report rate": (
             f"{float(rate):,.1f} Hz" if sample_count >= 2 and isinstance(rate, (int, float)) else "Unavailable"
@@ -303,6 +303,11 @@ def _capture_headline(result: dict) -> dict[str, object]:
         "Smoothing estimate": estimate_text,
         **_protocol_headline(result),
     }
+    # Only values that were measured for this step are shown.
+    if result.get("capture_kind") == "movement":
+        rows.pop("Stationary check", None)
+        rows.pop("Smoothing estimate", None)
+    return {key: value for key, value in rows.items() if not str(value).startswith("Unavailable")}
 
 
 def _protocol_headline(result: dict) -> dict[str, object]:
@@ -413,7 +418,7 @@ def save_guided_test_results(
     }
     paths["results"].write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     write_noise_evidence_report(
-        paths["report"], list(captures.values())[-1], captures=captures,
+        paths["report"], captures.get("neutral") or list(captures.values())[-1], captures=captures,
         title=f"RcmTool Test Results • {name}",
     )
     with gzip.open(paths["raw"], "wt", encoding="utf-8", newline="") as handle:
@@ -461,7 +466,7 @@ def write_noise_evidence_report(
         if sample_count >= 2 and isinstance(sample_rate, (int, float)) else "Unavailable"
     )
     duplicate_percent = result.get("duplicate_report_percent")
-    summary = _metric_grid({
+    summary_rows = {
         "Evidence class": result.get("evidence_class", "Unavailable"),
         "Capture": result.get("capture_kind", "Unavailable"),
         "Observed reports": result.get("raw_hid_report_count", 0),
@@ -472,6 +477,10 @@ def write_noise_evidence_report(
         "Raw report coverage": f"{float(result.get('raw_report_coverage_percent', 0.0)):.1f}%",
         "Duplicate payloads": f"{float(duplicate_percent):.2f}%" if isinstance(duplicate_percent, (int, float)) else "Unavailable (<2 raw reports)",
         "Capture checks": quality.get("label", "unavailable"),
+    }
+    summary = _metric_grid({
+        key: value for key, value in summary_rows.items()
+        if not str(value).startswith(("Unavailable", "unavailable", "Not configured"))
     })
     estimate_value = smoothing_estimate.get("estimated_smoothing_percent")
     estimate_text = (

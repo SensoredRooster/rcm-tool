@@ -519,19 +519,20 @@ class MainWindow(QMainWindow):
         grid = QGridLayout()
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(12)
-        for column in range(4):
+        for column in range(3):
             grid.setColumnStretch(column, 1)
         self.cards = {}
         specs = [
             ("rate", "Recent report rate", "MEASURED"),
             ("interval", "Average time between reports", "MEASURED"),
-            ("jitter", "Timing variation", "CALCULATED"),
-            ("late", "Long gaps / repeats", "CALCULATED"),
+            # Timing variation is not shown: Raw HID arrival times include Windows
+            # buffering, so only a USB capture could measure it accurately.
+            ("late", "Repeated reports", "MEASURED"),
         ]
         for i, (key, title, source) in enumerate(specs):
             c = MetricCard(title, help_text=METRIC_HELP[key], source=source)
             self.cards[key] = c
-            grid.addWidget(c, i // 4, i % 4)
+            grid.addWidget(c, i // 3, i % 3)
         snapshot_layout.addLayout(grid)
         layout.addWidget(snapshot)
 
@@ -570,11 +571,6 @@ class MainWindow(QMainWindow):
 
         charts = QGridLayout()
         charts.setHorizontalSpacing(14)
-        self.dashboard_timing_chart = LineChart(
-            "Host report delivery gaps",
-            help_text="Host/HIDAPI delivery gaps. Buffered reports can be drained in bursts, so this is not a USB-frame jitter measurement.",
-            x_label="Elapsed controller capture time (s)",
-        )
         self.dashboard_left_stick_chart = LineChart(
             "Left stick position",
             help_text=CHART_HELP["analog_stability"],
@@ -585,11 +581,10 @@ class MainWindow(QMainWindow):
             help_text=CHART_HELP["analog_stability"],
             x_label="Elapsed controller capture time (s)",
         )
-        charts.addWidget(self.dashboard_timing_chart,0,0,1,2)
-        charts.addWidget(self.dashboard_left_stick_chart,1,0)
-        charts.addWidget(self.dashboard_right_stick_chart,1,1)
+        charts.addWidget(self.dashboard_left_stick_chart,0,0)
+        charts.addWidget(self.dashboard_right_stick_chart,0,1)
         charts.setColumnStretch(0,1); charts.setColumnStretch(1,1)
-        charts.setRowStretch(0,1); charts.setRowStretch(1,1)
+        charts.setRowStretch(0,1)
         layout.addLayout(charts, 1)
 
         q, ql = card("ABOUT THESE READINGS")
@@ -2927,8 +2922,6 @@ class MainWindow(QMainWindow):
                     )
                 interval_text = f"{1000.0 / observed_rate_hz:.3f} ms"
                 interval_note = "Throughput-equivalent spacing; not a per-report USB timestamp"
-                jitter_text = "USB trace required"
-                jitter_note = "HIDAPI can batch reports, so queue-drain timing is not valid USB jitter"
                 late_text = f"{recent_repeats:,} repeats"
                 late_note = (
                     "Consecutive reports with identical bytes in the last second. Stick sensor noise "
@@ -2940,12 +2933,12 @@ class MainWindow(QMainWindow):
                     f"{recent_report_count} report in the last second; move a stick to measure its active rate"
                     if recent_report_count else "No report in the last 0.5 s; the controller may be idle"
                 )
-                interval_text = jitter_text = late_text = "Need fresh reports"
-                interval_note = jitter_note = late_note = "Move a stick; these readings need at least two recent reports"
+                interval_text = late_text = "Need fresh reports"
+                interval_note = late_note = "Move a stick; these readings need at least two recent reports"
             else:
-                rate_text = interval_text = jitter_text = late_text = "Unavailable"
+                rate_text = interval_text = late_text = "Unavailable"
                 rate_note = "Select a named controller and move a stick"
-                interval_note = jitter_note = late_note = "Requires fresh Raw HID reports"
+                interval_note = late_note = "Requires fresh Raw HID reports"
             self.cards["rate"].set_value(
                 rate_text,
                 rate_note,
@@ -2956,15 +2949,10 @@ class MainWindow(QMainWindow):
                 interval_note,
                 source=rate_source,
             )
-            self.cards["jitter"].set_value(
-                jitter_text,
-                jitter_note,
-                source="CALCULATED",
-            )
             self.cards["late"].set_value(
                 late_text,
                 late_note,
-                source="CALCULATED",
+                source=rate_source,
             )
 
         if hasattr(self, "live_rate_label"):
@@ -2978,18 +2966,6 @@ class MainWindow(QMainWindow):
         osc_elapsed=self._elapsed_seconds(osc_times,osc_times[0] if osc_times else None)
 
         if current_page == "Results" and graphs_live:
-            chart_ts = self._deque_tail(self.controller_ts, 500) if live_raw_hid else []
-            chart_pairs = [(b, (b - a) / 1e6) for a, b in zip(chart_ts, chart_ts[1:]) if b > a]
-            chart_intervals = [item[1] for item in chart_pairs]
-            chart_elapsed = self._elapsed_seconds(
-                [item[0] for item in chart_pairs],
-                chart_ts[0] if chart_ts else None,
-            )
-            self.dashboard_timing_chart.set_series(
-                [("interval ms", chart_intervals, PAINT["line_blue"])] if live_raw_hid else [],
-                x_values=chart_elapsed if live_raw_hid else [],
-                x_label="Elapsed controller capture time (s)",
-            )
             dashboard_samples = self._deque_tail(self.controller_samples, 500) if live_raw_hid else []
             dashboard_sample_ts = self._deque_tail(self.controller_ts, len(dashboard_samples)) if dashboard_samples else []
             dashboard_elapsed = self._elapsed_seconds(
@@ -3149,10 +3125,10 @@ class MainWindow(QMainWindow):
             self.controller_meta.setText("  •  ".join(identity))
 
             detail_parts=[
-                f"Backend {meta.get('backend','Unavailable')}",
-                f"Connection {meta.get('connection_method','Unavailable')}",
-                f"Firmware {meta.get('firmware_release','Unavailable')}",
-                f"Battery {meta.get('battery_status','Unavailable')}",
+                f"{label} {meta[key]}"
+                for label,key in (("Backend","backend"),("Connection","connection_method"),
+                                  ("Firmware","firmware_release"),("Battery","battery_status"))
+                if meta.get(key) not in (None,"")
             ]
             if meta.get("hid_decoder"):
                 detail_parts.append(f"Decoded from {meta['hid_decoder']}")
@@ -4075,8 +4051,6 @@ class MainWindow(QMainWindow):
         timestamps=recorded["timestamps_ns"]
         intervals=[(b-a)/1e6 for a,b in zip(timestamps,timestamps[1:]) if b>a]
         expected_override=self._timing_reference_ms(intervals)
-        report_reference_ms=expected_override if expected_override is not None else self._median(intervals)
-        deviations=[value-report_reference_ms for value in intervals]
         session_timing=timing_metrics(
             timestamps,
             expected_interval_ms=expected_override,
@@ -4090,7 +4064,12 @@ class MainWindow(QMainWindow):
         ]
         report_path = write_html_report(
             path,title="RcmTool Raw HID Session Report",
-            controller_metrics=asdict(session_timing),
+            controller_metrics={
+                "Reports recorded":session_timing.sample_count,
+                "Duration s":session_timing.duration_s,
+                "Report rate Hz":session_timing.effective_rate_hz,
+                "Average time between reports ms":session_timing.mean_interval_ms,
+            },
             oscillator_metrics=None,
             metadata={
                 "session_id":self.session_id,
@@ -4103,22 +4082,17 @@ class MainWindow(QMainWindow):
                     else None
                 ),
                 "evidence_class":self.controller_metadata.get("evidence_class", "unavailable"),
-                "timing_reference_mode":self.timing_reference_mode.currentData(),
-                "timing_reference_interval_ms":report_reference_ms,
-                "configured_reference_rate_hz":self.expected_rate.value(),
                 "host_timer_resolution_ns":self.host_timer_resolution_ns,
             },
             plots={
-                "Raw HID report interval (ms)":intervals[-1200:],
-                "Report interval deviation (ms)":deviations[-1200:],
                 "Left stick X (normalized)": recorded["lx"][-1200:],
                 "Left stick Y (normalized)": recorded["ly"][-1200:],
             },
             timeline=timeline,
             interpretation=(
                 "Observed rate is the cadence of HID reports received by Windows after USB; it is not a guaranteed "
-                "firmware polling rate. Timing jitter describes variation in those host arrival intervals, and Windows/USB "
-                "scheduling can contribute. Repeated identical raw reports can simply mean the controls did not change; "
+                "firmware polling rate. Timing variation (jitter) is not reported: Windows buffers reports, so arrival "
+                "gaps measure the PC, not the controller. Repeated identical raw reports can simply mean the controls did not change; "
                 "they are not proof of dropped input. Stick noise is measured downstream of the controller's sensor, ADC, "
                 "and firmware, so this report cannot identify which stage introduced smoothing. A synchronized electrical "
                 "trace upstream of the USB report is required for that attribution. No percent filtering score is inferred "
@@ -4393,7 +4367,7 @@ class MainWindow(QMainWindow):
                 self._set_controller_visual()
 
     def _reset_graphs(self) -> None:
-        for name in ("dashboard_timing_chart", "dashboard_noise_chart"):
+        for name in ("dashboard_left_stick_chart", "dashboard_right_stick_chart"):
             chart = getattr(self, name, None)
             if chart is not None:
                 chart.reset_view()
