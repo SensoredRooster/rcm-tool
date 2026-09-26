@@ -36,10 +36,10 @@ class ButtonMapping:
     report_id: int | None = None
     report_length: int | None = None
 
-    def active(self, raw: bytes) -> bool:
+    def active(self, raw: bytes, *, check_report_id: bool = True) -> bool:
         if self.report_length is not None and len(raw) != self.report_length:
             return False
-        if self.report_id is not None and (not raw or raw[0] != self.report_id):
+        if check_report_id and self.report_id is not None and (not raw or raw[0] != self.report_id):
             return False
         return 0 <= self.byte_index < len(raw) and bool(raw[self.byte_index] & self.bit_mask)
 
@@ -86,6 +86,15 @@ def profile_key(metadata: dict | None) -> str:
     return f"{vid if vid is not None else -1:04X}:{pid if pid is not None else -1:04X}:{product.casefold()}"
 
 
+def metadata_has_report_ids(metadata: dict | None) -> bool:
+    """Treat byte 0 as a HID report ID unless the backend found the device has none.
+
+    Devices without numbered reports (for example the Vader 5 Pro gamepad
+    interface) start with input data, so byte 0 changes with stick noise.
+    """
+    return (metadata or {}).get("hid_report_ids") is not False
+
+
 def _decode_hex(raw_hex: str | None) -> bytes:
     if not raw_hex:
         return b""
@@ -95,39 +104,45 @@ def _decode_hex(raw_hex: str | None) -> bytes:
         return b""
 
 
-def report_signature(raw_hex: str | None) -> tuple[int | None, int | None]:
+def report_signature(raw_hex: str | None, *, has_report_id: bool = True) -> tuple[int | None, int | None]:
     raw = _decode_hex(raw_hex)
     if not raw:
         return None, None
-    return raw[0], len(raw)
+    return (raw[0] if has_report_id else None), len(raw)
 
 
-def _same_signature_reports(reports: Iterable[str], signature: tuple[int, int]) -> list[bytes]:
+def _same_signature_reports(reports: Iterable[str], signature: tuple[int | None, int]) -> list[bytes]:
     report_id, report_length = signature
     return [
         raw for raw in (_decode_hex(item) for item in reports if item)
-        if len(raw) == report_length and raw and raw[0] == report_id
+        if len(raw) == report_length and raw and (report_id is None or raw[0] == report_id)
     ]
 
 
-def stable_bit_changes(released_reports: Iterable[str], pressed_reports: Iterable[str]) -> list[tuple[int, int]]:
+def stable_bit_changes(
+    released_reports: Iterable[str],
+    pressed_reports: Iterable[str],
+    *,
+    has_report_id: bool = True,
+) -> list[tuple[int, int]]:
     """Return stable bits that invert between released and pressed phases.
 
     Only packets with the same HID report ID and packet length are compared.
     This rejects changing counters/axes and prevents unrelated report types from
-    being mistaken for physical buttons.
+    being mistaken for physical buttons. When the device has no report IDs,
+    packets are grouped by length alone, because byte 0 is input data.
     """
     released_items = [item for item in released_reports if item]
     pressed_items = [item for item in pressed_reports if item]
-    signatures: dict[tuple[int, int], int] = {}
+    signatures: dict[tuple[int | None, int], int] = {}
     for item in released_items + pressed_items:
         raw = _decode_hex(item)
         if raw:
-            signature = (raw[0], len(raw))
+            signature = ((raw[0] if has_report_id else None), len(raw))
             signatures[signature] = signatures.get(signature, 0) + 1
     if not signatures:
         return []
-    signature = max(signatures, key=signatures.get)
+    signature = max(signatures, key=lambda item: signatures[item])
     released = _same_signature_reports(released_items, signature)
     pressed = _same_signature_reports(pressed_items, signature)
     if len(released) < 3 or len(pressed) < 3:
@@ -242,13 +257,16 @@ class ControllerProfileStore:
         if profile is None:
             return []
         raw = _decode_hex(raw_hex)
+        # Maps learned before report-ID detection may have stored a data byte
+        # as the report ID; ignore it for devices without numbered reports.
+        check_report_id = metadata_has_report_ids(metadata)
         return [
             {
                 "name": item.name,
                 "x": item.x,
                 "y": item.y,
                 "kind": item.kind,
-                "active": item.active(raw),
+                "active": item.active(raw, check_report_id=check_report_id),
                 "byte_index": item.byte_index,
                 "bit_mask": item.bit_mask,
                 "report_id": item.report_id,

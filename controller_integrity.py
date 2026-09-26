@@ -27,6 +27,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Optional, Protocol
 
+from hid_descriptor import decode_report, gamepad_layouts, hid_descriptor_uses_report_ids
 from support import log_event, start_heartbeat
 from support_dialog import open_support_center
 
@@ -45,6 +46,12 @@ REPORT_VERSION = "0.1"
 TEST_DURATION_SECONDS = 10.0
 MOTION_TEST_DURATION_SECONDS = 20.0
 POLL_INTERVAL_SECONDS = 0.004
+# Flydigi Vader 5 Pro Windows gamepad interface (VID, PID). Its input reports
+# carry no report ID, so byte 0 is axis data.
+VADER_5_PRO_IDS = (0x37D7, 0x2401)
+DECODER_DESCRIPTOR = "HID report descriptor"
+DECODER_VADER = "known Vader 5 Pro layout"
+DECODER_GUESSED = "guessed byte layout"
 
 
 class ControllerBackend(Protocol):
@@ -352,6 +359,12 @@ class HIDGamepad:
         self.device = None
         self.last_sample: Optional[dict[str, float]] = None
         self.raw_reports: list[list[int]] = []
+        # True/False once known for the opened device; None when unknown.
+        self.uses_report_ids: Optional[bool] = None
+        # Where each input report keeps its controls, read from the device's
+        # own HID report descriptor when it is available.
+        self.report_layouts: dict = {}
+        self.decoder: Optional[str] = None
 
     @staticmethod
     def available() -> bool:
@@ -405,10 +418,45 @@ class HIDGamepad:
             self.device = hid.device()
             self.device.open_path(self.path)
             self.device.set_nonblocking(True)
-            return True
         except Exception:
             self.device = None
             return False
+        descriptor = self._read_descriptor()
+        self.report_layouts = gamepad_layouts(descriptor)
+        self.uses_report_ids = self._probe_report_ids(descriptor)
+        if self.report_layouts:
+            self.decoder = DECODER_DESCRIPTOR
+        elif self._is_vader_5_pro():
+            self.decoder = DECODER_VADER
+        else:
+            self.decoder = DECODER_GUESSED
+        return True
+
+    def _is_vader_5_pro(self) -> bool:
+        return (self.info.get("vendor_id"), self.info.get("product_id")) == VADER_5_PRO_IDS
+
+    def _read_descriptor(self) -> bytes:
+        get_descriptor = getattr(self.device, "get_report_descriptor", None)
+        if not callable(get_descriptor):
+            return b""
+        try:
+            return bytes(get_descriptor())
+        except Exception:
+            return b""
+
+    def _probe_report_ids(self, descriptor: Optional[bytes] = None) -> Optional[bool]:
+        if self._is_vader_5_pro():
+            return False
+        return hid_descriptor_uses_report_ids(self._read_descriptor() if descriptor is None else descriptor)
+
+    def _is_sony(self) -> bool:
+        product = (self.info.get("product_string") or "").lower()
+        if "xbox" in product:  # "Xbox Wireless Controller" is not a Sony pad.
+            return False
+        return (
+            self.info.get("vendor_id") == 0x054C
+            or "dualsense" in product or "dualshock" in product or "wireless controller" in product
+        )
 
     @staticmethod
     def _axis(value: int, invert: bool = False) -> float:
@@ -418,11 +466,23 @@ class HIDGamepad:
     def _parse_report(self, report: list[int]) -> Optional[dict[str, float]]:
         if len(report) < 5:
             return None
+        if self.report_layouts:
+            # The descriptor names every control's exact bits, so motion
+            # sensors, counters, and vendor bytes never reach the sticks.
+            sample = decode_report(self.report_layouts, report)
+            if sample is not None:
+                self.last_sample = sample
+                return sample
+            # A report the descriptor gives no sticks carries none. Sony's
+            # extended Bluetooth reports are vendor blobs there, so they keep
+            # the fixed Sony layout below.
+            if not (self._is_sony() and report[0] in (0x31, 0x11)):
+                return None
         # Vader 5 Pro's Windows gamepad interface has no report ID: four
         # little-endian 16-bit axes, a combined trigger axis, ten buttons,
         # a one-based four-bit hat, and padding (14 bytes total).
         # Do not run this packet through the report-ID + 8-bit Sony decoder.
-        if (self.info.get("vendor_id"), self.info.get("product_id")) == (0x37D7, 0x2401):
+        if self._is_vader_5_pro():
             if len(report) != 14:
                 return None
             words = [int.from_bytes(bytes(report[i:i + 2]), "little") for i in range(0, 10, 2)]
@@ -439,9 +499,7 @@ class HIDGamepad:
                           dpad_x=dx, dpad_y=dy)
             self.last_sample = sample
             return sample
-        product = (self.info.get("product_string") or "").lower()
-        vendor_id = self.info.get("vendor_id")
-        sony = vendor_id == 0x054C or "dualsense" in product or "dualshock" in product or "wireless controller" in product
+        sony = self._is_sony()
         report_id = report[0]
         offset = 2 if sony and report_id in (0x31, 0x11) else 1 if report_id != 0 else 1
         if len(report) < offset + 4:

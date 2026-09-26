@@ -35,6 +35,7 @@ from .controller_profiles import (
     ButtonMapping,
     ControllerProfileStore,
     POSITION_PRESETS,
+    metadata_has_report_ids,
     report_signature,
     stable_bit_changes,
 )
@@ -60,6 +61,7 @@ from support import (
     create_support_bundle,
     health_snapshot,
     log_event as support_log_event,
+    omit_raw_capture,
     open_logs_folder,
     open_repository,
     report_issue,
@@ -74,6 +76,10 @@ LOGGER = logging.getLogger(__name__)
 NAV = ["Test", "Results", "Support"]
 
 TESTER_SHARE_URL = "https://rcm-tool-share.sensoredrooster-com.workers.dev"
+# The in-memory timeline only feeds the event table; saved sessions keep the
+# complete event history in SQLite.
+MAX_TIMELINE_EVENTS = 1000
+TIMELINE_DETAIL_CHARS = 2000
 
 
 
@@ -219,7 +225,7 @@ class MainWindow(QMainWindow):
         self.osc_ts = deque(maxlen=12000)
         self.osc_freq = deque(maxlen=12000)
         self.osc_duty = deque(maxlen=12000)
-        self.events: list[tuple[int, str, dict]] = []
+        self.events: list[tuple[int, str, str]] = []
 
         self.baseline_active = False
         self.baseline_deadline = 0.0
@@ -1890,8 +1896,17 @@ class MainWindow(QMainWindow):
                 self._start_capture()
                 wizard_capture["started"] = self.capture_active
             if not self.capture_active:
+                neutral_status.setText(
+                    "Recording could not start. Press Back, confirm the controller on the Test tab, then press Begin again."
+                )
                 return
             self._start_noise_test("neutral")
+            if not self.noise_test_active:
+                neutral_status.setText(
+                    "Live controller reports were not arriving, so the capture did not start. "
+                    "Move a stick, press Back, then press Begin again."
+                )
+                return
             neutral_start.setEnabled(False)
             next_button.setEnabled(False)
             neutral_status.setText("RUNNING • keep the sticks untouched for 10 seconds…")
@@ -1900,6 +1915,12 @@ class MainWindow(QMainWindow):
             if self.noise_test_active:
                 return
             self._start_noise_test("movement")
+            if not self.noise_test_active:
+                movement_status.setText(
+                    "Live controller reports were not arriving, so the capture did not start. "
+                    "Move a stick, press Back, then press Next again."
+                )
+                return
             movement_start.setEnabled(False)
             next_button.setEnabled(False)
             movement_status.setText("RUNNING • perform the instructed movement for 20 seconds…")
@@ -1962,10 +1983,12 @@ class MainWindow(QMainWindow):
         self.noise_test_active = False
         self._sync_hardware_controls()
         if not window_samples:
-            self.noise_test_result = None
-            self.noise_test_status.setText(
-                "No Raw HID samples arrived. Connect the selected controller, refresh devices, and run the test again."
-            )
+            # Keep any earlier valid capture as the latest result.
+            message = "No Raw HID samples arrived. Connect the selected controller, refresh devices, and run the test again."
+            self.noise_test_status.setText(message)
+            if self.noise_wizard is not None:
+                status_key = "neutral_status" if self.noise_test_kind == "neutral" else "movement_status"
+                self.noise_wizard[status_key].setText(message + " Press Back to retry this step.")
             return
         self.noise_test_result = analyze_noise_capture(
             timestamps_ns=window_timestamps,
@@ -2019,9 +2042,15 @@ class MainWindow(QMainWindow):
             state[f"{self.noise_test_kind}_done"] = True
             state["results"][self.noise_test_kind] = result
             if self.noise_test_kind == "neutral":
+                if stationary is True:
+                    stationary_note = "stationary check passed"
+                elif stationary is False:
+                    stationary_note = "movement detected; review this capture"
+                else:
+                    stationary_note = "too few samples to judge stationarity"
                 self.noise_wizard["neutral_status"].setText(
                     f"Complete • {result['sample_count']} samples • {result['sample_rate_hz']:.2f} reports/s • "
-                    f"{'stationary check passed' if stationary else 'movement detected; review this capture'}."
+                    f"{stationary_note}."
                 )
                 self.noise_wizard["movement_start"].setEnabled(True)
             else:
@@ -2874,7 +2903,7 @@ class MainWindow(QMainWindow):
             self.controller_axes_readout.setText(
                 f"LX {float(last.get('lx',0)):+.4f}  •  LY {float(last.get('ly',0)):+.4f}  •  "
                 f"RX {float(last.get('rx',0)):+.4f}  •  RY {float(last.get('ry',0)):+.4f}  •  "
-                f"LT {float(last.get('lt',0))*100:.1f}%  •  RT {float(last.get('rt',0))*100:.1f}%"
+                + self._trigger_readout(last)
             )
             rolling=samples[-250:]
             stationary_noise,axis_spans=self._stationary_analog_noise(rolling,self.stationary_excursion.value())
@@ -2940,6 +2969,8 @@ class MainWindow(QMainWindow):
                 f"Firmware {meta.get('firmware_release','Unavailable')}",
                 f"Battery {meta.get('battery_status','Unavailable')}",
             ]
+            if meta.get("hid_decoder"):
+                detail_parts.append(f"Decoded from {meta['hid_decoder']}")
             if meta.get("hid_interface") is not None:
                 detail_parts.append(f"HID interface {meta['hid_interface']}")
             if meta.get("usb_path"):
@@ -2968,6 +2999,18 @@ class MainWindow(QMainWindow):
             self.baseline_progress.setValue(int((1-remaining/max(1,duration))*1000))
             self.baseline_state.setText(f"Baseline capture running • {remaining:.1f}s remaining")
 
+
+    @staticmethod
+    def _trigger_readout(sample:dict) -> str:
+        """Describe triggers only as the decoder actually reported them."""
+        parts=[
+            f"{label} {float(sample[key])*100:.1f}%" if key in sample else f"{label} unavailable"
+            for label,key in (("LT","lt"),("RT","rt"))
+        ]
+        if "lt" not in sample and "rt" not in sample and "combined_trigger_raw" in sample:
+            # One shared axis (e.g. Vader 5 Pro) cannot be split into LT/RT.
+            return f"Triggers: one combined axis, raw {int(sample['combined_trigger_raw'])}"
+        return "  •  ".join(parts)
 
     def _flush_database_buffer(self) -> None:
         if self.db.pending_row_count:
@@ -3634,10 +3677,20 @@ class MainWindow(QMainWindow):
             self._add_event("sweep_stopped",{"captured_points":len(self.sweep_results)})
 
     def _add_event(self,event_type:str,payload:dict) -> None:
-        ts=time.perf_counter_ns(); self.events.append((ts,event_type,dict(payload)))
+        ts=time.perf_counter_ns()
         if self.capture_active and self.session_id: self.db.add_event(self.session_id,ts,event_type,payload)
+        # Evidence payloads can carry every raw report of a capture. The full
+        # payload belongs in the session database only; telemetry and the
+        # on-screen timeline get a summary rendered once per event.
+        summary=omit_raw_capture(payload)
+        details=json.dumps(summary,separators=(",",":"),default=str)
+        if len(details)>TIMELINE_DETAIL_CHARS:
+            details=details[:TIMELINE_DETAIL_CHARS]+"…"
+        self.events.append((ts,event_type,details))
+        if len(self.events)>MAX_TIMELINE_EVENTS+MAX_TIMELINE_EVENTS//4:
+            del self.events[:-MAX_TIMELINE_EVENTS]
         try:
-            support_log_event("signal_lab_event", event_type=event_type, details=payload)
+            support_log_event("signal_lab_event", event_type=event_type, details=summary)
         except Exception:
             LOGGER.exception("Failed to write signal-lab event to support telemetry")
         self._update_timeline()
@@ -3645,8 +3698,8 @@ class MainWindow(QMainWindow):
     def _update_timeline(self) -> None:
         if not hasattr(self,"timeline_table"): return
         rows=self.events[-300:]; self.timeline_table.setRowCount(len(rows))
-        for r,(ts,event,payload) in enumerate(rows):
-            self.timeline_table.setItem(r,0,QTableWidgetItem(str(ts))); self.timeline_table.setItem(r,1,QTableWidgetItem(event)); self.timeline_table.setItem(r,2,QTableWidgetItem(json.dumps(payload,separators=(",",":"))))
+        for r,(ts,event,details) in enumerate(rows):
+            self.timeline_table.setItem(r,0,QTableWidgetItem(str(ts))); self.timeline_table.setItem(r,1,QTableWidgetItem(event)); self.timeline_table.setItem(r,2,QTableWidgetItem(details))
         self._update_correlation_events()
 
     def _update_correlation_events(self) -> None:
@@ -3654,12 +3707,12 @@ class MainWindow(QMainWindow):
             return
         rows=self.events[-120:]
         self.corr_events_table.setRowCount(len(rows))
-        for r,(ts,event,payload) in enumerate(rows):
+        for r,(ts,event,details) in enumerate(rows):
             item=QTableWidgetItem(f"{ts/1e9:.6f} s")
             item.setData(Qt.ItemDataRole.UserRole,int(ts))
             self.corr_events_table.setItem(r,0,item)
             self.corr_events_table.setItem(r,1,QTableWidgetItem(event))
-            self.corr_events_table.setItem(r,2,QTableWidgetItem(json.dumps(payload,separators=(",",":"))))
+            self.corr_events_table.setItem(r,2,QTableWidgetItem(details))
 
     def _add_user_marker(self) -> None:
         label=self.marker_text.text().strip() if hasattr(self,"marker_text") else ""
@@ -3827,16 +3880,28 @@ class MainWindow(QMainWindow):
         if not self._ensure_session(): return
         path,_=QFileDialog.getSaveFileName(self,"Raw HID Session Report",str(self.data_root/"RcmTool_Report.html"),"HTML (*.html)")
         if not path: return
-        timestamps=list(self.controller_ts)[-5000:]
+        # Describe the recorded session, not whatever the live buffer holds at
+        # export time (the controller may have kept streaming after the test).
+        recorded=self.db.controller_stick_series(self.session_id)
+        timestamps=recorded["timestamps_ns"]
         intervals=[(b-a)/1e6 for a,b in zip(timestamps,timestamps[1:]) if b>a]
         expected_override=self._timing_reference_ms(intervals)
         report_reference_ms=expected_override if expected_override is not None else self._median(intervals)
         deviations=[value-report_reference_ms for value in intervals]
-        samples=list(self.controller_samples)[-1200:]
-        timeline=self.db.list_events(self.session_id,limit=250)
+        session_timing=timing_metrics(
+            timestamps,
+            expected_interval_ms=expected_override,
+            late_factor=self.late_factor.value(),
+        )
+        # Raw per-report records are in the session JSON export; the readable
+        # report lists event summaries instead of multi-megabyte payloads.
+        timeline=[
+            {**event,"payload":omit_raw_capture(event.get("payload",{}))}
+            for event in self.db.list_events(self.session_id,limit=250)
+        ]
         report_path = write_html_report(
             path,title="RcmTool Raw HID Session Report",
-            controller_metrics=asdict(self.current_timing),
+            controller_metrics=asdict(session_timing),
             oscillator_metrics=None,
             metadata={
                 "session_id":self.session_id,
@@ -3857,8 +3922,8 @@ class MainWindow(QMainWindow):
             plots={
                 "Raw HID report interval (ms)":intervals[-1200:],
                 "Report interval deviation (ms)":deviations[-1200:],
-                "Left stick X (normalized)": [float(item.get("lx", 0.0)) for item in samples],
-                "Left stick Y (normalized)": [float(item.get("ly", 0.0)) for item in samples],
+                "Left stick X (normalized)": recorded["lx"][-1200:],
+                "Left stick Y (normalized)": recorded["ly"][-1200:],
             },
             timeline=timeline,
             interpretation=(
@@ -3936,6 +4001,7 @@ class MainWindow(QMainWindow):
             return
 
         metadata = self.controller_metadata or self.controller_source_info
+        has_report_id = metadata_has_report_ids(metadata)
         dialog = QDialog(self)
         dialog.setWindowTitle("Learn controller button")
         dialog.setMinimumWidth(560)
@@ -4022,7 +4088,7 @@ class MainWindow(QMainWindow):
 
         def detect_pressed_state() -> None:
             reports = self._recent_raw_reports(self.controller_raw_report_hex, 12)
-            candidates = stable_bit_changes(state["released"], reports)
+            candidates = stable_bit_changes(state["released"], reports, has_report_id=has_report_id)
             candidate_combo.clear()
             for byte_index, mask in candidates:
                 bit_index = mask.bit_length() - 1
@@ -4060,7 +4126,8 @@ class MainWindow(QMainWindow):
             byte_index, mask = candidate
             _preset_x, _preset_y, kind = POSITION_PRESETS[position_name]
             report_id, report_length = report_signature(
-                state["pressed"][-1] if state["pressed"] else None
+                state["pressed"][-1] if state["pressed"] else None,
+                has_report_id=has_report_id,
             )
             layout_name = detect_controller_layout(metadata)
             profile = self.controller_profile_store.upsert_button(

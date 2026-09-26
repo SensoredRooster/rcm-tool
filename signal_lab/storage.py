@@ -228,6 +228,22 @@ class LabDatabase:
             "duty_cycles_percent": duty_cycles,
         }
 
+    def controller_stick_series(self, session_id: str) -> dict:
+        """Recorded report timestamps and left-stick values for one session.
+
+        Missing axis values stay NaN rather than being reported as centered.
+        """
+        self.flush()
+        rows = self.conn.execute(
+            "SELECT timestamp_ns,lx,ly FROM controller_samples WHERE session_id=? ORDER BY timestamp_ns",
+            (session_id,),
+        ).fetchall()
+        return {
+            "timestamps_ns": [int(row[0]) for row in rows],
+            "lx": [float(row[1]) if row[1] is not None else float("nan") for row in rows],
+            "ly": [float(row[2]) if row[2] is not None else float("nan") for row in rows],
+        }
+
     def list_sessions(self, limit: int = 200) -> list[dict]:
         self.flush()
         rows = self.conn.execute(

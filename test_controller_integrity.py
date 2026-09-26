@@ -63,6 +63,35 @@ class ControllerIntegrityTests(unittest.TestCase):
         self.assertEqual((sample["dpad_x"], sample["dpad_y"]), (1, 1))
         self.assertIsNone(reader._parse_report([0] * 13))
 
+    def test_hid_descriptor_report_id_detection(self):
+        # Descriptor read from the connected Vader 5 Pro gamepad interface.
+        vader = bytes.fromhex(
+            "05010905a1010900a10009300931150025ff350045ff751095028102c00900a1000933"
+            "0934150025ff751095028102c00900a1000932150025ff751095018102c005091901290a"
+            "150025017501950a4500810205010939150125083500463b10650e750495018142750295"
+            "018103750895028103c0"
+        )
+        self.assertIs(app.hid_descriptor_uses_report_ids(vader), False)
+        numbered = bytes.fromhex("05010905a10185010930150026ff00750895018102c0")
+        self.assertIs(app.hid_descriptor_uses_report_ids(numbered), True)
+        self.assertIsNone(app.hid_descriptor_uses_report_ids(b""))
+        self.assertIsNone(app.hid_descriptor_uses_report_ids(bytes.fromhex("0501260f")))
+
+    def test_hid_reader_reports_whether_byte_zero_is_a_report_id(self):
+        vader = app.HIDGamepad(info={"vendor_id": 0x37D7, "product_id": 0x2401})
+        self.assertIs(vader._probe_report_ids(), False)
+
+        class NumberedDevice:
+            @staticmethod
+            def get_report_descriptor():
+                return [0x05, 0x01, 0x09, 0x05, 0xA1, 0x01, 0x85, 0x01, 0xC0]
+
+        reader = app.HIDGamepad(info={"vendor_id": 0x054C, "product_id": 0x0CE6})
+        reader.device = NumberedDevice()
+        self.assertIs(reader._probe_report_ids(), True)
+        reader.device = object()
+        self.assertIsNone(reader._probe_report_ids())
+
     def test_generic_hid_report_exposes_buttons_and_dpad(self):
         reader = app.HIDGamepad(info={"vendor_id": 0x1234, "product_string": "USB Gamepad"})
         sample = reader._parse_report([0, 128, 128, 128, 128, 0, 0, 0x05, 0x01])

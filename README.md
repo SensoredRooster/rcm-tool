@@ -60,6 +60,8 @@ Controller timestamps use Python's highest-resolution host monotonic clock avail
 
 The application labels data as measured, calculated, estimated, or unavailable rather than inventing unsupported values.
 
+Raw HID stick, trigger, button, and D-pad values are decoded from each controller's own HID report descriptor, which states exactly which bits hold each control. Motion sensors, counters, and vendor data are therefore never read as sticks. If a device offers no usable descriptor, the Test page's device details say its values come from a guessed byte layout. A controller or remapping tool (for example Steam Input, DS4Windows, or a vendor app) that mixes gyro motion into the stick values itself cannot be separated on the PC; turn motion-to-stick off before testing.
+
 Dashboard cards and graphs include short definitions describing what each value means. Controller timing uses the measured median report interval as the default jitter/late-report reference; a configured reference rate can be selected explicitly in Settings. Time-series plots use elapsed timestamps rather than treating sample number as time.
 
 Noise reports list capture-integrity checks separately (duration, sample count, timestamp order, and raw-report-byte coverage); they do not collapse them into a quality or firmware-confidence percentage. A configured-rate comparison is shown only when that reference mode is explicitly selected.

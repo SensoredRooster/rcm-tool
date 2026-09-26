@@ -776,6 +776,62 @@ class SignalLabTests(unittest.TestCase):
         changes = stable_bit_changes(released, pressed)
         self.assertEqual(changes, [(1, 0x04)])
 
+    def test_controller_profile_learns_bits_without_report_ids(self):
+        from signal_lab.controller_profiles import report_signature, stable_bit_changes
+
+        # Vader-style 14-byte reports: byte 0 is the noisy LX low byte, not an ID.
+        def report(first_byte, buttons):
+            return bytes([first_byte, 0x7A, 0xDF, 0x7E, 0xC0, 0x80, 0xBF, 0x7C, 0x00, 0x80, buttons, 0, 0, 0]).hex()
+
+        released = [report(value, 0x00) for value in (0x60, 0x20, 0xF0, 0x50)]
+        pressed = [report(value, 0x02) for value in (0x90, 0x30, 0x80, 0x10)]
+        self.assertEqual(stable_bit_changes(released, pressed, has_report_id=False), [(10, 0x02)])
+        self.assertEqual(report_signature(pressed[-1], has_report_id=False), (None, 14))
+
+    def test_controller_profile_markers_ignore_stale_report_id_without_numbered_reports(self):
+        from signal_lab.controller_profiles import ButtonMapping, ControllerProfileStore
+
+        metadata = {"vid": 0x37D7, "pid": 0x2401, "controller_name": "Controller (Flydigi Vader 5 Pro)"}
+        with tempfile.TemporaryDirectory() as td:
+            store = ControllerProfileStore(Path(td) / "profiles.json")
+            # A map learned before report-ID detection stored the LX low byte as an ID.
+            store.upsert_button(
+                metadata,
+                ButtonMapping("A", 10, 0x01, 0.76, 0.49, "face", report_id=0x60, report_length=14),
+            )
+            held = bytes([0x20, 0x7A] + [0] * 8 + [0x01, 0, 0, 0]).hex()
+            self.assertFalse(store.markers(metadata, held)[0]["active"])
+            no_ids = dict(metadata, hid_report_ids=False)
+            self.assertTrue(store.markers(no_ids, held)[0]["active"])
+
+    def test_backend_metadata_reports_whether_raw_reports_use_ids(self):
+        class FakeHID:
+            name = "Raw HID controller"
+            uses_report_ids: bool | None = False
+            info = {"vendor_id": 0x37D7, "product_id": 0x2401, "product_string": "Vader"}
+
+        metadata = ControllerAcquisition._backend_metadata(FakeHID())
+        self.assertIs(metadata["hid_report_ids"], False)
+        FakeHID.uses_report_ids = None
+        self.assertNotIn("hid_report_ids", ControllerAcquisition._backend_metadata(FakeHID()))
+
+    def test_controller_stick_series_reads_only_the_recorded_session(self):
+        import math
+
+        with tempfile.TemporaryDirectory() as td:
+            db = LabDatabase(Path(td) / "series.sqlite3")
+            first = db.create_session("first", "hardware", "test")
+            second = db.create_session("second", "hardware", "test")
+            db.add_controller_sample(first, 20, {"lx": 0.5, "ly": -0.5, "rx": 0.0, "ry": 0.0}, source="t")
+            db.add_controller_sample(first, 10, {"lx": 0.25, "rx": 0.0, "ry": 0.0}, source="t")
+            db.add_controller_sample(second, 15, {"lx": 0.9, "ly": 0.9, "rx": 0.0, "ry": 0.0}, source="t")
+            series = db.controller_stick_series(first)
+            db.close()
+        self.assertEqual(series["timestamps_ns"], [10, 20])
+        self.assertEqual(series["lx"], [0.25, 0.5])
+        self.assertTrue(math.isnan(series["ly"][0]))
+        self.assertEqual(series["ly"][1], -0.5)
+
     def test_controller_profile_store_round_trip_and_live_marker(self):
         from signal_lab.controller_profiles import ButtonMapping, ControllerProfileStore
 

@@ -258,6 +258,15 @@ class ControllerAcquisition:
                 path = path.decode(errors="replace")
             if path:
                 meta["usb_path"] = str(path)
+        # Whether byte 0 of a raw report is a HID report ID or input data.
+        uses_report_ids = getattr(active, "uses_report_ids", None)
+        if isinstance(uses_report_ids, bool):
+            meta["hid_report_ids"] = uses_report_ids
+        # How stick values were read: the device's HID report descriptor, a
+        # known layout, or a guessed byte layout that needs verification.
+        decoder = getattr(active, "decoder", None)
+        if isinstance(decoder, str) and decoder:
+            meta["hid_decoder"] = decoder
         if hasattr(active, "connected_user_index") and getattr(active, "connected_user_index") is not None:
             meta["xinput_slot"] = int(getattr(active, "connected_user_index"))
         if hasattr(active, "device_id") and getattr(active, "device_id") is not None:
