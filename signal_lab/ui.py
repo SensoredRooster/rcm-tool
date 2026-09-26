@@ -1496,16 +1496,24 @@ class MainWindow(QMainWindow):
             return
         self._start_controller_acquisition()
 
-    def _has_measured_raw_hid(self) -> bool:
+    def _has_selected_raw_hid_device(self) -> bool:
         return bool(
             self.controller_source_kind == "raw_hid"
             and self.controller_source_path
+            and self.controller_device_present
+            and self.controller_acquisition is not None
+        )
+
+    def _has_measured_raw_hid(self) -> bool:
+        return bool(
+            self._has_selected_raw_hid_device()
             and self.controller_connected
             and self.controller_metadata.get("evidence_class") == "measured-host-observed-raw-hid"
             and self.controller_ts
         )
 
     def _sync_hardware_controls(self) -> None:
+        record_ready = self._has_selected_raw_hid_device() and not self._gui_resource_limit_triggered
         ready = self._has_measured_raw_hid() and not self._gui_resource_limit_triggered
         source_enabled = (
             not self.capture_active
@@ -1518,9 +1526,19 @@ class MainWindow(QMainWindow):
             if control is not None and control.isEnabled() != source_enabled:
                 control.setEnabled(source_enabled)
         if hasattr(self, "capture_button"):
-            enabled = self.capture_active or ready
+            enabled = self.capture_active or record_ready
             if self.capture_button.isEnabled() != enabled:
                 self.capture_button.setEnabled(enabled)
+            if self.capture_active:
+                self.capture_button.setToolTip("Stop and finalize the current recorded session.")
+            elif record_ready:
+                self.capture_button.setToolTip(
+                    "Start recording now. The session begins immediately and saves Raw HID reports as soon as they arrive."
+                )
+            else:
+                self.capture_button.setToolTip(
+                    "Connect or select a named Raw HID controller before recording."
+                )
         for button in getattr(self, "guided_test_buttons", []):
             enabled = ready and not self.noise_test_active
             if button.isEnabled() != enabled:
@@ -2119,11 +2137,11 @@ class MainWindow(QMainWindow):
     def _start_capture(self) -> None:
         if self.capture_active:
             return
-        if not self._has_measured_raw_hid():
+        if not self._has_selected_raw_hid_device():
             QMessageBox.information(
                 self,
-                "Live Raw HID reports required",
-                "Select a named Raw HID device and wait for live reports before recording. XInput/host polling is excluded; a virtual HID device still requires independent verification.",
+                "Raw HID controller required",
+                "Connect or select a named Raw HID controller before recording. Recording can begin before the first input report arrives; XInput/host polling remains excluded.",
             )
             return
         mode="hardware"
@@ -2139,6 +2157,10 @@ class MainWindow(QMainWindow):
         )
         self.capture_active=True
         self.capture_button.setText("Stop Recording")
+        self.baseline_state.setText(
+            "Recording session • waiting for Raw HID reports" if not self.controller_ts
+            else "Recording session • Raw HID reports are being saved"
+        )
         self._sync_hardware_controls()
         self._add_event("capture_started",{
             "mode":mode,
@@ -2160,6 +2182,8 @@ class MainWindow(QMainWindow):
         self.db.flush()
         self.capture_active=False
         self.capture_button.setText("Record Session")
+        if hasattr(self, "baseline_state"):
+            self.baseline_state.setText("Session saved locally. Start another recording when ready.")
         if not self._gui_resource_limit_triggered:
             self.controller_source_combo.setEnabled(True)
             self.refresh_controller_button.setEnabled(True)
