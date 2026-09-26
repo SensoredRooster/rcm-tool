@@ -454,6 +454,7 @@ class ControllerView(QWidget):
         self.source = ""
         self.skin = "generic"
         self.mapping_family = "generic"
+        self.profile_buttons: list[dict] = []
         self.setMinimumHeight(300)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setToolTip(
@@ -468,22 +469,26 @@ class ControllerView(QWidget):
         *,
         skin: str = "generic",
         mapping_family: str = "generic",
+        profile_buttons: Sequence[dict] | None = None,
     ) -> None:
         next_sample = dict(sample or {})
         next_source = str(source or "")
         next_skin = skin if skin in {"xbox", "dualsense", "vader5pro", "generic"} else "generic"
         next_mapping = mapping_family if mapping_family in {"xbox", "dualsense", "generic"} else "generic"
+        next_profile_buttons = [dict(item) for item in (profile_buttons or [])]
         if (
             next_sample == self.sample
             and next_source == self.source
             and next_skin == self.skin
             and next_mapping == self.mapping_family
+            and next_profile_buttons == self.profile_buttons
         ):
             return
         self.sample = next_sample
         self.source = next_source
         self.skin = next_skin
         self.mapping_family = next_mapping
+        self.profile_buttons = next_profile_buttons
         self.update()
 
     @staticmethod
@@ -495,12 +500,18 @@ class ControllerView(QWidget):
         return max(0.0, min(1.0, float(value)))
 
     def pressed_names(self) -> list[str]:
+        names = [str(item.get("name") or "Extra") for item in self.profile_buttons if item.get("active")]
         if "buttons" not in self.sample:
-            return []
+            return names
         mask = int(self.sample.get("buttons", 0))
         if self.mapping_family == "xbox":
-            return [name for bit, name in self.XINPUT_BUTTONS.items() if mask & bit]
-        return [f"B{index}" for index in range(32) if mask & (1 << index)]
+            built_in = [name for bit, name in self.XINPUT_BUTTONS.items() if mask & bit]
+        else:
+            built_in = [f"B{index}" for index in range(32) if mask & (1 << index)]
+        for name in built_in:
+            if name not in names:
+                names.append(name)
+        return names
 
     def _dpad_state(self) -> tuple[int, int]:
         if "dpad_x" in self.sample or "dpad_y" in self.sample:
