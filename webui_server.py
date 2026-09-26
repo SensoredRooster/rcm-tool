@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parent
 WEBUI = ROOT / "webui" / "index.html"
 HOST = "127.0.0.1"
 PORT = 8765
+TRUSTED_HOSTS = frozenset({f"{HOST}:{PORT}", f"localhost:{PORT}"})
+TRUSTED_ORIGINS = frozenset(f"http://{host}" for host in TRUSTED_HOSTS)
 
 
 def recipe_catalog() -> list[dict]:
@@ -78,8 +80,27 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(404, b"{\"error\":\"Not found.\"}", "application/json")
 
+    def _trusted_post(self) -> bool:
+        """Accept only JSON posts from this page.
+
+        Any website open in the browser can send a simple cross-site POST to a
+        localhost port. Requiring application/json forces a CORS preflight this
+        server never approves; the Host and Origin checks block DNS rebinding.
+        """
+        host = (self.headers.get("host") or "").strip().lower()
+        origin = self.headers.get("origin")
+        content_type = (self.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+        return (
+            host in TRUSTED_HOSTS
+            and (origin is None or origin.strip().lower() in TRUSTED_ORIGINS)
+            and content_type == "application/json"
+        )
+
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if not self._trusted_post():
+            self._send(403, b"{\"error\":\"Forbidden.\"}", "application/json")
+            return
         if path == "/api/launch-bench":
             body = self._json_body()
             protocol = str(body.get("protocol", "") or "")
