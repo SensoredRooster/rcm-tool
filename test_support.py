@@ -61,6 +61,49 @@ class SupportTests(unittest.TestCase):
                     self.assertNotIn("another-secret", merged_logs)
                     self.assertNotIn("query-secret", merged_logs)
 
+    def test_log_event_summarizes_raw_capture_records(self):
+        records = [
+            {"timestamp_ns": index, "sample": {"lx": 0.25}, "raw_report_hex": "c0ffee"}
+            for index in range(3)
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.dict(os.environ, {"LOCALAPPDATA": temp}, clear=False):
+                support.log_event(
+                    "signal_lab_event",
+                    details={
+                        "sample_count": 3,
+                        "records": records,
+                        "checks": ["duration", "count"],
+                        "trace": {"values": list(range(500))},
+                    },
+                )
+                logged = json.loads(support.log_path().read_text(encoding="utf-8").splitlines()[-1])
+        details = logged["details"]
+        self.assertEqual(details["sample_count"], 3)
+        self.assertEqual(details["checks"], ["duration", "count"])
+        self.assertEqual(details["records"], "[omitted from support log: 3 raw record(s)]")
+        self.assertEqual(details["trace"]["values"], "[omitted from support log: 500 item(s)]")
+        self.assertNotIn("c0ffee", json.dumps(logged))
+
+    def test_support_bundle_strips_raw_records_from_existing_logs(self):
+        legacy_line = json.dumps({
+            "event": "signal_lab_event",
+            "details": {"records": [{"raw_report_hex": "deadbeef", "sample": {"lx": 0.1}}]},
+        })
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.dict(os.environ, {"LOCALAPPDATA": temp}, clear=False):
+                support.log_path().write_text(
+                    legacy_line + "\n" + json.dumps({"event": "heartbeat"}) + "\n",
+                    encoding="utf-8",
+                )
+                bundle = support.create_support_bundle()
+                self.addCleanup(bundle.unlink, missing_ok=True)
+                with zipfile.ZipFile(bundle) as archive:
+                    logged = archive.read("logs/rcm-tool.jsonl").decode("utf-8")
+        self.assertNotIn("deadbeef", logged)
+        self.assertIn("omitted from support log: 1 raw record(s)", logged)
+        self.assertIn('"heartbeat"', logged)
+
     def test_default_support_endpoint_is_wired(self):
         with mock.patch.dict(os.environ, {"RCM_SUPPORT_UPLOAD_URL": ""}, clear=False):
             self.assertEqual(

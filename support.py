@@ -95,8 +95,54 @@ def _redact(value):
     return value
 
 
+# Support bundles promise "no raw controller or HID captures". Raw capture
+# arrays are therefore summarized before anything reaches a support log.
+RAW_CAPTURE_KEYS = frozenset({"records"})
+MAX_LOGGED_LIST_ITEMS = 64
+# Only lines that could hold raw capture data are re-parsed at bundle time.
+_BUNDLE_RESCAN_LINE_CHARS = 4096
+
+
+def omit_raw_capture(value):
+    """Return a copy of ``value`` with raw capture streams replaced by counts.
+
+    Per-report ``records`` (timestamps, decoded samples, and raw HID bytes) are
+    always summarized, and any other list long enough to be a sample stream is
+    summarized instead of copied. Small diagnostic lists are kept as-is.
+    """
+    if isinstance(value, dict):
+        return {
+            key: (
+                f"[omitted from support log: {len(item)} raw record(s)]"
+                if key in RAW_CAPTURE_KEYS and isinstance(item, (list, tuple))
+                else omit_raw_capture(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        if len(value) > MAX_LOGGED_LIST_ITEMS:
+            return f"[omitted from support log: {len(value)} item(s)]"
+        return [omit_raw_capture(item) for item in value]
+    return value
+
+
+def _sanitize_jsonl(text: str) -> str:
+    """Apply the current support-log policy to lines written by older versions."""
+    lines = []
+    for line in text.splitlines():
+        if len(line) > _BUNDLE_RESCAN_LINE_CHARS or '"records"' in line:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                record = None
+            if isinstance(record, dict):
+                line = json.dumps(_redact(omit_raw_capture(record)), ensure_ascii=False, default=str)
+        lines.append(line)
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
 def log_event(event: str, *, level: str = "INFO", **fields) -> None:
-    redacted_fields = _redact(fields)
+    redacted_fields = _redact(omit_raw_capture(fields))
     if not isinstance(redacted_fields, dict):
         raise TypeError("Redacted event fields must remain a mapping")
     record: dict[str, object] = {
@@ -193,9 +239,14 @@ def create_support_bundle() -> Path:
         for path in support_root().glob("*"):
             if not path.is_file():
                 continue
-            if not (path.name.startswith("rcm-tool.jsonl") or path.name.startswith("errors.jsonl") or path.suffix.lower() == ".log"):
+            is_jsonl = path.name.startswith("rcm-tool.jsonl") or path.name.startswith("errors.jsonl")
+            if not (is_jsonl or path.suffix.lower() == ".log"):
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
+            if is_jsonl:
+                # Logs written before raw-capture summarizing existed may still
+                # hold per-report records; keep them out of the bundle.
+                text = _sanitize_jsonl(text)
             archive.writestr(f"logs/{path.name}", redact_text(text))
     log_event("support_bundle_created", path=str(destination), size_bytes=destination.stat().st_size)
     return destination
