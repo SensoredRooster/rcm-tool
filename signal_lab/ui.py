@@ -462,8 +462,8 @@ class MainWindow(QMainWindow):
 
     def _dashboard_page(self) -> QWidget:
         w, layout = page(
-            "Dashboard",
-            "Start here: select your controller, move a stick, then run the guided test. Readings show what this PC received—not a firmware guarantee.",
+            "Results",
+            "Your latest controller test appears here automatically. Export is optional.",
         )
         snapshot, snapshot_layout = card("LIVE CONTROLLER SNAPSHOT")
         snapshot_hint = QLabel("Fresh Raw HID readings appear here only when a named controller is actually connected.")
@@ -489,33 +489,12 @@ class MainWindow(QMainWindow):
         snapshot_layout.addLayout(grid)
         layout.addWidget(snapshot)
 
-        evidence, evidence_layout = card("GUIDED TEST")
-        evidence_help = QLabel(
-            "Leave both sticks still, then follow the on-screen movement. RcmTool analyzes a copy of the capture; controller input is never changed."
-        )
-        evidence_help.setWordWrap(True)
-        evidence_help.setObjectName("Muted")
-        evidence_layout.addWidget(evidence_help)
-        evidence_actions = QHBoxLayout()
-        full_test = QPushButton("Full guided controller test")
-        full_test.setObjectName("Primary")
-        full_test.clicked.connect(self._run_noise_wizard)
-        self.guided_test_buttons.append(full_test)
-        guided = QPushButton("Quick 10s check")
-        guided.clicked.connect(lambda: self._start_noise_test("neutral"))
-        self.guided_test_buttons.append(guided)
-        export_evidence = QPushButton("Open results")
-        export_evidence.clicked.connect(self._export_noise_evidence)
-        evidence_actions.addWidget(full_test)
-        evidence_actions.addWidget(guided)
-        evidence_actions.addWidget(export_evidence)
-        evidence_actions.addStretch(1)
-        evidence_layout.addLayout(evidence_actions)
-        self.dashboard_noise_status = QLabel("No Raw HID smoothing evidence captured.")
+        evidence, evidence_layout = card("LATEST TEST")
+        self.dashboard_noise_status = QLabel("No completed controller test yet.")
         self.dashboard_noise_status.setObjectName("Muted")
         self.dashboard_noise_status.setWordWrap(True)
         evidence_layout.addWidget(self.dashboard_noise_status)
-        self.baseline_state = QLabel("Use Record Session in the top bar to save incoming reports on this PC.")
+        self.baseline_state = QLabel("Run a test from the Test tab. Recording and saving happen automatically.")
         self.baseline_state.setObjectName("Muted")
         self.baseline_state.setWordWrap(True)
         evidence_layout.addWidget(self.baseline_state)
@@ -523,6 +502,15 @@ class MainWindow(QMainWindow):
         self.baseline_progress.setRange(0,1000)
         self.baseline_progress.setVisible(False)
         evidence_layout.addWidget(self.baseline_progress)
+        actions = QHBoxLayout()
+        latest_report = QPushButton("Open Latest Report")
+        latest_report.clicked.connect(self._export_noise_evidence)
+        export_results = QPushButton("Export Results…")
+        export_results.clicked.connect(self._open_export_dialog)
+        actions.addWidget(latest_report)
+        actions.addWidget(export_results)
+        actions.addStretch(1)
+        evidence_layout.addLayout(actions)
         layout.addWidget(evidence)
 
         charts = QGridLayout()
@@ -551,6 +539,17 @@ class MainWindow(QMainWindow):
         )
         ql.addWidget(self.quality_label)
         layout.addWidget(q)
+
+        history, history_layout = card("SESSION HISTORY")
+        history_hint = QLabel("Guided tests save sessions automatically. Technical event details are available here when needed.")
+        history_hint.setObjectName("Muted")
+        history_hint.setWordWrap(True)
+        history_layout.addWidget(history_hint)
+        self.timeline_table = QTableWidget(0,3)
+        self.timeline_table.setHorizontalHeaderLabels(["Timestamp ns","Event","Details"])
+        self.timeline_table.setAlternatingRowColors(True)
+        history_layout.addWidget(self.timeline_table)
+        layout.addWidget(history)
         return self._scroll(w)
 
     def _live_page(self) -> QWidget:
@@ -1068,6 +1067,27 @@ class MainWindow(QMainWindow):
         self.compare_state=QLabel("No comparison selected."); self.compare_state.setObjectName("Muted"); layout.addWidget(self.compare_state)
         self.compare_table=QTableWidget(0,5); self.compare_table.setHorizontalHeaderLabels(["Metric","Reference","Test","Difference","% Change"]); layout.addWidget(self.compare_table)
         return w
+
+    def _open_export_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Export Results")
+        dialog.setMinimumWidth(420)
+        layout = QVBoxLayout(dialog)
+        help_label = QLabel("Choose an export only if you need to share or inspect technical data.")
+        help_label.setWordWrap(True)
+        layout.addWidget(help_label)
+        for label, handler in (
+            ("HTML results report", self._export_html_report),
+            ("Raw session JSON", self._export_json),
+            ("Controller samples CSV", self._export_csv),
+        ):
+            button = QPushButton(label)
+            button.clicked.connect(lambda checked=False, fn=handler: (dialog.accept(), fn()))
+            layout.addWidget(button)
+        close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close.rejected.connect(dialog.reject)
+        layout.addWidget(close)
+        dialog.exec()
 
     def _reports_page(self) -> QWidget:
         w, layout = page("Reports", "Export raw session data and a measurement-methodology-aware engineering report.")
