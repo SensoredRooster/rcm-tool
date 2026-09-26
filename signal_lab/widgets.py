@@ -39,11 +39,11 @@ class MetricCard(QFrame):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("MetricCard")
-        self.setMinimumSize(168, 108)
+        self.setMinimumSize(176, 116)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 13, 16, 13)
-        layout.setSpacing(6)
+        layout.setContentsMargins(18, 15, 18, 15)
+        layout.setSpacing(7)
 
         top = QHBoxLayout()
         top.setSpacing(7)
@@ -52,7 +52,7 @@ class MetricCard(QFrame):
         title_label.setWordWrap(True)
         title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         top.addWidget(title_label, 1)
-        info = QLabel("?")
+        info = QLabel("i")
         info.setObjectName("InfoBadge")
         info.setAlignment(Qt.AlignmentFlag.AlignCenter)
         top.addWidget(info, 0, Qt.AlignmentFlag.AlignTop)
@@ -282,7 +282,7 @@ class LineChart(QWidget):
         )
         painter.setPen(QPen(border, 1))
         painter.setBrush(bg)
-        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 16, 16)
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 20, 20)
 
         area = QRectF(68.0, 42.0, max(10.0, self.width() - 90.0), max(10.0, self.height() - 92.0))
         painter.setPen(text)
@@ -548,10 +548,31 @@ class ControllerView(QWidget):
         self, painter: QPainter, center: QPointF, radius: float,
         label: str, active: bool = False,
     ) -> None:
-        painter.setPen(QPen(QColor("#6A8ABC") if active else QColor("#344A68"), 1.5))
-        painter.setBrush(QColor("#376FE0") if active else QColor("#111D2C"))
+        # Prompt styling follows familiar controller conventions without relying
+        # on bitmap assets, keeping the live view sharp at every DPI.
+        palette = {
+            "A": ("#58B96D", "#DDF8E4"),
+            "B": ("#E45A5A", "#FFE3E3"),
+            "X": ("#4E8FEA", "#DDEBFF"),
+            "Y": ("#E5B84B", "#FFF1C7"),
+            "×": ("#79A7E8", "#DCEAFF"),
+            "○": ("#E48091", "#FFE1E7"),
+            "□": ("#C58AD9", "#F3E0FA"),
+            "△": ("#6FCB9B", "#DFF7EA"),
+        }
+        accent, text_color = palette.get(label, ("#6E8FBF", "#D5DFEC"))
+        if active:
+            fill = QColor(accent)
+            edge = QColor(accent).lighter(125)
+            text = QColor("#FFFFFF")
+        else:
+            fill = QColor("#141B24")
+            edge = QColor(accent).darker(135)
+            text = QColor(text_color)
+        painter.setPen(QPen(edge, 1.6))
+        painter.setBrush(fill)
         painter.drawEllipse(center, radius, radius)
-        painter.setPen(QColor("#FFFFFF") if active else QColor("#A9B8CA"))
+        painter.setPen(text)
         painter.drawText(
             QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2),
             Qt.AlignmentFlag.AlignCenter, label,
@@ -560,8 +581,8 @@ class ControllerView(QWidget):
     def _draw_dpad(self, painter: QPainter, center: QPointF, size: float) -> None:
         dx, dy = self._dpad_state()
         arm = size * 0.34
-        painter.setPen(QPen(QColor("#344A68"), 1.2))
-        painter.setBrush(QColor("#111D2C"))
+        painter.setPen(QPen(QColor("#46566C"), 1.3))
+        painter.setBrush(QColor("#151B24"))
         painter.drawRoundedRect(QRectF(center.x() - arm * 0.45, center.y() - arm * 1.35, arm * 0.9, arm * 2.7), 4, 4)
         painter.drawRoundedRect(QRectF(center.x() - arm * 1.35, center.y() - arm * 0.45, arm * 2.7, arm * 0.9), 4, 4)
         if dx or dy:
