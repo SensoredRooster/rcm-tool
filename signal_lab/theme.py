@@ -57,13 +57,61 @@ QMainWindow, QDialog, QScrollArea, QAbstractScrollArea::viewport, QWidget#PageSu
 }
 QLabel, QCheckBox, QRadioButton { background: transparent; }
 
+
+QWidget#WorkSurface { background: #0A0D13; }
+QStackedWidget#WorkspaceStack { background: #0A0D13; border: 0; }
+
+QFrame#BrandCard {
+    background: #121925;
+    border: 1px solid #273446;
+    border-radius: 18px;
+}
+QLabel#BrandSubtitle {
+    color: #7F8DA2;
+    font-size: 8pt;
+}
+QLabel#NavSection {
+    color: #66758A;
+    font-size: 7pt;
+    font-weight: 760;
+    letter-spacing: 1.1px;
+    padding: 2px 4px 4px 4px;
+}
+QLabel#SidebarFooter {
+    color: #5F6D80;
+    font-size: 8pt;
+    padding: 6px 2px 0 2px;
+}
+QLabel#TopKicker {
+    color: #6E7C91;
+    font-size: 7pt;
+    font-weight: 760;
+    letter-spacing: 1px;
+}
+QLabel#TopViewTitle {
+    color: #F5F8FD;
+    font-size: 12pt;
+    font-weight: 720;
+}
+QFrame#PageHeader {
+    background: #111720;
+    border: 1px solid #242E3B;
+    border-radius: 22px;
+}
+QLabel#PageHeroTitle {
+    color: #FFFFFF;
+    font-size: 24pt;
+    font-weight: 780;
+}
+
 QFrame#Sidebar {
     background: #0B0E14;
     border-right: 1px solid #1C222D;
 }
 QFrame#Topbar {
-    background: #0D1118;
-    border-bottom: 1px solid #1C2430;
+    background: #111720;
+    border: 1px solid #242E3B;
+    border-radius: 18px;
 }
 QFrame#Card, QFrame#SectionCard {
     background: #111720;
@@ -202,11 +250,11 @@ QPushButton#Danger {
 QPushButton#Danger:hover { background: #5C2732; }
 
 QPushButton#Nav {
-    min-height: 42px;
+    min-height: 44px;
     text-align: left;
     padding-left: 15px;
     border: 1px solid transparent;
-    border-radius: 13px;
+    border-radius: 14px;
     background: transparent;
     color: #8F9CAF;
 }
@@ -216,10 +264,10 @@ QPushButton#Nav:hover {
     color: #F3F6FA;
 }
 QPushButton#Nav:checked {
-    background: #171F2C;
+    background: #1A2332;
     color: #FFFFFF;
-    border-color: #2B3950;
-    border-left: 3px solid #6D8BFF;
+    border-color: #324158;
+    border-left: 3px solid #7B92FF;
 }
 
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {
@@ -300,8 +348,55 @@ QWidget {
 QMainWindow, QDialog, QScrollArea, QAbstractScrollArea::viewport, QWidget#PageSurface { background: #F5F7FB; }
 QLabel, QCheckBox, QRadioButton { background: transparent; }
 
+
+QWidget#WorkSurface { background: #F5F7FB; }
+QStackedWidget#WorkspaceStack { background: #F5F7FB; border: 0; }
+
+QFrame#BrandCard {
+    background: #F7F9FC;
+    border: 1px solid #E0E6EE;
+    border-radius: 18px;
+}
+QLabel#BrandSubtitle {
+    color: #7A899D;
+    font-size: 8pt;
+}
+QLabel#NavSection {
+    color: #8390A0;
+    font-size: 7pt;
+    font-weight: 760;
+    letter-spacing: 1.1px;
+    padding: 2px 4px 4px 4px;
+}
+QLabel#SidebarFooter {
+    color: #8793A2;
+    font-size: 8pt;
+    padding: 6px 2px 0 2px;
+}
+QLabel#TopKicker {
+    color: #8390A0;
+    font-size: 7pt;
+    font-weight: 760;
+    letter-spacing: 1px;
+}
+QLabel#TopViewTitle {
+    color: #172236;
+    font-size: 12pt;
+    font-weight: 720;
+}
+QFrame#PageHeader {
+    background: #FFFFFF;
+    border: 1px solid #DFE5ED;
+    border-radius: 22px;
+}
+QLabel#PageHeroTitle {
+    color: #142033;
+    font-size: 24pt;
+    font-weight: 780;
+}
+
 QFrame#Sidebar { background: #FFFFFF; border-right: 1px solid #E1E5EC; }
-QFrame#Topbar { background: #FFFFFF; border-bottom: 1px solid #E1E5EC; }
+QFrame#Topbar { background: #FFFFFF; border: 1px solid #DFE5ED; border-radius: 18px; }
 QFrame#Card, QFrame#SectionCard { background: #FFFFFF; border: 1px solid #DFE5ED; border-radius: 22px; }
 QFrame#SectionCard:hover { border-color: #CBD5E1; }
 QFrame#MetricCard { background: #FFFFFF; border: 1px solid #DCE3EC; border-radius: 20px; }
