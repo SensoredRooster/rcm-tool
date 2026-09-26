@@ -74,23 +74,24 @@ def card(title: str) -> tuple[QFrame, QVBoxLayout]:
     frame = QFrame()
     frame.setObjectName("SectionCard")
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(16, 15, 16, 16)
-    layout.setSpacing(10)
+    layout.setContentsMargins(20, 18, 20, 20)
+    layout.setSpacing(12)
     label = QLabel(title)
-    label.setObjectName("Eyebrow")
+    label.setObjectName("CardTitle")
     layout.addWidget(label)
     return frame, layout
 
 
 def page(title: str, subtitle: str) -> tuple[QWidget, QVBoxLayout]:
     outer = QWidget()
+    outer.setObjectName("PageSurface")
     layout = QVBoxLayout(outer)
-    layout.setContentsMargins(22, 18, 22, 22)
-    layout.setSpacing(14)
+    layout.setContentsMargins(28, 22, 28, 28)
+    layout.setSpacing(18)
     desc = QLabel(subtitle)
-    desc.setObjectName("Muted")
+    desc.setObjectName("PageSubtitle")
     desc.setWordWrap(True)
-    desc.setMinimumHeight(24)
+    desc.setMinimumHeight(28)
     layout.addWidget(desc)
     return outer, layout
 
@@ -300,15 +301,15 @@ class MainWindow(QMainWindow):
 
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(238)
+        sidebar.setFixedWidth(224)
         side = QVBoxLayout(sidebar)
-        side.setContentsMargins(12, 14, 12, 14)
+        side.setContentsMargins(14, 18, 14, 16)
 
         brand = QLabel("RcmTool")
         brand.setObjectName("Brand")
         brand.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         side.addWidget(brand)
-        side.addSpacing(14)
+        side.addSpacing(18)
 
         self.nav_buttons: dict[str, QPushButton] = {}
         for index, name in enumerate(NAV):
@@ -320,12 +321,12 @@ class MainWindow(QMainWindow):
             self.nav_buttons[name] = button
 
         side.addStretch(1)
-        self.hardware_status = QLabel("HARDWARE • select a named Raw HID device")
-        self._restyle(self.hardware_status, "Muted")
+        self.hardware_status = QLabel("HARDWARE  •  waiting for controller")
+        self._restyle(self.hardware_status, "StatusPill")
         self.hardware_status.setWordWrap(True)
         side.addWidget(self.hardware_status)
         self.database_status = QLabel(f"DB • {self.db.path.name}")
-        self.database_status.setObjectName("Muted")
+        self.database_status.setObjectName("StatusPillSecondary")
         side.addWidget(self.database_status)
         self.error_banner = QLabel()
         self.error_banner.setObjectName("Warn")
@@ -345,13 +346,13 @@ class MainWindow(QMainWindow):
         topbar = QFrame()
         topbar.setObjectName("Topbar")
         top = QHBoxLayout(topbar)
-        top.setContentsMargins(18, 10, 18, 10)
+        top.setContentsMargins(24, 12, 24, 12)
         self.top_title = QLabel("Dashboard")
         self.top_title.setObjectName("PageTitle")
         top.addWidget(self.top_title)
         top.addStretch(1)
         self.live_rate_label = QLabel("Rate • —")
-        self.live_rate_label.setObjectName("LiveRate")
+        self.live_rate_label.setObjectName("StatusPillSecondary")
         top.addWidget(self.live_rate_label)
         self.pause_visualization = QCheckBox("Pause graphs")
         self.pause_visualization.setToolTip("Freezes graph repainting only. Acquisition and raw storage continue.")
@@ -2552,49 +2553,9 @@ class MainWindow(QMainWindow):
             else:
                 self.dashboard_noise_status.setText("No Raw HID smoothing evidence captured.")
 
-        samples=self._deque_tail(self.controller_samples, 800) if current_page in {"Live Capture","Controller Lab","Stick Cleaner"} else []
-        sample_ts=self._deque_tail(self.controller_ts, len(samples)) if samples and current_page == "Live Capture" else []
-        sample_elapsed=self._elapsed_seconds(sample_ts,sample_ts[0] if sample_ts else None)
-        hist_x,hist_y=([],[])
-
-        if current_page == "Live Capture" and not self.visualization_paused:
-            smooth=max(1,self.smoothing_window.value()) if hasattr(self,"smoothing_window") else 1
-            def smooth_fn(values):
-                return self._moving_average(values, smooth)
-            self.live_interval_chart.set_series(
-                [("interval ms",smooth_fn(intervals[-800:]),"#6AA2FF")],
-                x_values=interval_elapsed[-800:],
-                x_label="Elapsed time (s)",
-            )
-            self.live_jitter_chart.set_series(
-                [("deviation ms",smooth_fn(deviations[-800:]),"#F0B862")],
-                x_values=interval_elapsed[-800:],
-                x_label="Elapsed time (s)",
-            )
-            self.live_hist_chart.set_series(
-                [("count",hist_y,"#A989FF")],
-                x_values=hist_x,
-                x_label="Report interval (ms)",
-            )
-            self.live_latency_chart.set_series([],x_values=[],x_label="Latency (ms)")
-            self.live_analog_chart.set_series(
-                [
-                    ("LX",smooth_fn([float(item.get("lx",0)) for item in samples]),"#6AA2FF"),
-                    ("LY",smooth_fn([float(item.get("ly",0)) for item in samples]),"#6DE0B1"),
-                ],
-                x_values=sample_elapsed,
-                x_label="Elapsed time (s)",
-            )
-            self.live_osc_chart.set_series(
-                [("frequency Hz",smooth_fn(freqs[-800:]),"#6DE0B1")],
-                x_values=osc_elapsed[-800:],
-                x_label="Elapsed time (s)",
-            )
-            self.live_osc_jitter_chart.set_series(
-                [("error ppm",smooth_fn(ppm_values[-800:]),"#F0B862")],
-                x_values=osc_elapsed[-800:],
-                x_label="Elapsed time (s)",
-            )
+        samples = self._deque_tail(
+            self.controller_samples, 800
+        ) if current_page in {"Controller Lab", "Stick Cleaner"} else []
 
         if current_page == "Oscillator Lab":
             self.osc_stability_chart.set_series(
@@ -2719,30 +2680,6 @@ class MainWindow(QMainWindow):
             if meta.get("usb_path"):
                 detail_parts.append(f"USB path {meta['usb_path']}")
             self.controller_capability.setText("  •  ".join(detail_parts))
-
-        if current_page == "Correlation":
-            self.corr_card.set_value(
-                f"{self.current_corr:+.4f}" if self.current_corr is not None else "Unavailable",
-                "Nearest-time aligned samples; descriptive only",
-                source="CALCULATED",
-            )
-            corr_pairs=[((ta+tb)//2,(tb-ta)/1e6-reference_ms) for ta,tb in zip(timestamps,timestamps[1:]) if tb>ta][-600:]
-            self.corr_time_axis=[item[0] for item in corr_pairs]
-            corr_game=[item[1] for item in corr_pairs]
-            corr_elapsed=self._elapsed_seconds(self.corr_time_axis,self.corr_time_axis[0] if self.corr_time_axis else None)
-            corr_ppm=[]
-            for ts in self.corr_time_axis:
-                idx=bisect_left(osc_times,ts)
-                candidates=[i for i in (idx-1,idx) if 0<=i<len(osc_times)]
-                if candidates:
-                    nearest=min(candidates,key=lambda i:abs(osc_times[i]-ts))
-                    corr_ppm.append((freqs[nearest]-nominal)/nominal*1e6 if nominal>0 else float("nan"))
-                else:
-                    corr_ppm.append(float("nan"))
-            corr_stimulus=[self.stim_freq.value() if self.instrument.output_enabled() else 0.0]*len(self.corr_time_axis)
-            self.corr_osc_chart.set_series([("osc error ppm",corr_ppm,"#6DE0B1")],x_values=corr_elapsed,x_label="Elapsed correlated time (s)")
-            self.corr_gamepad_chart.set_series([("report deviation ms",corr_game,"#6AA2FF")],x_values=corr_elapsed,x_label="Elapsed correlated time (s)")
-            self.corr_stimulus_chart.set_series([("stimulus Hz",corr_stimulus,"#F0B862")],x_values=corr_elapsed,x_label="Elapsed correlated time (s)")
 
         if current_page == "Dashboard":
             history_note = (
