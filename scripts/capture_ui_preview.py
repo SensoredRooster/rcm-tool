@@ -30,21 +30,20 @@ def main() -> int:
     window.show()
     pump(app, 0.4)
 
-    window._start_capture()
-    pump(app, 0.6)
+    # Native CI has no physical Raw HID controller. Capture the intentional
+    # disconnected state instead of opening the guarded Record Session dialog.
+    assert not window._has_measured_raw_hid()
+    assert not window.capture_button.isEnabled()
     window._refresh_ui()
 
     preview_root = ROOT / "artifacts" / "ui-preview-native"
     preview_root.mkdir(parents=True, exist_ok=True)
     captures = (
         (0, "dashboard.png"),
-        (1, "live_capture.png"),
-        (2, "controller_lab.png"),
-        (3, "oscillator_lab.png"),
-        (5, "sweep_lab.png"),
-        (6, "correlation_lab.png"),
-        (11, "support.png"),
-        (12, "settings.png"),
+        (1, "controller_lab.png"),
+        (2, "reports.png"),
+        (3, "support.png"),
+        (4, "settings.png"),
     )
     for index, filename in captures:
         window._navigate(index)
@@ -55,7 +54,7 @@ def main() -> int:
             raise RuntimeError(f"Failed to capture {filename}")
 
     # Verify both manual controller views exist independently of auto detection.
-    window._navigate(2)
+    window._navigate(1)
     for family, filename in (("xbox", "controller_xbox.png"), ("dualsense", "controller_dualsense.png")):
         index = window.controller_skin_combo.findData(family)
         if index < 0:
