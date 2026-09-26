@@ -2,8 +2,10 @@
 setlocal
 cd /d "%~dp0"
 
+rem Report files are git-ignored so fresh local tests never block the updater's
+rem clean-tree check; list and stage them explicitly here instead.
 echo Reports currently waiting to be submitted:
-git status --short reports
+git status --short --ignored reports
 echo.
 set /p CONFIRM="Commit and push these reports to GitHub? Type YES to continue: "
 if /I not "%CONFIRM%"=="YES" (
@@ -12,7 +14,7 @@ if /I not "%CONFIRM%"=="YES" (
     exit /b 0
 )
 
-git add reports
+git add --force -- reports
 git diff --cached --quiet
 if not errorlevel 1 (
     echo No new report files were found.

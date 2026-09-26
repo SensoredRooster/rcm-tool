@@ -1,17 +1,16 @@
 # Exported controller reports
 
-RCM Tool writes each exported test into this folder as a timestamped JSON file and appends a summary line to `index.jsonl`.
+The legacy Tk capture bench (`controller_integrity.py`) writes each exported test into this folder as a timestamped JSON file and appends a summary line to `index.jsonl`. The RcmTool desktop app stores its sessions in its local SQLite database instead.
 
-After `apply_rc_wiring.py` has been run on that machine, each JSON file contains:
+Each JSON file (`reportVersion` `0.1`) contains:
 
-- raw axis samples (`lx`, `ly`, `rx`, `ry`) and RC-filtered trend samples (`lx_filtered` ... `ry_filtered`);
-- `rc_filter_metrics` with `tau_seconds`, `cutoff_hz`, and per-axis `*_high_freq_rms` / `*_high_freq_peak_to_peak`;
+- raw axis samples (`lx`, `ly`, `rx`, `ry`) with capture-relative `t_ms` timestamps;
+- the raw HID reports drained during the capture, when the source is Raw HID;
+- per-axis metrics, including the high-frequency jitter residual from a slow EMA (alpha 0.12);
 - SHA-256 of the canonical JSON payload (hash is computed before the `sha256` field is inserted).
-
-`reportVersion` must be `0.2` for those RC fields to exist. If you see `0.1`, run `python apply_rc_wiring.py` and capture again.
 
 Single tests are written when the tester clicks **Export to reports**. Before + After pair mode writes files automatically and may also write `*_before_after_comparison.json`.
 
-Double-click **RCM Tool - Submit Reports.bat** in the repository root to review `git status --short reports` and, after typing `YES`, commit and push only this folder.
+Report files are git-ignored so fresh local tests never block the updater's clean-tree check. Double-click **RCM Tool - Submit Reports.bat** in the repository root to review `git status --short --ignored reports` and, after typing `YES`, stage them explicitly, then commit and push only this folder.
 
 Reports may contain controller product names, vendor/product IDs, timestamps, and measured input metrics. Review the data before sharing it outside the tournament team.

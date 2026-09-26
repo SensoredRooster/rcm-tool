@@ -1,5 +1,6 @@
 #define MyAppName "RcmTool"
-#define MyAppVersion "0.5.0"
+; Keep in step with signal_lab.__version__.
+#define MyAppVersion "0.6.0"
 #define MyAppPublisher "SensoredRooster"
 #define MyAppExeName "RcmTool.exe"
 
