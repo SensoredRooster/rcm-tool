@@ -758,5 +758,76 @@ class SignalLabTests(unittest.TestCase):
             db.close()
 
 
+    def test_controller_profile_detects_only_stable_changed_bits(self):
+        from signal_lab.controller_profiles import stable_bit_changes
+
+        released = [
+            "01000010",
+            "02000011",
+            "03000012",
+            "04000013",
+        ]
+        pressed = [
+            "05040020",
+            "06040021",
+            "07040022",
+            "08040023",
+        ]
+        changes = stable_bit_changes(released, pressed)
+        self.assertEqual(changes, [(1, 0x04)])
+
+    def test_controller_profile_store_round_trip_and_live_marker(self):
+        from signal_lab.controller_profiles import ButtonMapping, ControllerProfileStore
+
+        metadata = {
+            "vid": 0x1234,
+            "pid": 0x5678,
+            "product_string": "Test Pro Pad",
+        }
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "profiles.json"
+            store = ControllerProfileStore(path)
+            store.upsert_button(
+                metadata,
+                ButtonMapping(
+                    name="P1",
+                    byte_index=2,
+                    bit_mask=0x08,
+                    x=0.36,
+                    y=0.76,
+                    kind="rear",
+                ),
+                layout="generic",
+            )
+            reloaded = ControllerProfileStore(path)
+            profile = reloaded.find(metadata)
+            self.assertIsNotNone(profile)
+            self.assertEqual(profile.buttons[0].name, "P1")
+            markers_off = reloaded.markers(metadata, "00000000")
+            markers_on = reloaded.markers(metadata, "00000800")
+            self.assertFalse(markers_off[0]["active"])
+            self.assertTrue(markers_on[0]["active"])
+            self.assertAlmostEqual(markers_on[0]["x"], 0.36)
+            self.assertAlmostEqual(markers_on[0]["y"], 0.76)
+
+    def test_controller_profile_replaces_duplicate_raw_bit_mapping(self):
+        from signal_lab.controller_profiles import ButtonMapping, ControllerProfileStore
+
+        metadata = {"vid": 1, "pid": 2, "product_string": "Pad"}
+        with tempfile.TemporaryDirectory() as td:
+            store = ControllerProfileStore(Path(td) / "profiles.json")
+            store.upsert_button(
+                metadata,
+                ButtonMapping("Old Name", 3, 0x20, 0.2, 0.2, "extra"),
+            )
+            store.upsert_button(
+                metadata,
+                ButtonMapping("Rear Right", 3, 0x20, 0.7, 0.8, "rear"),
+            )
+            profile = store.find(metadata)
+            self.assertIsNotNone(profile)
+            self.assertEqual(len(profile.buttons), 1)
+            self.assertEqual(profile.buttons[0].name, "Rear Right")
+
 if __name__ == "__main__":
     unittest.main()
