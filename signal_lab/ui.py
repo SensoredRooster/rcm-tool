@@ -607,8 +607,8 @@ class MainWindow(QMainWindow):
 
     def _controller_page(self) -> QWidget:
         w, layout = page(
-            "Controller Lab",
-            "The picture follows the connected model when recognized. Stick dots use live readings; button names are shown only when their mapping is known.",
+            "Test",
+            "Plug in your controller, confirm the detected device, then press Start Controller Test. RcmTool handles recording, saving, and analysis automatically.",
         )
 
         source_card, source_layout = card("INPUT SOURCE")
@@ -723,30 +723,21 @@ class MainWindow(QMainWindow):
         device_layout.addWidget(self.controller_capability)
         diagnostics.addWidget(device_card,1,0,1,2)
 
-        evidence_card, evidence_layout = card("RAW HID NOISE + SMOOTHING TEST")
+        evidence_card, evidence_layout = card("RUN CONTROLLER TEST")
         evidence_help = QLabel(
-            "Put both sticks in the center, click the quick check, and leave the controller alone for 10 seconds. "
-            "RcmTool will report live input, stick drift, report rate, and a host-observed smoothing estimate."
+            "One guided test checks idle stick behavior, movement and settling, report timing, and Raw HID evidence. "
+            "Recording starts and stops automatically; the controller is never modified."
         )
         evidence_help.setObjectName("Muted")
         evidence_help.setWordWrap(True)
         evidence_layout.addWidget(evidence_help)
-        evidence_row = QHBoxLayout()
-        quick_test = QPushButton("Quick smoothing check (10 seconds)")
-        quick_test.setObjectName("Primary")
-        quick_test.clicked.connect(lambda: self._start_noise_test("neutral"))
-        self.guided_test_buttons.append(quick_test)
-        guided_test = QPushButton("Full guided controller test")
-        guided_test.clicked.connect(self._run_noise_wizard)
-        self.guided_test_buttons.append(guided_test)
-        export_evidence = QPushButton("Export + open results report")
-        export_evidence.clicked.connect(self._export_noise_evidence)
-        evidence_row.addWidget(quick_test)
-        evidence_row.addWidget(guided_test)
-        evidence_row.addWidget(export_evidence)
-        evidence_row.addStretch(1)
-        evidence_layout.addLayout(evidence_row)
-        self.noise_test_status = QLabel("No attribution capture has been run.")
+        start_test = QPushButton("START CONTROLLER TEST")
+        start_test.setObjectName("Primary")
+        start_test.setMinimumHeight(54)
+        start_test.clicked.connect(self._run_noise_wizard)
+        self.guided_test_buttons.append(start_test)
+        evidence_layout.addWidget(start_test)
+        self.noise_test_status = QLabel("Ready when live controller reports are detected.")
         self.noise_test_status.setObjectName("Muted")
         self.noise_test_status.setWordWrap(True)
         evidence_layout.addWidget(self.noise_test_status)
@@ -1632,7 +1623,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Live Raw HID reports required",
-                "Select a named Raw HID device in Controller Lab and wait until live reports appear before starting this test.",
+                "Connect or select the controller on the Test tab and wait until live reports appear before starting.",
             )
             return
         if self.noise_test_active:
@@ -1666,7 +1657,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Live Raw HID reports required",
-                "In Controller Lab, refresh devices, select the named HID entry, and wait for live reports before opening the test wizard. Verify the device identity independently.",
+                "On the Test tab, connect or select the controller and wait for live reports before starting. Verify the device identity independently.",
             )
             return
         if self.noise_test_active or self.noise_wizard is not None:
