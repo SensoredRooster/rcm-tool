@@ -1673,7 +1673,7 @@ class MainWindow(QMainWindow):
 
         intro = QWidget()
         intro_layout = QVBoxLayout(intro)
-        intro_title = QLabel("Step 1 of 4 • Confirm the hardware setup")
+        intro_title = QLabel("Ready to test")
         intro_title.setObjectName("Eyebrow")
         intro_layout.addWidget(intro_title)
         intro_text = QLabel(
@@ -1694,10 +1694,10 @@ class MainWindow(QMainWindow):
 
         neutral = QWidget()
         neutral_layout = QVBoxLayout(neutral)
-        neutral_title = QLabel("Step 2 of 4 • Neutral noise capture")
+        neutral_title = QLabel("Step 1 of 2 • Leave the controller still")
         neutral_title.setObjectName("Eyebrow")
         neutral_layout.addWidget(neutral_title)
-        neutral_text = QLabel("Keep both sticks centered and untouched. Start the 10-second capture when ready.")
+        neutral_text = QLabel("Keep both sticks centered and untouched. RcmTool will collect 10 seconds automatically.")
         neutral_text.setWordWrap(True)
         neutral_layout.addWidget(neutral_text)
         neutral_status = QLabel("Not started")
@@ -1705,12 +1705,13 @@ class MainWindow(QMainWindow):
         neutral_status.setWordWrap(True)
         neutral_layout.addWidget(neutral_status)
         neutral_start = QPushButton("Start neutral capture")
+        neutral_start.setVisible(False)
         neutral_layout.addWidget(neutral_start, alignment=Qt.AlignmentFlag.AlignLeft)
         neutral_layout.addStretch(1)
 
         movement = QWidget()
         movement_layout = QVBoxLayout(movement)
-        movement_title = QLabel("Step 3 of 4 • Movement and settling capture")
+        movement_title = QLabel("Step 2 of 2 • Move one stick")
         movement_title.setObjectName("Eyebrow")
         movement_layout.addWidget(movement_title)
         movement_text = QLabel(
@@ -1725,15 +1726,16 @@ class MainWindow(QMainWindow):
         movement_layout.addWidget(movement_status)
         movement_start = QPushButton("Start movement capture")
         movement_start.setEnabled(False)
+        movement_start.setVisible(False)
         movement_layout.addWidget(movement_start, alignment=Qt.AlignmentFlag.AlignLeft)
         movement_layout.addStretch(1)
 
         review = QWidget()
         review_layout = QVBoxLayout(review)
-        review_title = QLabel("Step 4 of 4 • Review and export")
+        review_title = QLabel("Test complete")
         review_title.setObjectName("Eyebrow")
         review_layout.addWidget(review_title)
-        review_status = QLabel("Run both captures to produce the evidence package.")
+        review_status = QLabel("Your results will be saved automatically and shown in Results.")
         review_status.setWordWrap(True)
         review_layout.addWidget(review_status)
         review_export = QPushButton("Export + open results report")
@@ -1811,10 +1813,18 @@ class MainWindow(QMainWindow):
 
         def navigate_next() -> None:
             index = stack.currentIndex()
-            if index < 3:
-                stack.setCurrentIndex(index + 1)
+            if index == 0:
+                stack.setCurrentIndex(1)
                 update_navigation()
-            else:
+                QTimer.singleShot(150, start_neutral)
+            elif index == 1 and state["neutral_done"]:
+                stack.setCurrentIndex(2)
+                update_navigation()
+                QTimer.singleShot(150, start_movement)
+            elif index == 2 and state["movement_done"]:
+                stack.setCurrentIndex(3)
+                update_navigation()
+            elif index == 3:
                 dialog.accept()
 
         def navigate_back() -> None:
@@ -1839,9 +1849,12 @@ class MainWindow(QMainWindow):
                     "noise_attribution_interrupted",
                     {"capture_kind": self.noise_test_kind, "sample_count": len(self.noise_capture_samples)},
                 )
+            completed = bool(state["neutral_done"] and state["movement_done"])
             self.noise_wizard = None
             if wizard_capture["started"] and self.capture_active:
                 self._stop_capture()
+            if completed:
+                self._navigate(1)
 
         dialog.finished.connect(lambda _result: close_wizard())
         update_navigation()
@@ -2227,11 +2240,13 @@ class MainWindow(QMainWindow):
             },
         )
         self.capture_active=True
-        self.capture_button.setText("Stop Recording")
-        self.baseline_state.setText(
+        if hasattr(self, "capture_button"):
+            self.capture_button.setText("Stop Recording")
+        if hasattr(self, "baseline_state"):
+            self.baseline_state.setText(
             "Recording session • waiting for Raw HID reports" if not self.controller_ts
             else "Recording session • Raw HID reports are being saved"
-        )
+            )
         self._sync_hardware_controls()
         self._add_event("capture_started",{
             "mode":mode,
@@ -2252,7 +2267,8 @@ class MainWindow(QMainWindow):
         })
         self.db.flush()
         self.capture_active=False
-        self.capture_button.setText("Record Session")
+        if hasattr(self, "capture_button"):
+            self.capture_button.setText("Record Session")
         if hasattr(self, "baseline_state"):
             self.baseline_state.setText("Session saved locally. Start another recording when ready.")
         if not self._gui_resource_limit_triggered:
@@ -2657,7 +2673,7 @@ class MainWindow(QMainWindow):
 
         osc_elapsed=self._elapsed_seconds(osc_times,osc_times[0] if osc_times else None)
 
-        if current_page == "Dashboard" and graphs_live:
+        if current_page == "Results" and graphs_live:
             chart_ts = self._deque_tail(self.controller_ts, 500) if live_raw_hid else []
             chart_pairs = [(b, (b - a) / 1e6) for a, b in zip(chart_ts, chart_ts[1:]) if b > a]
             chart_intervals = [item[1] for item in chart_pairs]
@@ -2852,7 +2868,7 @@ class MainWindow(QMainWindow):
                 "All report times are observed by this PC after USB; they are not internal firmware timestamps."
             )
 
-        if current_page == "Dashboard" and self.baseline_active:
+        if current_page == "Results" and self.baseline_active:
             duration=self.baseline_seconds.value()
             remaining=max(0,self.baseline_deadline-time.monotonic())
             self.baseline_progress.setValue(int((1-remaining/max(1,duration))*1000))
