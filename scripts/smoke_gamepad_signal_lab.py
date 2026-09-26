@@ -49,20 +49,31 @@ def main() -> int:
     )
     assert not window.osc_freq
 
-    window._start_capture()
-    pump(app, 0.25)
-    window._refresh_ui()
-    assert window.session_id
-    events = window.db.list_events(window.session_id)
-    capture_event = next(event for event in events if event["event_type"] == "capture_started")
-    assert capture_event["payload"]["mode"] == "hardware"
+    has_live_hid = window._has_measured_raw_hid()
+    if has_live_hid:
+        window._start_capture()
+        pump(app, 0.25)
+        window._refresh_ui()
+        assert window.session_id
+        events = window.db.list_events(window.session_id)
+        capture_event = next(event for event in events if event["event_type"] == "capture_started")
+        assert capture_event["payload"]["mode"] == "hardware"
 
-    window.baseline_seconds.setValue(5)
-    window._start_baseline()
-    window.baseline_deadline = time.monotonic() - 0.01
-    window._sample_tick()
-    window._refresh_ui()
-    assert window.last_baseline is not None
+        window.baseline_seconds.setValue(5)
+        window._start_baseline()
+        window.baseline_deadline = time.monotonic() - 0.01
+        window._sample_tick()
+        window._refresh_ui()
+        assert window.last_baseline is not None
+    else:
+        # A headless CI runner normally has no physical Raw HID controller.
+        # Verify that the app stays intentionally blank and never fabricates data.
+        assert window.session_id is None
+        assert not window.capture_active
+        assert not window.capture_button.isEnabled()
+        assert not window.controller_ts
+        assert not window.controller_samples
+        window._refresh_ui()
 
     preview_root = ROOT / "artifacts" / "ui-preview"
     preview_root.mkdir(parents=True, exist_ok=True)
@@ -83,19 +94,23 @@ def main() -> int:
     window.db.flush()
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        json_path = window.db.export_json(window.session_id, root / "session.json")
-        csv_path = window.db.export_controller_csv(window.session_id, root / "controller.csv")
+        timeline = []
+        if window.session_id:
+            json_path = window.db.export_json(window.session_id, root / "session.json")
+            csv_path = window.db.export_controller_csv(window.session_id, root / "controller.csv")
+            assert json_path.stat().st_size > 0
+            assert csv_path.stat().st_size > 0
+            timeline = window.db.list_events(window.session_id)
         report_path = write_html_report(
             root / "report.html",
             title="RcmTool Hardware Report",
             controller_metrics=window.current_timing.to_dict(),
             oscillator_metrics=window.current_osc.to_dict(),
             metadata={"mode": "hardware", "session_id": window.session_id},
-            limitations=["No physical controller or frequency instrument was connected during this smoke run."],
-            timeline=window.db.list_events(window.session_id),
+            limitations=["No physical controller or frequency instrument was connected during this smoke run."]
+            if not has_live_hid else [],
+            timeline=timeline,
         )
-        assert json_path.stat().st_size > 0
-        assert csv_path.stat().st_size > 0
         assert report_path.stat().st_size > 0
 
     window._emergency_off()
