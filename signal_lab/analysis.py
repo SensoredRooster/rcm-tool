@@ -171,6 +171,50 @@ def window_rate_hz(timestamps_ns: Sequence[int], window_s: float = 0.25) -> floa
     return (len(window) - 1) * 1_000_000_000.0 / duration_ns
 
 
+def observed_report_throughput_hz(
+    timestamps_ns: Sequence[int],
+    *,
+    now_ns: int,
+    window_s: float = 1.0,
+    stale_after_s: float = 0.5,
+) -> float | None:
+    """Return stable host-observed report throughput for a rolling wall-clock window.
+
+    Raw HID APIs can deliver several already-buffered reports in one drain.  The
+    individual host-read timestamps inside that batch are not USB-frame
+    timestamps, so deriving Hz from those tiny intra-batch gaps is misleading.
+    Throughput instead counts how many reports reached the application during a
+    real monotonic-time window.  This is suitable for the user-facing polling
+    readout, while sub-millisecond USB jitter still requires a hardware/USB
+    trace with trustworthy per-report timestamps.
+    """
+    if not timestamps_ns or window_s <= 0 or stale_after_s < 0:
+        return None
+    now = int(now_ns)
+    ordered = [int(value) for value in timestamps_ns]
+    last = ordered[-1]
+    if last < 0 or now < last or now - last > stale_after_s * 1_000_000_000.0:
+        return None
+
+    cutoff = now - int(window_s * 1_000_000_000.0)
+    start = bisect_left(ordered, cutoff)
+    count = len(ordered) - start
+    if count < 2:
+        return None
+
+    # Once we have history older than the window, divide by the fixed window
+    # duration. During startup, use the actual covered duration instead.
+    if start > 0:
+        duration_s = float(window_s)
+        events = count
+    else:
+        duration_s = (now - ordered[0]) / 1_000_000_000.0
+        events = count - 1
+    if duration_s <= 0:
+        return None
+    return events / duration_s
+
+
 def recent_window_timing_metrics(
     timestamps_ns: Sequence[int],
     *,
