@@ -947,3 +947,73 @@ class HeatMapWidget(QWidget):
             painter.drawRoundedRect(QRectF(x - 9, y - 9, 18, 18), 4, 4)
         painter.setPen(QColor(PAINT["chart_muted"]))
         painter.drawText(QRectF(area.left(), area.bottom() + 8, area.width(), 20), Qt.AlignmentFlag.AlignHCenter, "Stimulus frequency (log scale)")
+
+
+class GuidedStickView(QWidget):
+    """Both sticks, live, with a target ring the tester follows.
+
+    The ring shows where the active stick should be right now; the filled dot
+    is where the stick actually is. The resting stick shows only its dot.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.live = {"left": (0.0, 0.0), "right": (0.0, 0.0)}
+        self.target: tuple[float, float] | None = None
+        self.active: str | None = None
+        self.on_target = False
+        self.setMinimumHeight(260)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def set_state(
+        self,
+        left: tuple[float, float],
+        right: tuple[float, float],
+        *,
+        active: str | None = None,
+        target: tuple[float, float] | None = None,
+        on_target: bool = False,
+    ) -> None:
+        self.live = {"left": left, "right": right}
+        self.active, self.target, self.on_target = active, target, on_target
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        w, h = float(self.width()), float(self.height())
+        radius = max(40.0, min(w / 4.6, h / 2.0 - 34.0))
+        for index, stick in enumerate(("left", "right")):
+            center = QPointF(w * (0.27 if index == 0 else 0.73), h / 2.0 - 8.0)
+            active = self.active == stick
+            painter.setPen(QPen(QColor("#5D93FF") if active else QColor("#344761"), 3.0 if active else 1.4))
+            painter.setBrush(QColor("#0A121E"))
+            painter.drawEllipse(center, radius, radius)
+            painter.setPen(QPen(QColor("#23354C"), 1))
+            painter.drawLine(QPointF(center.x() - radius, center.y()), QPointF(center.x() + radius, center.y()))
+            painter.drawLine(QPointF(center.x(), center.y() - radius), QPointF(center.x(), center.y() + radius))
+
+            def point(x: float, y: float) -> QPointF:
+                x = max(-1.0, min(1.0, float(x)))
+                y = max(-1.0, min(1.0, float(y)))
+                return QPointF(center.x() + x * radius * 0.88, center.y() - y * radius * 0.88)
+
+            if active and self.target is not None:
+                ring = QColor("#6DE0B1") if self.on_target else QColor("#F0B862")
+                painter.setPen(QPen(ring, 4))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(point(*self.target), radius * 0.2, radius * 0.2)
+            painter.setPen(QPen(QColor("#9EC0FF"), 2))
+            painter.setBrush(QColor("#5D93FF"))
+            painter.drawEllipse(point(*self.live[stick]), radius * 0.1, radius * 0.1)
+            if self.active is None:
+                caption = f"{stick.upper()} STICK • hands off"
+            elif active:
+                caption = f"{stick.upper()} STICK • follow the ring"
+            else:
+                caption = f"{stick.upper()} STICK • keep still"
+            painter.setPen(QColor("#E6EEF9") if active else QColor("#8FA4BE"))
+            painter.drawText(
+                QRectF(center.x() - radius * 1.4, center.y() + radius + 8, radius * 2.8, 22),
+                Qt.AlignmentFlag.AlignHCenter, caption,
+            )

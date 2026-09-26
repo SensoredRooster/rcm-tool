@@ -221,6 +221,45 @@ class SignalLabTests(unittest.TestCase):
         self.assertIn("Report rate", summary)
         self.assertIn("LX", summary)
 
+    def test_movement_guide_runs_left_then_right_stick(self):
+        from signal_lab import movement_guide as guide
+
+        start = guide.guide_at(0.5)
+        self.assertEqual((start["stick"], start["target"]), ("left", (0.0, 0.0)))
+        hold = guide.guide_at(2.0)
+        self.assertEqual((hold["stick"], hold["instruction"], hold["target"]), ("left", "Hold full RIGHT", (1.0, 0.0)))
+        self.assertEqual(guide.guide_at(9.9)["next"], "Switch to the RIGHT stick")
+        right = guide.guide_at(12.0)
+        self.assertEqual((right["stick"], right["target"]), ("right", (1.0, 0.0)))
+        self.assertAlmostEqual(guide.guide_at(1.3)["target"][0], 0.5)
+        # A tester reacting 0.3 s late still counts as on target.
+        self.assertTrue(guide.on_target(1.6, 0.5, 0.0))
+        self.assertFalse(guide.on_target(2.5, -1.0, 0.0))
+
+    def test_movement_score_separates_following_from_not_moving(self):
+        from signal_lab import movement_guide as guide
+
+        timestamps = [index * 5_000_000 for index in range(4000)]  # 20 s at 200 Hz
+        follower, idle = [], []
+        for timestamp in timestamps:
+            state = guide.guide_at(timestamp / 1e9)
+            x, y = state["target"]
+            follower.append({"lx": x, "ly": y, "rx": 0.0, "ry": 0.0} if state["stick"] == "left"
+                            else {"lx": 0.0, "ly": 0.0, "rx": x, "ry": y})
+            idle.append({"lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0})
+        good = guide.score_movement(timestamps, follower, 0)
+        self.assertGreaterEqual(good["followed_percent"], 99.0)
+        self.assertEqual(good["other_stick_still_percent"], 100.0)
+        self.assertEqual(good["full_travel_reached"], {"left": True, "right": True})
+        lazy = guide.score_movement(timestamps, idle, 0)
+        self.assertLess(lazy["followed_percent"], 70.0)
+        self.assertEqual(lazy["full_travel_reached"], {"left": False, "right": False})
+
+        from signal_lab.reporting import guided_test_summary_html
+
+        result = {"capture_kind": "movement", "sample_count": 4000, "movement_protocol": good, "axes": {}}
+        self.assertIn("Followed the guide", guided_test_summary_html({"movement": result}))
+
     def test_results_folder_is_in_the_repository_when_run_from_source(self):
         from signal_lab.ui import results_directory
 

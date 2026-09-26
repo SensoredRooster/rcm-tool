@@ -71,7 +71,8 @@ from .trace_capture import (
 )
 from .stick_cleaner_page import StickCleanerPage
 from .theme import DARK, LIGHT, PAINT, set_paint_theme
-from .widgets import ControllerView, HeatMapWidget, LineChart, MetricCard
+from .widgets import ControllerView, GuidedStickView, HeatMapWidget, LineChart, MetricCard
+from . import movement_guide
 from support import (
     SESSION_ID as SUPPORT_SESSION_ID,
     create_support_bundle,
@@ -1821,13 +1822,14 @@ class MainWindow(QMainWindow):
         self.noise_test_smoothing_tau_seconds = 0.05
         self.noise_test_deadline = time.monotonic() + (10.0 if capture_kind == "neutral" else 20.0)
         self.noise_test_start_timestamp_ns = time.perf_counter_ns()
+        self.noise_test_started_mono = time.monotonic()
         self.noise_capture_timestamps.clear()
         self.noise_capture_samples.clear()
         self.noise_capture_raw_reports.clear()
         if capture_kind == "neutral":
             instruction = "Leave every stick untouched for 10 seconds."
         else:
-            instruction = "Use one stick: center → full deflection → center, then repeat with a quick reversal."
+            instruction = "Follow the ring: left stick for 10 s, then the right stick for 10 s."
         self.noise_test_status.setText(f"RUNNING Raw HID {capture_kind} capture • {instruction}")
         self._add_event(
             "noise_attribution_started",
@@ -1863,8 +1865,11 @@ class MainWindow(QMainWindow):
         intro_layout.addWidget(intro_title)
         intro_text = QLabel(
             f"Controller: {self.controller_source_combo.currentText()}\n\n"
-            "This test takes about 30 seconds. First, leave both sticks alone for 10 seconds. "
-            "Then move one stick as shown for 20 seconds.\n\n"
+            "This test takes about 30 seconds and checks both sticks.\n\n"
+            "Step 1 (10 s): set the controller down and do not touch either stick.\n"
+            "Step 2 (20 s): follow the moving ring on screen, first with the LEFT stick (10 s), "
+            "then with the RIGHT stick (10 s). The ring shows exactly where the stick should be; "
+            "your dot shows where it is. The ring turns green when you are on target.\n\n"
             "RcmTool records, saves, and analyzes everything automatically. It only reads the controller; "
             "it never changes controller settings or injects input."
         )
@@ -1877,26 +1882,37 @@ class MainWindow(QMainWindow):
         neutral_title = QLabel("Step 1 of 2 • Leave the controller still")
         neutral_title.setObjectName("Eyebrow")
         neutral_layout.addWidget(neutral_title)
-        neutral_text = QLabel("Keep both sticks centered and untouched. RcmTool will collect 10 seconds automatically.")
+        neutral_text = QLabel(
+            "Set the controller down and take your thumbs off both sticks for 10 seconds. "
+            "This measures the sticks' own noise at rest, so any touch spoils it. "
+            "Both dots below should stay still in the center."
+        )
         neutral_text.setWordWrap(True)
         neutral_layout.addWidget(neutral_text)
         neutral_status = QLabel("Not started")
         neutral_status.setObjectName("Muted")
         neutral_status.setWordWrap(True)
         neutral_layout.addWidget(neutral_status)
+        neutral_guide = GuidedStickView()
+        neutral_layout.addWidget(neutral_guide, 1)
+        neutral_live = QLabel("")
+        neutral_live.setObjectName("CardTitle")
+        neutral_live.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        neutral_layout.addWidget(neutral_live)
         neutral_start = QPushButton("Start neutral capture")
         neutral_start.setVisible(False)
         neutral_layout.addWidget(neutral_start, alignment=Qt.AlignmentFlag.AlignLeft)
-        neutral_layout.addStretch(1)
 
         movement = QWidget()
         movement_layout = QVBoxLayout(movement)
-        movement_title = QLabel("Step 2 of 2 • Move one stick")
+        movement_title = QLabel("Step 2 of 2 • Follow the ring with each stick")
         movement_title.setObjectName("Eyebrow")
         movement_layout.addWidget(movement_title)
         movement_text = QLabel(
-            "Use one stick only: center → full deflection → center, then repeat with one quick reversal. "
-            "Do not change the selected device or connection during the capture."
+            "Keep your dot on the ring. LEFT stick for the first 10 s, then RIGHT stick for 10 s; keep the "
+            "other stick untouched. Each stick does the same routine: hold center, push fully right and hold, "
+            "let go so it springs back, push fully left, flick quickly to full right, let go, push fully up, "
+            "flick quickly to full down, let go. The big text below always says what to do now and next."
         )
         movement_text.setWordWrap(True)
         movement_layout.addWidget(movement_text)
@@ -1904,11 +1920,17 @@ class MainWindow(QMainWindow):
         movement_status.setObjectName("Muted")
         movement_status.setWordWrap(True)
         movement_layout.addWidget(movement_status)
+        movement_live = QLabel("")
+        movement_live.setObjectName("CardTitle")
+        movement_live.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        movement_live.setWordWrap(True)
+        movement_layout.addWidget(movement_live)
+        movement_guide_widget = GuidedStickView()
+        movement_layout.addWidget(movement_guide_widget, 1)
         movement_start = QPushButton("Start movement capture")
         movement_start.setEnabled(False)
         movement_start.setVisible(False)
         movement_layout.addWidget(movement_start, alignment=Qt.AlignmentFlag.AlignLeft)
-        movement_layout.addStretch(1)
 
         review = QWidget()
         review_layout = QVBoxLayout(review)
@@ -2013,7 +2035,7 @@ class MainWindow(QMainWindow):
                 return
             movement_start.setEnabled(False)
             next_button.setEnabled(False)
-            movement_status.setText("RUNNING • perform the instructed movement for 20 seconds…")
+            movement_status.setText("RUNNING • 20 seconds: follow the ring, LEFT stick first, then RIGHT stick")
 
         def navigate_next() -> None:
             index = stack.currentIndex()
@@ -2060,6 +2082,52 @@ class MainWindow(QMainWindow):
             if completed:
                 self._navigate(1)
 
+        follow = {"on": 0, "total": 0}
+
+        def refresh_guides() -> None:
+            last = self.controller_samples[-1] if self.controller_samples else {}
+            left = (float(last.get("lx", 0.0)), float(last.get("ly", 0.0)))
+            right = (float(last.get("rx", 0.0)), float(last.get("ry", 0.0)))
+            page = stack.currentIndex()
+            running = self.noise_test_active
+            if page == 1:
+                neutral_guide.set_state(left, right)
+                recent = self._deque_tail(self.controller_samples, 400)
+                moving = self._stationary_analog_noise(recent, self.stationary_excursion.value())[0] is None
+                if not running:
+                    neutral_live.setText("")
+                elif moving and len(recent) >= 2:
+                    neutral_live.setText("Movement detected: let go of both sticks")
+                    neutral_live.setStyleSheet("color:#F0B862")
+                else:
+                    left_s = max(0.0, self.noise_test_deadline - time.monotonic())
+                    neutral_live.setText(f"Still ✓  •  {left_s:.0f} s left")
+                    neutral_live.setStyleSheet("color:#6DE0B1")
+            elif page == 2:
+                if running and self.noise_test_kind == "movement":
+                    elapsed = time.monotonic() - self.noise_test_started_mono
+                    guide = movement_guide.guide_at(elapsed)
+                    x, y = left if guide["stick"] == "left" else right
+                    hit = movement_guide.on_target(elapsed, x, y)
+                    follow["total"] += 1
+                    follow["on"] += hit
+                    movement_guide_widget.set_state(
+                        left, right, active=guide["stick"], target=guide["target"], on_target=hit,
+                    )
+                    movement_live.setText(
+                        f"{guide['stick'].upper()} STICK: {guide['instruction']}\n"
+                        f"Next: {guide['next']}  •  {guide['seconds_left']:.0f} s left  •  "
+                        f"On target {100.0 * follow['on'] / follow['total']:.0f}%"
+                    )
+                else:
+                    follow["on"] = follow["total"] = 0
+                    movement_guide_widget.set_state(left, right, active="left", target=(0.0, 0.0))
+                    if not state["movement_done"]:
+                        movement_live.setText("Get ready: LEFT stick first. Keep your dot on the ring.")
+
+        guide_timer = QTimer(dialog)
+        guide_timer.timeout.connect(refresh_guides)
+        guide_timer.start(33)
         dialog.finished.connect(lambda _result: close_wizard())
         update_navigation()
         dialog.exec()
@@ -2126,6 +2194,10 @@ class MainWindow(QMainWindow):
             f"{result['raw_hid_report_count']} reports • {result['sample_rate_hz']:.2f} reports/s • "
             f"{stationarity_text} • {smoothing_text} • integrity checks: {quality.get('label', 'review required')}."
         )
+        if self.noise_test_kind == "movement":
+            result["movement_protocol"] = movement_guide.score_movement(
+                window_timestamps, window_samples, self.noise_test_start_timestamp_ns,
+            )
         self._add_event("noise_attribution_completed", result)
         if self.noise_wizard is not None:
             state = self.noise_wizard["state"]

@@ -30,9 +30,14 @@ The modern Controller Lab provides two hardware-only evidence captures under
 1. **Neutral noise**: leave every stick untouched for 10 seconds. This reports
    stationary RMS noise, peak-to-peak range, distinct output levels, adjacent
    report changes, and consecutive duplicate Raw HID payloads.
-2. **Movement / settling**: move one stick center → full deflection → center,
-   then repeat with a quick reversal for 20 seconds. This reports the same
-   host-observed stream metrics plus the residual from a documented slow trend.
+2. **Movement / settling**: follow the on-screen ring for 20 seconds, the left
+   stick for 10 seconds and then the right stick for 10 seconds. Each stick runs
+   the same routine: hold center, push to full right and hold, let go so it
+   springs back and settles, push full left, flick quickly to full right, let
+   go, push full up, flick quickly to full down, let go. This reports the same
+   host-observed stream metrics plus the residual from a documented slow trend,
+   and scores how closely each stick followed the ring and whether it reached
+   full travel.
 
 The test forces display smoothing to one sample and uses stored acquisition
 samples. The display moving average and the slow-trend residual are analysis

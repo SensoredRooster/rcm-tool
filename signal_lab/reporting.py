@@ -219,6 +219,7 @@ CALCULATIONS: tuple[tuple[str, str], ...] = (
     ("High-frequency energy", "(RMS of value minus its 50 ms smoothed trend / Noise RMS) squared x 100."),
     ("Smoothing estimate", "Untouched step only. Per axis: 100 x (1 - RMS of report-to-report change / (1.414 x Noise RMS)), limited to 0-100. Estimate = 0.75 x median axis score + 0.25 x repeated payloads %. Below 25 is low, below 60 moderate, otherwise high."),
     ("Estimate confidence", "45 + up to 30 as reports grow from 100 to 1,100 + 10 when at least 3 axes were scored."),
+    ("Followed the guide", "Movement step: share of moments where the active stick was within 0.3 of the ring's position during the previous 0.4 s (reaction time). Other stick still: share where the resting stick stayed within 0.15 of center. Full travel: each stick reached at least 0.9 right, left, up, and down."),
     ("Capture checks", "Pass only if: duration is at least 90% of the step (9 s untouched, 18 s movement), at least 100 reports, every timestamp later than the one before, and at least 99% of reports carry raw bytes."),
 )
 
@@ -300,6 +301,23 @@ def _capture_headline(result: dict) -> dict[str, object]:
         "Stationary check": stationary_text,
         "Repeated payloads": f"{float(duplicates):.2f}%" if isinstance(duplicates, (int, float)) else "Unavailable",
         "Smoothing estimate": estimate_text,
+        **_protocol_headline(result),
+    }
+
+
+def _protocol_headline(result: dict) -> dict[str, object]:
+    protocol = result.get("movement_protocol")
+    if not isinstance(protocol, dict):
+        return {}
+    followed = protocol.get("followed_percent")
+    still = protocol.get("other_stick_still_percent")
+    full = protocol.get("full_travel_reached") or {}
+    return {
+        "Followed the guide": f"{followed:.0f}%" if isinstance(followed, (int, float)) else "Unavailable",
+        "Other stick kept still": f"{still:.0f}%" if isinstance(still, (int, float)) else "Unavailable",
+        "Full travel reached": ", ".join(
+            f"{stick} stick {'yes' if reached else 'no'}" for stick, reached in full.items()
+        ) or "Unavailable",
     }
 
 
