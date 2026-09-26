@@ -71,7 +71,7 @@ from support import (
 
 LOGGER = logging.getLogger(__name__)
 
-NAV = ["Dashboard", "Controller Lab", "Reports", "Support", "Settings"]
+NAV = ["Test", "Results", "Support"]
 
 TESTER_SHARE_URL = "https://rcm-tool-share.sensoredrooster-com.workers.dev"
 
@@ -345,11 +345,9 @@ class MainWindow(QMainWindow):
         side.addWidget(nav_label)
 
         nav_labels = {
-            "Dashboard": "01   Dashboard",
-            "Controller Lab": "02   Controller Lab",
-            "Reports": "03   Reports",
-            "Support": "04   Support",
-            "Settings": "05   Settings",
+            "Test": "01   Test",
+            "Results": "02   Results",
+            "Support": "03   Support",
         }
         self.nav_buttons: dict[str, QPushButton] = {}
         for index, name in enumerate(NAV):
@@ -397,7 +395,7 @@ class MainWindow(QMainWindow):
         top_kicker = QLabel("ACTIVE VIEW")
         top_kicker.setObjectName("TopKicker")
         top_context.addWidget(top_kicker)
-        self.top_title = QLabel("Dashboard")
+        self.top_title = QLabel("Test")
         self.top_title.setObjectName("TopViewTitle")
         top_context.addWidget(self.top_title)
         top.addLayout(top_context)
@@ -405,30 +403,37 @@ class MainWindow(QMainWindow):
         self.live_rate_label = QLabel("LIVE RATE  •  —")
         self.live_rate_label.setObjectName("StatusPillSecondary")
         top.addWidget(self.live_rate_label)
-        self.pause_visualization = QCheckBox("Pause graphs")
-        self.pause_visualization.setToolTip("Freezes graph repainting only. Acquisition and raw storage continue.")
-        self.pause_visualization.toggled.connect(lambda checked: setattr(self, "visualization_paused", bool(checked)))
-        top.addWidget(self.pause_visualization)
-        self.capture_button = QPushButton("Record Session")
-        self.capture_button.setObjectName("Primary")
-        self.capture_button.clicked.connect(self._toggle_capture)
-        top.addWidget(self.capture_button)
+        settings_button = QPushButton("⚙  Settings")
+        settings_button.setToolTip("Optional settings. Most testers never need to change these.")
+        settings_button.clicked.connect(self._open_settings_dialog)
+        top.addWidget(settings_button)
         work_layout.addWidget(topbar)
 
         self.stack = QStackedWidget()
         self.stack.setObjectName("WorkspaceStack")
         for builder in (
-            self._dashboard_page,
             self._controller_page,
-            self._reports_page,
+            self._dashboard_page,
             self._support_page,
-            self._settings_page,
         ):
             self.stack.addWidget(builder())
         work_layout.addWidget(self.stack, 1)
         root_layout.addWidget(work, 1)
+
+        self.settings_dialog = QDialog(self)
+        self.settings_dialog.setWindowTitle("RcmTool Settings")
+        self.settings_dialog.resize(760, 680)
+        settings_layout = QVBoxLayout(self.settings_dialog)
+        settings_layout.setContentsMargins(0, 0, 0, 0)
+        settings_layout.addWidget(self._settings_page())
+
         self._navigate(0)
         self._sync_hardware_controls()
+
+    def _open_settings_dialog(self) -> None:
+        self.settings_dialog.show()
+        self.settings_dialog.raise_()
+        self.settings_dialog.activateWindow()
 
     def _navigate(self, index: int) -> None:
         index = max(0, min(index, self.stack.count() - 1))
