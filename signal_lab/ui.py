@@ -1269,6 +1269,11 @@ class MainWindow(QMainWindow):
         )
         detected_family = detect_controller_family(metadata, visual_source)
         detected_layout = detect_controller_layout(metadata, visual_source)
+        backend_evidence = " ".join(
+            str(metadata.get(key) or "")
+            for key in ("backend", "connection_method")
+        ).casefold()
+        verified_mapping_family = detected_family if "xinput" in backend_evidence else "generic"
         requested_skin = (
             self.controller_skin_combo.currentData()
             if hasattr(self, "controller_skin_combo") else "auto"
@@ -1280,7 +1285,7 @@ class MainWindow(QMainWindow):
             sample or {},
             visual_source,
             skin=visual_skin,
-            mapping_family=detected_family,
+            mapping_family=verified_mapping_family,
             profile_buttons=profile_buttons,
         )
         if hasattr(self, "controller_profile_status"):
@@ -1292,7 +1297,7 @@ class MainWindow(QMainWindow):
                 )
             else:
                 self.controller_profile_status.setText(
-                    "No learned extra-button map for this controller. Known standard controls still use their verified family mapping."
+                    "No learned Raw HID button map for this controller. The controller shape can be recognized independently; button names are not guessed from that shape."
                 )
         if hasattr(self, "controller_skin_status"):
             layout_names = {
@@ -1303,10 +1308,12 @@ class MainWindow(QMainWindow):
             }
             mode_text = "Auto match" if requested_skin == "auto" else "Manual shape"
             learned_count = len(profile_buttons)
-            mapping_text = (
-                f"{learned_count} learned extra mapping(s)" if learned_count
-                else ("button map unverified" if detected_family == "generic" else "standard button map available")
-            )
+            if learned_count:
+                mapping_text = f"{learned_count} learned Raw HID mapping(s)"
+            elif verified_mapping_family == "xbox":
+                mapping_text = "verified XInput button map available"
+            else:
+                mapping_text = "Raw HID button names not guessed; use Learn / map button"
             if sample:
                 status = f"{mode_text}: {layout_names[visual_skin]} • {mapping_text}"
             elif visual_source:
