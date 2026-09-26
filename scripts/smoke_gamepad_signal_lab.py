@@ -36,7 +36,11 @@ def main() -> int:
     pump(app, 0.25)
 
     assert not hasattr(window, "simulation_mode")
-    assert window.controller_acquisition is not None
+    if window.controller_source_kind == "raw_hid" and window.controller_source_path:
+        assert window.controller_acquisition is not None
+    else:
+        assert window.controller_acquisition is None
+        assert not window.capture_button.isEnabled()
     assert window.measurement_instrument is None
     assert window.instrument.identify() == "No generator connected"
     assert not window.instrument.output_enabled()
