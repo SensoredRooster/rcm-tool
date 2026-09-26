@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from signal_lab.analysis import (
     align_nearest,
+    observed_report_throughput_hz,
     oscillator_metrics,
     pearson_correlation,
     recent_window_timing_metrics,
@@ -75,6 +76,29 @@ class SignalLabTests(unittest.TestCase):
         metadata = {"controller_name": "Controller (Flydigi Vader 5 Pro)"}
         self.assertEqual(detect_controller_layout(metadata, "Raw HID"), "vader5pro")
         self.assertEqual(detect_controller_family(metadata, "Raw HID"), "generic")
+
+    def test_observed_report_throughput_is_stable_for_batched_8khz(self):
+        # Simulate an 8 kHz controller delivered by HIDAPI in 1 ms batches.
+        timestamps = []
+        for millisecond in range(1001):
+            base = millisecond * 1_000_000
+            timestamps.extend(base + offset for offset in range(8))
+        rate = observed_report_throughput_hz(
+            timestamps,
+            now_ns=1_000_000_000,
+            window_s=1.0,
+            stale_after_s=0.5,
+        )
+        self.assertIsNotNone(rate)
+        self.assertAlmostEqual(rate, 8000.0, delta=16.0)
+
+    def test_observed_report_throughput_is_unavailable_when_stale(self):
+        rate = observed_report_throughput_hz(
+            [0, 125_000, 250_000],
+            now_ns=1_000_000_000,
+            stale_after_s=0.5,
+        )
+        self.assertIsNone(rate)
 
     def test_recent_rate_uses_fresh_burst_not_older_idle_gap(self):
         burst_start_ns = 3_000_000_000
