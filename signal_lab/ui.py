@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
-from .analysis import oscillator_metrics, pearson_correlation, recent_window_timing_metrics, timing_metrics
+from .analysis import observed_report_throughput_hz, oscillator_metrics, pearson_correlation, recent_window_timing_metrics, timing_metrics
 from .controller import (
     ControllerAcquisition,
     ControllerMeasurement,
@@ -500,8 +500,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(snapshot)
 
         evidence, evidence_layout = card("LATEST TEST")
+        evidence.setObjectName("ResultHero")
+        self.results_share_card = evidence
         self.dashboard_noise_status = QLabel("No completed controller test yet.")
-        self.dashboard_noise_status.setObjectName("Muted")
+        self.dashboard_noise_status.setObjectName("ResultSummary")
         self.dashboard_noise_status.setWordWrap(True)
         evidence_layout.addWidget(self.dashboard_noise_status)
         self.baseline_state = QLabel("Run a test from the Test tab. Recording and saving happen automatically.")
@@ -514,10 +516,14 @@ class MainWindow(QMainWindow):
         evidence_layout.addWidget(self.baseline_progress)
         actions = QHBoxLayout()
         latest_report = QPushButton("Open Latest Report")
+        latest_report.setObjectName("Primary")
         latest_report.clicked.connect(self._export_noise_evidence)
+        save_result_image = QPushButton("Save Result Image")
+        save_result_image.clicked.connect(self._save_result_image)
         export_results = QPushButton("Export Results…")
         export_results.clicked.connect(self._open_export_dialog)
         actions.addWidget(latest_report)
+        actions.addWidget(save_result_image)
         actions.addWidget(export_results)
         actions.addStretch(1)
         evidence_layout.addLayout(actions)
@@ -526,19 +532,25 @@ class MainWindow(QMainWindow):
         charts = QGridLayout()
         charts.setHorizontalSpacing(14)
         self.dashboard_timing_chart = LineChart(
-            "Report gaps over recent history",
-            help_text=CHART_HELP["report_interval"],
+            "Host report delivery gaps",
+            help_text="Host/HIDAPI delivery gaps. Buffered reports can be drained in bursts, so this is not a USB-frame jitter measurement.",
             x_label="Elapsed controller capture time (s)",
         )
-        self.dashboard_noise_chart = LineChart(
-            "Stick position received by this PC",
+        self.dashboard_left_stick_chart = LineChart(
+            "Left stick position",
             help_text=CHART_HELP["analog_stability"],
             x_label="Elapsed controller capture time (s)",
         )
-        charts.addWidget(self.dashboard_timing_chart,0,0)
-        charts.addWidget(self.dashboard_noise_chart,0,1)
+        self.dashboard_right_stick_chart = LineChart(
+            "Right stick position",
+            help_text=CHART_HELP["analog_stability"],
+            x_label="Elapsed controller capture time (s)",
+        )
+        charts.addWidget(self.dashboard_timing_chart,0,0,1,2)
+        charts.addWidget(self.dashboard_left_stick_chart,1,0)
+        charts.addWidget(self.dashboard_right_stick_chart,1,1)
         charts.setColumnStretch(0,1); charts.setColumnStretch(1,1)
-        charts.setRowStretch(0,1)
+        charts.setRowStretch(0,1); charts.setRowStretch(1,1)
         layout.addLayout(charts, 1)
 
         q, ql = card("ABOUT THESE READINGS")
@@ -585,6 +597,27 @@ class MainWindow(QMainWindow):
         advanced_results_layout.addWidget(close_results)
         self._refresh_session_history()
         return self._scroll(w)
+
+    def _save_result_image(self) -> None:
+        if not hasattr(self, "results_share_card"):
+            return
+        default_name = time.strftime("RcmTool-Result-%Y%m%d-%H%M%S.png")
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Result Image",
+            str(Path.home() / default_name),
+            "PNG image (*.png)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".png"):
+            path += ".png"
+        pixmap = self.results_share_card.grab()
+        if not pixmap.save(path, "PNG"):
+            QMessageBox.warning(self, "Save Result Image", "Could not save the result image.")
+            return
+        QMessageBox.information(self, "Result image saved", f"Saved:\n{path}")
+
 
     def _open_advanced_results_dialog(self) -> None:
         self.advanced_results_dialog.show()
@@ -2713,17 +2746,23 @@ class MainWindow(QMainWindow):
                 late_factor=self.late_factor.value(),
             )
             self._last_full_timing_at = now_mono
+        now_ns = time.perf_counter_ns()
         recent_timing = recent_window_timing_metrics(
             recent_ts,
-            now_ns=time.perf_counter_ns(),
+            now_ns=now_ns,
             window_s=1.0,
             stale_after_s=0.5,
             expected_interval_ms=expected_override,
             late_factor=self.late_factor.value(),
         )
-        recent_reference_ms = expected_override if expected_override is not None else self._median(recent_intervals)
+        observed_rate_hz = observed_report_throughput_hz(
+            self.controller_ts,
+            now_ns=now_ns,
+            window_s=1.0,
+            stale_after_s=0.5,
+        )
         recent_report_count = recent_timing.sample_count
-        recent_rate_available = recent_report_count >= 2
+        recent_rate_available = observed_rate_hz is not None
         recent_payloads = self._deque_tail(self.controller_raw_report_hex, len(recent_ts)) if recent_ts else []
         recent_repeats = sum(
             1 for before, after in zip(recent_payloads, recent_payloads[1:])
@@ -2740,7 +2779,7 @@ class MainWindow(QMainWindow):
         osc_source="UNAVAILABLE"
         controller_samples_available = t.sample_count > 0
         evidence_class=str(self.controller_metadata.get("evidence_class") or "unavailable")
-        rate_source="MEASURED" if evidence_class == "measured-host-observed-raw-hid" else "ESTIMATE"
+        rate_source="OBSERVED" if evidence_class == "measured-host-observed-raw-hid" else "ESTIMATE"
         live_raw_hid = (
             self.controller_connected
             and evidence_class == "measured-host-observed-raw-hid"
@@ -2749,28 +2788,21 @@ class MainWindow(QMainWindow):
 
         if current_page == "Results":
             if live_raw_hid and recent_rate_available:
-                rate_text = f"{recent_timing.effective_rate_hz:,.1f} Hz"
-                rate_note = f"Last 1 s • {recent_report_count:,} fresh reports received"
+                rate_text = f"{observed_rate_hz:,.1f} Hz"
+                rate_note = f"Rolling 1 s host-observed throughput • {recent_report_count:,} fresh reports"
                 recent_samples = self._deque_tail(self.controller_samples, recent_report_count)
                 untouched = (
                     self._stationary_analog_noise(recent_samples, self.stationary_excursion.value())[0] is not None
                     and not any(sample.get("buttons") for sample in recent_samples)
                 )
                 if untouched:
-                    # Many controllers report at their full USB rate even at rest.
-                    rate_note += " • controller untouched; it keeps reporting at this rate"
-                interval_text = f"{recent_timing.mean_interval_ms:.3f} ms"
-                interval_note = "Average gap in that same 1 s window"
-                jitter_text = f"{recent_timing.rms_deviation_ms:.3f} ms"
-                jitter_note = (
-                    f"Variation around {recent_reference_ms:.3f} ms reference • "
-                    f"range {recent_timing.peak_to_peak_jitter_ms:.3f} ms"
-                )
-                late_text = str(recent_timing.late_reports)
-                late_note = (
-                    f"estimated missing {recent_timing.missing_reports_estimate} • "
-                    f"repeated payloads {recent_repeats} in last 1 s"
-                )
+                    rate_note += " • controller is still reporting while untouched"
+                interval_text = f"{1000.0 / observed_rate_hz:.3f} ms"
+                interval_note = "Throughput-equivalent spacing; not a per-report USB timestamp"
+                jitter_text = "USB trace required"
+                jitter_note = "HIDAPI can batch reports, so queue-drain timing is not valid USB jitter"
+                late_text = f"{recent_repeats:,} repeats"
+                late_note = "Repeated payloads in the last second; missing-report estimates are hidden for batched HID data"
             elif live_raw_hid:
                 rate_text = "Waiting for fresh reports"
                 rate_note = (
@@ -2806,7 +2838,7 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, "live_rate_label"):
             if live_raw_hid and recent_rate_available:
-                self.live_rate_label.setText(f"Rate • {recent_timing.effective_rate_hz:,.1f} Hz")
+                self.live_rate_label.setText(f"Rate • {observed_rate_hz:,.1f} Hz")
             elif live_raw_hid:
                 self.live_rate_label.setText("Rate • idle")
             else:
@@ -2833,10 +2865,18 @@ class MainWindow(QMainWindow):
                 dashboard_sample_ts,
                 dashboard_sample_ts[0] if dashboard_sample_ts else None,
             )
-            self.dashboard_noise_chart.set_series(
+            self.dashboard_left_stick_chart.set_series(
                 [
                     ("LX", [float(item.get("lx", 0.0)) for item in dashboard_samples], PAINT["line_blue"]),
                     ("LY", [float(item.get("ly", 0.0)) for item in dashboard_samples], PAINT["line_green"]),
+                ],
+                x_values=dashboard_elapsed,
+                x_label="Elapsed controller capture time (s)",
+            )
+            self.dashboard_right_stick_chart.set_series(
+                [
+                    ("RX", [float(item.get("rx", 0.0)) for item in dashboard_samples], PAINT["line_blue"]),
+                    ("RY", [float(item.get("ry", 0.0)) for item in dashboard_samples], PAINT["line_green"]),
                 ],
                 x_values=dashboard_elapsed,
                 x_label="Elapsed controller capture time (s)",
@@ -3008,7 +3048,8 @@ class MainWindow(QMainWindow):
             )
             self.quality_label.setText(
                 f"{'Connected' if live_raw_hid else 'Not connected'} • {history_note} {freshness_note} "
-                "All report times are observed by this PC after USB; they are not internal firmware timestamps."
+                "The Hz card is rolling host-observed report throughput. HIDAPI may deliver buffered reports in bursts, "
+                "so per-report USB interval/jitter is not claimed without an external USB/electrical trace."
             )
 
         if current_page == "Results" and self.baseline_active:
