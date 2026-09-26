@@ -3200,11 +3200,9 @@ class MainWindow(QMainWindow):
             expected_interval_ms=self._timing_reference_ms(baseline_intervals),
             late_factor=self.late_factor.value(),
         )
-        o=oscillator_metrics(
-            self.baseline_osc_freq,self.nominal_freq.value(),
-            duty_cycles_percent=self.baseline_osc_duty,
-            outlier_sigma=self.outlier_sigma.value(),
-        )
+        # The controller-only UI no longer constructs oscillator controls.
+        # Keep the legacy report field explicitly empty, as in _refresh_analysis.
+        o=oscillator_metrics([], 12_000_000.0)
         self.last_baseline={"timing":asdict(t),"oscillator":asdict(o)}
         self.baseline_progress.setValue(1000)
         self.baseline_state.setText(f"Baseline complete • {t.sample_count:,} controller samples • {o.sample_count:,} oscillator samples")

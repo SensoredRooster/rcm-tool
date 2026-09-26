@@ -42,6 +42,27 @@ class ControllerIntegrityTests(unittest.TestCase):
         self.assertAlmostEqual(sample["rx"], 0.0, places=2)
         self.assertAlmostEqual(sample["ry"], 0.0, places=2)
 
+    def test_vader_16bit_report_does_not_decode_axis_bytes_as_buttons(self):
+        reader = app.HIDGamepad(info={"vendor_id": 0x37D7, "product_id": 0x2401})
+        # Physical report captured from the connected Vader gamepad interface.
+        sample = reader._parse_report([176, 126, 175, 127, 112, 129, 239, 124, 0, 128, 0, 0, 0, 0])
+        for axis in ("lx", "ly", "rx", "ry"):
+            self.assertLess(abs(sample[axis]), 0.03)
+        self.assertEqual(sample["buttons"], 0)
+        self.assertEqual((sample["dpad_x"], sample["dpad_y"]), (0, 0))
+        self.assertEqual(sample["combined_trigger_raw"], 32768)
+        self.assertNotIn("rt", sample)
+
+    def test_vader_axis_endpoints_and_packed_hat(self):
+        reader = app.HIDGamepad(info={"vendor_id": 0x37D7, "product_id": 0x2401})
+        sample = reader._parse_report([0, 0, 255, 255, 0, 128, 0, 128, 0, 128, 1, 9, 0, 0])
+        self.assertEqual(sample["lx"], -1)
+        self.assertAlmostEqual(sample["ly"], -1, places=4)
+        self.assertEqual(sample["rx"], 0)
+        self.assertEqual(sample["buttons"], 257)
+        self.assertEqual((sample["dpad_x"], sample["dpad_y"]), (1, 1))
+        self.assertIsNone(reader._parse_report([0] * 13))
+
     def test_generic_hid_report_exposes_buttons_and_dpad(self):
         reader = app.HIDGamepad(info={"vendor_id": 0x1234, "product_string": "USB Gamepad"})
         sample = reader._parse_report([0, 128, 128, 128, 128, 0, 0, 0x05, 0x01])

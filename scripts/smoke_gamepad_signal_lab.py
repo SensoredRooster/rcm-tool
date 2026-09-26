@@ -75,6 +75,13 @@ def main() -> int:
         assert not window.controller_samples
         window._refresh_ui()
 
+    # Exercise completion even on CI without a connected controller. This
+    # must not depend on oscillator widgets removed from the controller UI.
+    if not has_live_hid:
+        window._finish_baseline()
+        assert window.last_baseline["timing"]["sample_count"] == 0
+        assert window.last_baseline["oscillator"]["sample_count"] == 0
+
     preview_root = ROOT / "artifacts" / "ui-preview"
     preview_root.mkdir(parents=True, exist_ok=True)
     assert NAV == ["Test", "Results", "Support"]

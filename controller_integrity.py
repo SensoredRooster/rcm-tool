@@ -418,6 +418,27 @@ class HIDGamepad:
     def _parse_report(self, report: list[int]) -> Optional[dict[str, float]]:
         if len(report) < 5:
             return None
+        # Vader 5 Pro's Windows gamepad interface has no report ID: four
+        # little-endian 16-bit axes, a combined trigger axis, ten buttons,
+        # a one-based four-bit hat, and padding (14 bytes total).
+        # Do not run this packet through the report-ID + 8-bit Sony decoder.
+        if (self.info.get("vendor_id"), self.info.get("product_id")) == (0x37D7, 0x2401):
+            if len(report) != 14:
+                return None
+            words = [int.from_bytes(bytes(report[i:i + 2]), "little") for i in range(0, 10, 2)]
+            axes = [max(-1.0, min(1.0, (value - 32768) / 32768.0)) for value in words[:4]]
+            packed = report[10] | (report[11] << 8)
+            hat = (packed >> 10) & 0x0F
+            directions = ((0, 0), (0, 1), (1, 1), (1, 0), (1, -1),
+                          (0, -1), (-1, -1), (-1, 0), (-1, 1))
+            dx, dy = directions[hat] if 1 <= hat <= 8 else (0, 0)
+            sample = dict(zip(("lx", "ly", "rx", "ry"), (axes[0], -axes[1], axes[2], -axes[3])))
+            # This interface exposes one combined trigger axis, not two
+            # independent trigger measurements; retain its original value.
+            sample.update(combined_trigger_raw=words[4], buttons=packed & 0x03FF,
+                          dpad_x=dx, dpad_y=dy)
+            self.last_sample = sample
+            return sample
         product = (self.info.get("product_string") or "").lower()
         vendor_id = self.info.get("vendor_id")
         sony = vendor_id == 0x054C or "dualsense" in product or "dualshock" in product or "wireless controller" in product
