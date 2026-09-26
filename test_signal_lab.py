@@ -260,6 +260,44 @@ class SignalLabTests(unittest.TestCase):
         result = {"capture_kind": "movement", "sample_count": 4000, "movement_protocol": good, "axes": {}}
         self.assertIn("Followed the guide", guided_test_summary_html({"movement": result}))
 
+    def test_standard_filters_match_textbook_values(self):
+        import math
+        import random
+
+        from signal_lab import filters
+
+        rng = random.Random(1)
+        # 200 s of 1 kHz white noise: long enough for the statistics to settle.
+        times = [index / 1000.0 for index in range(200_000)]
+        noise = [rng.gauss(0.0, 0.01) for _ in times]
+
+        def cut(values):
+            return 100.0 * (1.0 - filters._ac_rms(values) / filters._ac_rms(noise))
+
+        self.assertAlmostEqual(cut(filters.exponential(times, noise, 0.050)), 90.0, delta=1.5)
+        self.assertAlmostEqual(cut(filters.moving_average(times, noise, 0.050)), 100 * (1 - 1 / math.sqrt(50)), delta=1.5)
+        half, ninety = filters.step_delays_ms(lambda t, v: filters.exponential(t, v, 0.050), 1000.0)
+        self.assertAlmostEqual(half, 50 * math.log(2), delta=1.5)
+        self.assertAlmostEqual(ninety, 50 * math.log(10), delta=1.5)
+        half, _ninety = filters.step_delays_ms(lambda t, v: filters.moving_average(t, v, 0.050), 1000.0)
+        self.assertAlmostEqual(half, 25.0, delta=1.5)
+        _half, euro_ninety = filters.step_delays_ms(lambda t, v: filters.one_euro(t, v, 1.0, 0.5), 1000.0)
+        self.assertLess(euro_ninety, 50 * math.log(10))
+
+        samples = [{"lx": value, "ly": 0.0, "rx": 0.0, "ry": value / 2} for value in noise[:5000]]
+        simulation = filters.simulate_filters([int(t * 1e9) for t in times[:5000]], samples)
+        self.assertTrue(simulation["available"])
+        self.assertEqual(simulation["axes_with_noise"], ["lx", "ry"])
+        self.assertEqual(len(simulation["filters"]), len(filters.PRESETS))
+        self.assertAlmostEqual(simulation["report_rate_hz"], 1000.0, delta=1.0)
+
+        from signal_lab.reporting import guided_test_summary_html
+
+        html = guided_test_summary_html({"neutral": {"capture_kind": "neutral", "sample_count": 5000,
+                                                     "axes": {}, "filter_simulations": simulation}})
+        self.assertIn("Filter simulations", html)
+        self.assertIn("One Euro", html)
+
     def test_results_folder_is_in_the_repository_when_run_from_source(self):
         from signal_lab.ui import results_directory
 

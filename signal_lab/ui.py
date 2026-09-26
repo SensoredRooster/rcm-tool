@@ -73,6 +73,7 @@ from .stick_cleaner_page import StickCleanerPage
 from .theme import DARK, LIGHT, PAINT, set_paint_theme
 from .widgets import ControllerView, GuidedStickView, HeatMapWidget, LineChart, MetricCard
 from . import movement_guide
+from .filters import simulate_filters
 from support import (
     SESSION_ID as SUPPORT_SESSION_ID,
     create_support_bundle,
@@ -2202,6 +2203,9 @@ class MainWindow(QMainWindow):
             f"Complete • {result['raw_hid_report_count']:,} reports • {result['sample_rate_hz']:,.1f} reports/s • "
             f"{stationarity_text} • capture checks: {quality.get('label', 'review required')}."
         )
+        if self.noise_test_kind == "neutral":
+            # Standard filters run on a copy of the untouched recording.
+            result["filter_simulations"] = simulate_filters(window_timestamps, window_samples)
         if self.noise_test_kind == "movement":
             result["movement_protocol"] = movement_guide.score_movement(
                 window_timestamps, window_samples, self.noise_test_start_timestamp_ns,

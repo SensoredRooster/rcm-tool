@@ -219,6 +219,7 @@ CALCULATIONS: tuple[tuple[str, str], ...] = (
     ("Smoothing estimate", "Untouched step only. Per axis: 100 x (1 - RMS of report-to-report change / (1.414 x Noise RMS)), limited to 0-100. Estimate = 0.75 x median axis score + 0.25 x repeated payloads %. Below 25 is low, below 60 moderate, otherwise high."),
     ("Estimate confidence", "45 + up to 30 as reports grow from 100 to 1,100 + 10 when at least 3 axes were scored."),
     ("Followed the guide", "Movement step: share of moments where the active stick was within 0.3 of the ring's position during the previous 0.4 s (reaction time). Other stick still: share where the resting stick stayed within 0.15 of center. Full travel: each stick reached at least 0.9 right, left, up, and down."),
+    ("Filter simulations", "Untouched step only. Each filter runs on a copy of the recording at its real timestamps. Exponential: y += a x (x - y), a = 1 - e^(-dt/time constant). Moving average: mean of the readings in the last window. One Euro (Casiez 2012): exponential whose cutoff = min cutoff + beta x |stick speed|. Noise removed = median over noisy axes of (1 - filtered RMS / recorded RMS) x 100. Flick delay: time for a 0-to-1 step at this report rate to reach 50% and 90% through the filter."),
     ("Capture checks", "Pass only if: duration is at least 90% of the step (9 s untouched, 18 s movement), at least 100 reports, every timestamp later than the one before, and at least 99% of reports carry raw bytes."),
 )
 
@@ -332,6 +333,36 @@ def _protocol_headline(result: dict) -> dict[str, object]:
     }
 
 
+def filter_simulation_html(result: dict) -> str:
+    """Standard filters run on this untouched recording: noise cut vs flick delay."""
+    simulation = result.get("filter_simulations")
+    if not isinstance(simulation, dict) or not simulation.get("available"):
+        return ""
+
+    def cell(value: object, suffix: str) -> str:
+        return f"{float(value):.1f}{suffix}" if isinstance(value, (int, float)) else "n/a"
+
+    rows = "".join(
+        "<tr>"
+        f"<td>{escape(str(row['filter']))}</td><td>{escape(str(row['setting']))}</td>"
+        f"<td>{cell(row.get('noise_cut_percent'), '%')}</td>"
+        f"<td>{cell(row.get('delay_to_50_percent_ms'), ' ms')}</td>"
+        f"<td>{cell(row.get('delay_to_90_percent_ms'), ' ms')}</td>"
+        "</tr>"
+        for row in simulation.get("filters", [])
+    )
+    return (
+        "<h3>Filter simulations (calculated from this recording, not measured)</h3>"
+        "<p>What standard smoothing filters would do to this controller's real noise, and what each costs in "
+        "delay on a full stick flick. Controller and game filters are not published; these are the public "
+        "algorithms they are built from.</p>"
+        "<table cellpadding='4' border='1' style='border-collapse:collapse'>"
+        "<tr><th>Filter</th><th>Setting</th><th>Noise removed</th><th>Flick delay to 50%</th>"
+        "<th>Flick delay to 90%</th></tr>"
+        f"{rows}</table>"
+    )
+
+
 def guided_test_summary_html(captures: dict[str, dict]) -> str:
     """Every result of a guided test, as simple HTML for the in-app summary."""
     sections = []
@@ -356,6 +387,7 @@ def guided_test_summary_html(captures: dict[str, dict]) -> str:
             "<tr><th>Axis</th><th>Noise RMS</th><th>Peak-to-peak</th><th>High-frequency energy</th></tr>"
             f"{axes}</table>"
             f"<p>{escape(str(result.get('interpretation', '')))}</p>"
+            f"{filter_simulation_html(result)}"
         )
     if not sections:
         return "<p>No completed captures.</p>"
@@ -570,7 +602,8 @@ def write_noise_evidence_report(
     smoothing_card = (
         "<div class='card'><h2>Simulation only: what a software smoother would do</h2>"
         f"<p>This is not a measurement of the controller. After the test, RcmTool ran a copy of the recorded data through a {escape(smoothing_tau_text)} software smoothing filter to show how much such a filter would reduce the noise. The controller, the game, and the recorded reports are never changed.</p>"
-        f"{_smoother_simulation_html(result)}<p class='small'>{smoothing_note}</p></div>"
+        f"{_smoother_simulation_html(result)}{filter_simulation_html(result)}"
+        f"<p class='small'>{smoothing_note}</p></div>"
     )
     estimate_card = (
         "<div class='card'><h2>Beginner-friendly smoothing estimate</h2>"
