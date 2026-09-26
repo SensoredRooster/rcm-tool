@@ -762,16 +762,16 @@ class SignalLabTests(unittest.TestCase):
         from signal_lab.controller_profiles import stable_bit_changes
 
         released = [
-            "01000010",
-            "02000011",
-            "03000012",
-            "04000013",
+            "01000000",
+            "02000001",
+            "03000002",
+            "04000003",
         ]
         pressed = [
-            "05040020",
-            "06040021",
-            "07040022",
-            "08040023",
+            "05040000",
+            "06040001",
+            "07040002",
+            "08040003",
         ]
         changes = stable_bit_changes(released, pressed)
         self.assertEqual(changes, [(1, 0x04)])
