@@ -31,19 +31,18 @@ def main() -> int:
     pump(app, 0.4)
 
     # Native CI has no physical Raw HID controller. Capture the intentional
-    # disconnected state instead of opening the guarded Record Session dialog.
+    # disconnected state of the simplified tester workflow.
     assert not window._has_measured_raw_hid()
-    assert not window.capture_button.isEnabled()
+    assert [name for name in window.nav_buttons] == ["Test", "Results", "Support"]
+    assert all(not button.isEnabled() for button in window.guided_test_buttons)
     window._refresh_ui()
 
     preview_root = ROOT / "artifacts" / "ui-preview-native"
     preview_root.mkdir(parents=True, exist_ok=True)
     captures = (
-        (0, "dashboard.png"),
-        (1, "controller_lab.png"),
-        (2, "reports.png"),
-        (3, "support.png"),
-        (4, "settings.png"),
+        (0, "test.png"),
+        (1, "results.png"),
+        (2, "support.png"),
     )
     for index, filename in captures:
         window._navigate(index)
@@ -54,7 +53,7 @@ def main() -> int:
             raise RuntimeError(f"Failed to capture {filename}")
 
     # Verify both manual controller views exist independently of auto detection.
-    window._navigate(1)
+    window._navigate(0)
     for family, filename in (("xbox", "controller_xbox.png"), ("dualsense", "controller_dualsense.png")):
         index = window.controller_skin_combo.findData(family)
         if index < 0:
@@ -66,6 +65,13 @@ def main() -> int:
         if pixmap.isNull() or not pixmap.save(str(preview_root / filename), "PNG"):
             raise RuntimeError(f"Failed to capture {filename}")
     window.controller_skin_combo.setCurrentIndex(window.controller_skin_combo.findData("auto"))
+
+    window._open_settings_dialog()
+    pump(app, 0.2)
+    pixmap = window.settings_dialog.grab()
+    if pixmap.isNull() or not pixmap.save(str(preview_root / "settings.png"), "PNG"):
+        raise RuntimeError("Failed to capture settings.png")
+    window.settings_dialog.hide()
 
     window.close()
     app.processEvents()
