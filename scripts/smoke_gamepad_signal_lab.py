@@ -40,7 +40,7 @@ def main() -> int:
         assert window.controller_acquisition is not None
     else:
         assert window.controller_acquisition is None
-        assert not window.capture_button.isEnabled()
+        assert all(not button.isEnabled() for button in window.guided_test_buttons)
     assert window.measurement_instrument is None
     assert window.instrument.identify() == "No generator connected"
     assert not window.instrument.output_enabled()
@@ -70,19 +70,18 @@ def main() -> int:
         # Verify that the app stays intentionally blank and never fabricates data.
         assert window.session_id is None
         assert not window.capture_active
-        assert not window.capture_button.isEnabled()
+        assert all(not button.isEnabled() for button in window.guided_test_buttons)
         assert not window.controller_ts
         assert not window.controller_samples
         window._refresh_ui()
 
     preview_root = ROOT / "artifacts" / "ui-preview"
     preview_root.mkdir(parents=True, exist_ok=True)
+    assert NAV == ["Test", "Results", "Support"]
     for page_name, filename in (
-        ("Dashboard", "dashboard.png"),
-        ("Controller Lab", "controller_lab.png"),
-        ("Reports", "reports.png"),
+        ("Test", "test.png"),
+        ("Results", "results.png"),
         ("Support", "support.png"),
-        ("Settings", "settings.png"),
     ):
         window._navigate(NAV.index(page_name))
         window._refresh_ui()
