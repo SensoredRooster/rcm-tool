@@ -12,17 +12,18 @@ The application is measurement-focused. It does not inject game inputs, modify c
 
 ## Active test workflow
 
-- **Dashboard:** A quick summary of report rate, timing, stick traces, and the latest smoothing result.
-- **Controller Lab:** Select a named Raw HID interface, inspect live decoded axes/buttons, and run the guided test.
-- **Reports:** Export saved session JSON/CSV and a plain-language report that states what the values can and cannot establish.
-- **Support:** Existing local logs, health snapshot, redacted support bundle, and explicit-confirm upload flow remain available.
-- **Settings:** Capture thresholds, timing reference, display refresh, controller view, and theme.
+The primary UI is intentionally simple:
 
-The guided wizard captures untouched-stick behavior for 10 seconds, then a
-defined movement/settling sequence for 20 seconds. If there is no session
-already recording, the wizard starts one and stores the raw session in the
-local SQLite database. Completed evidence remains available when the selected
-device changes.
+- **Test:** Connect/select the controller and press **START CONTROLLER TEST**. RcmTool handles session recording, saving, and analysis automatically.
+- **Results:** Shows the latest test, live timing/stick summary, saved session activity, and optional exports.
+- **Support:** Provides **Send Diagnostics**, **Tester Share**, and an Advanced Support dialog for logs, health data, bundles, and repository links.
+- **Settings:** Open from the gear button in the top-right. These controls are optional and are no longer a main navigation destination.
+- **Advanced Controller Tools:** Button learning/mapping and technical Raw HID details are available from the Test page without cluttering the normal test flow.
+
+The guided test automatically starts the underlying recording session when needed,
+captures untouched-stick behavior for 10 seconds, then walks the tester through a
+20-second movement/settling phase. The session is stopped and saved automatically,
+and the app returns to **Results** when the test completes.
 
 ## Filtering and smoothing, in plain English
 
@@ -92,16 +93,12 @@ Runtime dependencies are pinned in `requirements.txt` from the validated Windows
 ## First-run workflow
 
 1. Launch RcmTool.
-2. Connect the controller by USB. In **Controller Lab**, click **Refresh Raw HID** and select its named VID/PID entry.
-3. Verify that entry matches the controller you connected. Windows HID descriptors cannot rule out a virtual HID device.
-4. Wait until live Raw HID reports arrive. Capture and test controls remain disabled until they do.
-5. Run **Guided Raw HID + smoothing test**. Leave both sticks untouched for
-   10 seconds, then follow the on-screen one-stick movement sequence for
-   20 seconds.
-6. Read the Dashboard result. A percentage is a relative signal indicator,
-   not a firmware setting.
-7. Export the result report. It explains the estimate, observed rate, jitter,
-   noise, duplicate payloads, and the limits of firmware attribution.
+2. Plug the controller in by USB. RcmTool scans Raw HID devices automatically; if more than one controller-like interface is present, choose the correct named device on **Test**.
+3. Move a stick or press a button once so live Raw HID reports are confirmed.
+4. Press **START CONTROLLER TEST**.
+5. Leave the controller still when instructed, then perform the simple one-stick movement step.
+6. RcmTool records, saves, and analyzes the session automatically, then opens **Results**.
+7. Export a report only when you need to share or inspect the technical data.
 
 The Raw HID selector reads the selected interface's USB HID reports and labels timestamps as **measured at host arrival**. If no device is found, the app does not substitute simulated or XInput values.
 
