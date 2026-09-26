@@ -622,6 +622,27 @@ class ControllerView(QWidget):
             painter.setPen(QColor("#8FA4BE"))
             painter.drawText(QRectF(x, top - 43, bar_w, 16), Qt.AlignmentFlag.AlignCenter, f"{label} {value*100:.0f}%")
 
+    def _draw_profile_buttons(
+        self, painter: QPainter, left: float, top: float, body_w: float, body_h: float,
+    ) -> None:
+        for item in self.profile_buttons:
+            try:
+                x = left + body_w * float(item.get("x", 0.5))
+                y = top + body_h * float(item.get("y", 0.5))
+            except (TypeError, ValueError):
+                continue
+            label = str(item.get("name") or "Extra")
+            active = bool(item.get("active"))
+            kind = str(item.get("kind") or "extra")
+            width = max(30.0, min(88.0, 14.0 + len(label) * 7.0))
+            height = 24.0 if kind in {"rear", "shoulder", "extra"} else 26.0
+            rect = QRectF(x - width / 2, y - height / 2, width, height)
+            painter.setPen(QPen(QColor("#A7C8FF") if active else QColor("#4A5B72"), 1.4))
+            painter.setBrush(QColor("#3678E8") if active else QColor("#151D28"))
+            painter.drawRoundedRect(rect, 8, 8)
+            painter.setPen(QColor("#FFFFFF") if active else QColor("#C7D2E1"))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
+
     @staticmethod
     def _shell_path(left: float, top: float, width: float, height: float, *, dualsense: bool = False) -> QPainterPath:
         """Balanced gamepad shell; geometry differs by family but avoids caricatured grips."""
@@ -812,6 +833,8 @@ class ControllerView(QWidget):
         else:
             self._paint_generic(painter,left,top,body_w,body_h)
 
+        self._draw_profile_buttons(painter, left, top, body_w, body_h)
+
         painter.setPen(QColor("#7F93AC"))
         if not all(axis in self.sample for axis in ("lx", "ly", "rx", "ry")):
             mapping = "Outline only • waiting for the first live controller report"
@@ -821,7 +844,10 @@ class ControllerView(QWidget):
             mapping = "DualSense detected • named button mapping unavailable from current backend"
         else:
             mapping = "Generic/source-specific button mapping"
-        mapping += " • button labels are visual only" if self.skin == "vader5pro" and self.mapping_family != "xbox" else ""
+        if self.profile_buttons:
+            mapping += f" • {len(self.profile_buttons)} learned button mapping(s)"
+        elif self.skin == "vader5pro" and self.mapping_family != "xbox":
+            mapping += " • extra-button labels are visual until learned"
         painter.drawText(
             QRectF(left, top + body_h + 28, body_w, 22),
             Qt.AlignmentFlag.AlignHCenter, mapping,
