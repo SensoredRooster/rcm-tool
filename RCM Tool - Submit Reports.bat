@@ -2,10 +2,10 @@
 setlocal
 cd /d "%~dp0"
 
-rem Report files are git-ignored so fresh local tests never block the updater's
-rem clean-tree check; list and stage them explicitly here instead.
-echo Reports currently waiting to be submitted:
-git status --short --ignored reports
+rem Report and result files are git-ignored so fresh local tests never block
+rem the updater's clean-tree check; list and stage them explicitly here instead.
+echo Reports and test results waiting to be submitted:
+git status --short --ignored reports results
 echo.
 set /p CONFIRM="Commit and push these reports to GitHub? Type YES to continue: "
 if /I not "%CONFIRM%"=="YES" (
@@ -14,7 +14,7 @@ if /I not "%CONFIRM%"=="YES" (
     exit /b 0
 )
 
-git add --force -- reports
+git add --force -- reports results
 git diff --cached --quiet
 if not errorlevel 1 (
     echo No new report files were found.
@@ -37,7 +37,7 @@ if not defined GIT_EMAIL (
     git config user.email "%GIT_EMAIL%"
 )
 
-git commit -m "Add controller test reports"
+git commit -m "Add controller test reports and results"
 if errorlevel 1 (
     echo Commit failed.
     pause

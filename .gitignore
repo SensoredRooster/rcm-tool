@@ -7,6 +7,9 @@ dist/
 *.spec~
 reports/*.json
 reports/*.jsonl
+# Auto-saved guided test results; RCM Tool - Submit Reports.bat pushes them.
+results/*
+!results/README.md
 *.sqlite3
 *.db
 artifacts/
