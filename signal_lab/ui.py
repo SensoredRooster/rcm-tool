@@ -2406,7 +2406,8 @@ class MainWindow(QMainWindow):
                 self.controller_source_combo.setEnabled(False)
                 self.refresh_controller_button.setEnabled(False)
             self._sync_hardware_controls()
-            self.capture_button.setEnabled(False)
+            if hasattr(self, "capture_button"):
+                self.capture_button.setEnabled(False)
             self.hardware_status.setText("HARDWARE • stopped by UI-resource safety limit")
             support_log_event(
                 "windows_gui_resource_safety_stop",
