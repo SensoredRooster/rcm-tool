@@ -31,6 +31,12 @@ from .controller import (
     detect_controller_family,
     detect_controller_layout,
 )
+from .controller_profiles import (
+    ButtonMapping,
+    ControllerProfileStore,
+    POSITION_PRESETS,
+    stable_bit_changes,
+)
 from .instruments import SafetyLimits, UnavailableInstrument, VisaScpiGenerator, VisaScpiMeasurementInstrument, list_visa_resources
 from .metric_catalog import CHART_HELP, METRIC_HELP
 from .noise_attribution import analyze_noise_capture
@@ -180,6 +186,7 @@ class MainWindow(QMainWindow):
         data_root.mkdir(parents=True, exist_ok=True)
         self.data_root = data_root
         self.db = LabDatabase(data_root / "signal_lab.sqlite3")
+        self.controller_profile_store = ControllerProfileStore(data_root / "controller_profiles.json")
 
         self.capture_active = False
         self.session_id: str | None = None
@@ -677,6 +684,24 @@ class MainWindow(QMainWindow):
         self.button_capability.setObjectName("Muted")
         self.button_capability.setWordWrap(True)
         input_layout.addWidget(self.button_capability)
+
+        profile_row = QHBoxLayout()
+        learn_button = QPushButton("Learn / map button")
+        learn_button.setToolTip(
+            "Teach RcmTool an extra or unknown physical button by comparing stable Raw HID bits "
+            "with the button released and held."
+        )
+        learn_button.clicked.connect(self._learn_controller_button)
+        reset_profile = QPushButton("Reset custom map")
+        reset_profile.clicked.connect(self._reset_controller_button_profile)
+        profile_row.addWidget(learn_button)
+        profile_row.addWidget(reset_profile)
+        profile_row.addStretch(1)
+        input_layout.addLayout(profile_row)
+        self.controller_profile_status = QLabel("No custom button map loaded.")
+        self.controller_profile_status.setObjectName("Muted")
+        self.controller_profile_status.setWordWrap(True)
+        input_layout.addWidget(self.controller_profile_status)
         diagnostics.addWidget(input_card,0,0)
 
         signal_card, signal_layout = card("STICK SIGNAL QUALITY")
@@ -1248,9 +1273,26 @@ class MainWindow(QMainWindow):
             if hasattr(self, "controller_skin_combo") else "auto"
         )
         visual_skin = detected_layout if requested_skin == "auto" else str(requested_skin)
+        raw_hex = self.controller_raw_report_hex[-1] if self.controller_raw_report_hex else None
+        profile_buttons = self.controller_profile_store.markers(metadata, raw_hex)
         self.controller_view.set_state(
-            sample or {}, visual_source, skin=visual_skin, mapping_family=detected_family
+            sample or {},
+            visual_source,
+            skin=visual_skin,
+            mapping_family=detected_family,
+            profile_buttons=profile_buttons,
         )
+        if hasattr(self, "controller_profile_status"):
+            profile = self.controller_profile_store.find(metadata)
+            if profile is not None and profile.buttons:
+                names = ", ".join(button.name for button in profile.buttons)
+                self.controller_profile_status.setText(
+                    f"Custom profile: {profile.name} • {len(profile.buttons)} mapped button(s): {names}"
+                )
+            else:
+                self.controller_profile_status.setText(
+                    "No learned extra-button map for this controller. Known standard controls still use their verified family mapping."
+                )
         if hasattr(self, "controller_skin_status"):
             layout_names = {
                 "vader5pro": "Flydigi Vader 5 Pro",
@@ -1259,9 +1301,10 @@ class MainWindow(QMainWindow):
                 "generic": "standard gamepad",
             }
             mode_text = "Auto match" if requested_skin == "auto" else "Manual shape"
+            learned_count = len(profile_buttons)
             mapping_text = (
-                "button map unverified" if detected_family == "generic"
-                else "button map available"
+                f"{learned_count} learned extra mapping(s)" if learned_count
+                else ("button map unverified" if detected_family == "generic" else "standard button map available")
             )
             if sample:
                 status = f"{mode_text}: {layout_names[visual_skin]} • {mapping_text}"
@@ -2712,9 +2755,13 @@ class MainWindow(QMainWindow):
 
             input_parts=[]
             pressed=self.controller_view.pressed_names()
-            if "buttons" in last:
+            profile = self.controller_profile_store.find(self.controller_metadata or self.controller_source_info)
+            if "buttons" in last or (profile is not None and profile.buttons):
                 input_parts.append("Pressed: "+(", ".join(pressed) if pressed else "none"))
-                input_parts.append(f"raw mask 0x{int(last.get('buttons',0)):04X}")
+                if "buttons" in last:
+                    input_parts.append(f"decoded mask 0x{int(last.get('buttons',0)):04X}")
+                if profile is not None and profile.buttons:
+                    input_parts.append(f"learned mappings {len(profile.buttons)}")
             else:
                 input_parts.append("Buttons: unavailable from active decoded backend")
             if "dpad_x" in last or "dpad_y" in last:
@@ -3733,6 +3780,178 @@ class MainWindow(QMainWindow):
         if hasattr(self, "controller_view"):
             self.controller_view.update()
         self._schedule_ui_refresh()
+
+    @staticmethod
+    def _recent_raw_reports(values, limit: int = 12) -> list[str]:
+        return [str(item) for item in list(values)[-limit:] if item]
+
+    def _learn_controller_button(self) -> None:
+        if not self._has_measured_raw_hid() or not self.controller_raw_report_hex:
+            QMessageBox.information(
+                self,
+                "Live Raw HID required",
+                "Select the controller and move or press a control so live Raw HID reports are arriving before learning a button.",
+            )
+            return
+
+        metadata = self.controller_metadata or self.controller_source_info
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Learn controller button")
+        dialog.setMinimumWidth(560)
+        layout = QVBoxLayout(dialog)
+
+        help_label = QLabel(
+            "This learns the actual Raw HID bit for one physical button.\n\n"
+            "1. Release every button and keep sticks still, then capture the released state.\n"
+            "2. Enter the button name and choose where it physically sits.\n"
+            "3. Press and HOLD only that button, then detect the pressed state.\n"
+            "4. Save the mapping.\n\n"
+            "RCMTool only accepts bits that stay stable in both phases, which filters out counters and changing analog data."
+        )
+        help_label.setWordWrap(True)
+        layout.addWidget(help_label)
+
+        form = QFormLayout()
+        name_edit = QLineEdit()
+        name_edit.setPlaceholderText("Example: M1, P3, Rear Left")
+        position_combo = QComboBox()
+        for label in POSITION_PRESETS:
+            position_combo.addItem(label, label)
+        candidate_combo = QComboBox()
+        candidate_combo.setEnabled(False)
+        form.addRow("Button name", name_edit)
+        form.addRow("Physical location", position_combo)
+        form.addRow("Detected Raw HID bit", candidate_combo)
+        layout.addLayout(form)
+
+        status = QLabel("Step 1: release all controls, then capture the released state.")
+        status.setObjectName("Muted")
+        status.setWordWrap(True)
+        layout.addWidget(status)
+
+        state = {"released": [], "pressed": []}
+        actions = QHBoxLayout()
+        capture_released = QPushButton("1  Capture released")
+        detect_pressed = QPushButton("2  Detect while held")
+        save_mapping = QPushButton("3  Save mapping")
+        detect_pressed.setEnabled(False)
+        save_mapping.setEnabled(False)
+        actions.addWidget(capture_released)
+        actions.addWidget(detect_pressed)
+        actions.addWidget(save_mapping)
+        layout.addLayout(actions)
+
+        close_row = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close_row.rejected.connect(dialog.reject)
+        layout.addWidget(close_row)
+
+        def capture_released_state() -> None:
+            reports = self._recent_raw_reports(self.controller_raw_report_hex, 12)
+            if len(reports) < 3:
+                status.setText("Not enough live Raw HID reports yet. Move a control once, release it, and try again.")
+                return
+            state["released"] = reports
+            detect_pressed.setEnabled(True)
+            save_mapping.setEnabled(False)
+            candidate_combo.clear()
+            candidate_combo.setEnabled(False)
+            status.setText("Released state captured. Press and HOLD only the button you want to map, then click Detect.")
+
+        def detect_pressed_state() -> None:
+            reports = self._recent_raw_reports(self.controller_raw_report_hex, 12)
+            candidates = stable_bit_changes(state["released"], reports)
+            candidate_combo.clear()
+            for byte_index, mask in candidates:
+                bit_index = mask.bit_length() - 1
+                candidate_combo.addItem(
+                    f"byte {byte_index}, bit {bit_index} (mask 0x{mask:02X})",
+                    (byte_index, mask),
+                )
+            if not candidates:
+                candidate_combo.setEnabled(False)
+                save_mapping.setEnabled(False)
+                status.setText(
+                    "No stable button bit was isolated. Keep the controller still, hold only the target button, and detect again."
+                )
+                return
+            state["pressed"] = reports
+            candidate_combo.setEnabled(True)
+            save_mapping.setEnabled(True)
+            if len(candidates) == 1:
+                status.setText("One stable Raw HID bit found. Release the button, verify the name/location, then save.")
+            else:
+                status.setText(
+                    f"{len(candidates)} stable bits changed. Choose the candidate that corresponds to this button, then save."
+                )
+
+        def save_button_mapping() -> None:
+            name = name_edit.text().strip()
+            candidate = candidate_combo.currentData()
+            position_name = position_combo.currentData()
+            if not name:
+                status.setText("Enter a button name before saving.")
+                return
+            if not candidate or position_name not in POSITION_PRESETS:
+                status.setText("Detect a stable Raw HID button bit before saving.")
+                return
+            byte_index, mask = candidate
+            x, y, kind = POSITION_PRESETS[position_name]
+            layout_name = detect_controller_layout(metadata)
+            profile = self.controller_profile_store.upsert_button(
+                metadata,
+                ButtonMapping(
+                    name=name,
+                    byte_index=int(byte_index),
+                    bit_mask=int(mask),
+                    x=float(x),
+                    y=float(y),
+                    kind=kind,
+                ),
+                layout=layout_name,
+            )
+            self._add_event(
+                "controller_button_profile_updated",
+                {
+                    "profile": profile.name,
+                    "button": name,
+                    "byte_index": int(byte_index),
+                    "bit_mask": int(mask),
+                    "position": position_name,
+                },
+            )
+            self._set_controller_visual(
+                self.controller_samples[-1] if self.controller_samples else None,
+                self.controller_sources[-1][0] if self.controller_sources else "",
+            )
+            status.setText(f"Saved {name}. You can map another button or close this window.")
+            save_mapping.setEnabled(False)
+
+        capture_released.clicked.connect(capture_released_state)
+        detect_pressed.clicked.connect(detect_pressed_state)
+        save_mapping.clicked.connect(save_button_mapping)
+        dialog.exec()
+
+    def _reset_controller_button_profile(self) -> None:
+        metadata = self.controller_metadata or self.controller_source_info
+        profile = self.controller_profile_store.find(metadata)
+        if profile is None:
+            QMessageBox.information(self, "Controller button map", "This controller has no custom button map to reset.")
+            return
+        answer = QMessageBox.question(
+            self,
+            "Reset custom button map?",
+            f"Delete all {len(profile.buttons)} learned button mapping(s) for {profile.name}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.controller_profile_store.remove(metadata)
+        self._add_event("controller_button_profile_reset", {"profile": profile.name})
+        self._set_controller_visual(
+            self.controller_samples[-1] if self.controller_samples else None,
+            self.controller_sources[-1][0] if self.controller_sources else "",
+        )
 
     def _controller_skin_changed(self, _index:int=0) -> None:
         if not hasattr(self,"controller_skin_combo"):
