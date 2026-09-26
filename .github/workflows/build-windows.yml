@@ -41,6 +41,7 @@ jobs:
           python -c "from PySide6.QtWidgets import QApplication; from signal_lab.ui import MainWindow; app=QApplication([]); w=MainWindow(); w.show(); app.processEvents(); w.close(); print('RcmTool UI smoke OK')"
       - name: Run hardware-only workflow smoke
         shell: powershell
+        timeout-minutes: 3
         env:
           QT_QPA_PLATFORM: offscreen
         run: python scripts/smoke_gamepad_signal_lab.py
@@ -51,6 +52,7 @@ jobs:
           path: artifacts/ui-preview/*.png
       - name: Capture native Windows UI preview
         shell: powershell
+        timeout-minutes: 3
         run: python scripts/capture_ui_preview.py
       - name: Upload native Windows UI preview
         uses: actions/upload-artifact@v4
