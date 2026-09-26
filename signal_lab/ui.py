@@ -2188,6 +2188,9 @@ class MainWindow(QMainWindow):
             )
             return
         mode="hardware"
+        active_profile = self.controller_profile_store.find(
+            self.controller_metadata or self.controller_source_info
+        )
         self.session_id=self.db.create_session(
             "RcmTool capture",mode,__version__,
             {
@@ -2196,6 +2199,7 @@ class MainWindow(QMainWindow):
                 "host_timer_resolution_ns":self.host_timer_resolution_ns,
                 "stationary_excursion_threshold":self.stationary_excursion.value(),
                 "late_factor":self.late_factor.value(),
+                "controller_button_profile": asdict(active_profile) if active_profile is not None else None,
             },
         )
         self.capture_active=True
@@ -3707,6 +3711,11 @@ class MainWindow(QMainWindow):
                 "mode":"selected named Raw HID only",
                 "app_version":__version__,
                 "controller":self.controller_metadata,
+                "controller_button_profile": (
+                    asdict(self.controller_profile_store.find(self.controller_metadata or self.controller_source_info))
+                    if self.controller_profile_store.find(self.controller_metadata or self.controller_source_info) is not None
+                    else None
+                ),
                 "evidence_class":self.controller_metadata.get("evidence_class", "unavailable"),
                 "timing_reference_mode":self.timing_reference_mode.currentData(),
                 "timing_reference_interval_ms":report_reference_ms,
